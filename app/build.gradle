@@ -1,0 +1,29 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.brandon.nightsky'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.brandon.nightsky'
+        minSdk 31
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// No dependencies: the app uses only the Android platform APIs.

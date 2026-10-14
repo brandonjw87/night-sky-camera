@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Night Sky</string>
+    <string name="channel_name">Night sky capture</string>
+    <string name="channel_desc">Shows progress while a night sky photo is being taken and developed</string>
+</resources>
