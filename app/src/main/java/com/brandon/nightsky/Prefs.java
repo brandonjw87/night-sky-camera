@@ -64,6 +64,24 @@ final class Prefs {
         sp.edit().putBoolean("remoteViewer", v).apply();
     }
 
+    /** How the stack removes satellites, planes and other outliers: a Rejection.Method name, AUTO to choose. */
+    String rejection() {
+        return sp.getString("rejection", "AUTO");
+    }
+
+    void setRejection(String v) {
+        sp.edit().putString("rejection", v).apply();
+    }
+
+    /** Whether the home screen shows its advanced settings. */
+    boolean advancedOpen() {
+        return sp.getBoolean("advancedOpen", false);
+    }
+
+    void setAdvancedOpen(boolean v) {
+        sp.edit().putBoolean("advancedOpen", v).apply();
+    }
+
     int countdownSec() {
         return sp.getInt("countdownSec", 5);
     }

@@ -7,6 +7,7 @@ import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Progress;
+import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.Rot;
@@ -56,6 +57,26 @@ public final class SimRunner {
             sim.partialFrom = (frames * 3) / 4;
             sim.partialTo = (frames * 3) / 4 + 1;
             sim.bumpFrame = frames - 4;
+        }
+        // SIM_PARTIAL=from,to: frames clouded over the left part of the field; SIM_CLOUD=from,to: clouded all over
+        int[] partial = range(System.getenv("SIM_PARTIAL"));
+        if (partial != null) {
+            sim.partialFrom = partial[0];
+            sim.partialTo = partial[1];
+        }
+        if (System.getenv("SIM_TRANSIENTS") != null) {
+            // only what outlier rejection has to remove: a satellite, a plane and a meteor
+            sim.satelliteFrame = frames / 4;
+            sim.planeFrame = frames / 2;
+            sim.meteorFrame = (frames * 2) / 3;
+        }
+        // SIM_STARS=0.05: stars that much fainter (a sparse field); SIM_BRANCH=1: a branch over the left edge
+        if (System.getenv("SIM_STARS") != null) sim.starGain = Double.parseDouble(System.getenv("SIM_STARS"));
+        sim.branch = System.getenv("SIM_BRANCH") != null;
+        int[] overcast = range(System.getenv("SIM_CLOUD"));
+        if (overcast != null) {
+            sim.cloudFrom = overcast[0];
+            sim.cloudTo = overcast[1];
         }
         sim.psfSigma = 0.85 / Math.sqrt(scale);
         System.out.printf(Locale.US, "Sim %dx%d, %d stars, %d frames of %.0fs, calibrated=%s, mode=%s%n", W, H, sim.starCount(),
@@ -125,6 +146,9 @@ public final class SimRunner {
 
         if (System.getenv("SIM_HOTTEST") != null) hotTest(sim, store, spec, W, H);
         PostProcessor pp = new PostProcessor(store, spec);
+        // SIM_REJECT=winsorized|percentile|gesd|linear_fit|sigma; SIM_STACKMEM=MB for the stack's sample buffers
+        if (System.getenv("SIM_REJECT") != null) pp.rejection = Rejection.Method.parse(System.getenv("SIM_REJECT"));
+        if (System.getenv("SIM_STACKMEM") != null) pp.stackMemory = Long.parseLong(System.getenv("SIM_STACKMEM")) << 20;
         final long[] last = {0};
         PostProcessor.Output o = pp.run(trails, new Progress() {
             @Override
@@ -156,8 +180,9 @@ public final class SimRunner {
                     continue;
                 }
                 double err = mappingError(o.model, f.R, truth, sim.trueRotation(o.referenceUnit, f.index), W, H);
-                System.out.printf(Locale.US, "  unit %2d %-8s err %.3f px  T=%.2f w=%.2f stars=%d %s%s%n", f.index,
-                        f.used ? "used" : "skipped", err, f.transparency, f.weight, f.stars, f.reason, f.predicted ? " (predicted)" : "");
+                double merr = f.measuredR != null ? mappingError(o.model, f.measuredR, truth, sim.trueRotation(o.referenceUnit, f.index), W, H) : Double.NaN;
+                System.out.printf(Locale.US, "  unit %2d %-8s err %.3f px (measured %.3f, %d matched, path sigma %.3f)  T=%.2f w=%.2f stars=%d %s%s%n", f.index,
+                        f.used ? "used" : "skipped", err, merr, f.matched, f.alignSigma, f.transparency, f.weight, f.stars, f.reason, f.predicted ? " (predicted)" : "");
                 if (f.used) {
                     worst = Math.max(worst, err);
                     sum += err;
@@ -165,6 +190,27 @@ public final class SimRunner {
                 }
             }
             System.out.printf(Locale.US, "alignment error over used frames: mean %.3f px, worst %.3f px%n", n > 0 ? sum / n : 0, worst);
+            // the same, frame against frame: the output's own coordinates are arbitrary, so take out the rotation
+            // all frames share (what sharpness depends on)
+            double[] g = new double[3];
+            int ng = 0;
+            for (PostProcessor.FrameReport f : o.frames) {
+                if (f.R == null || !f.used) continue;
+                double[] d = Rot.toRotVec(Rot.mul(Rot.transpose(f.R), sim.trueRotation(o.referenceUnit, f.index)));
+                for (int c = 0; c < 3; c++) g[c] += d[c];
+                ng++;
+            }
+            if (ng > 0) {
+                double[] G = Rot.fromRotVec(g[0] / ng, g[1] / ng, g[2] / ng);
+                double rw = 0, rs = 0;
+                for (PostProcessor.FrameReport f : o.frames) {
+                    if (f.R == null || !f.used) continue;
+                    double err = mappingError(o.model, Rot.mul(f.R, G), truth, sim.trueRotation(o.referenceUnit, f.index), W, H);
+                    rw = Math.max(rw, err);
+                    rs += err;
+                }
+                System.out.printf(Locale.US, "frame-to-frame alignment error (common rotation taken out): mean %.3f px, worst %.3f px%n", rs / ng, rw);
+            }
         }
 
         String near = System.getenv("SIM_NEAR");
@@ -185,6 +231,10 @@ public final class SimRunner {
             for (int c = 0; c < 3; c++) for (float v : im.channel(c)) ds.writeFloat(v);
             if (im.clip != null) ds.write(im.clip);
             ds.close();
+            java.io.PrintWriter pw = new java.io.PrintWriter(new File(outDir, "stack.txt"), "UTF-8");
+            pw.printf(Locale.US, "width %d%nheight %d%ncrop %d %d %d %d%nreference %d%n", im.width, im.height, im.x0, im.y0,
+                    im.x1, im.y1, o.referenceUnit);
+            pw.close();
         }
         // render
         final int cw = o.analysis.cw, ch = o.analysis.ch;
@@ -216,6 +266,13 @@ public final class SimRunner {
         }
         System.out.printf(Locale.US, "dng: %d ms%n", System.currentTimeMillis() - t3);
         System.out.println("session log: " + store.logFile());
+    }
+
+    /** "12,17" as {12, 17}; null when unset. */
+    static int[] range(String s) {
+        if (s == null || s.trim().isEmpty()) return null;
+        String[] p = s.split(",");
+        return new int[]{Integer.parseInt(p[0].trim()), Integer.parseInt(p[p.length - 1].trim())};
     }
 
     /** Prints stacked camera RGB and rendered output around a few bright and medium stars. */

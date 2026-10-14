@@ -37,6 +37,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -383,6 +384,7 @@ public final class MainActivity extends Activity {
         col.addView(snd, gap(18));
         col.addView(dng);
         col.addView(viewer);
+        addAdvanced(col);
 
         Button start = button("Start", true);
         start.setTextSize(22);
@@ -409,6 +411,76 @@ public final class MainActivity extends Activity {
             col.addView(open, gap(18));
         }
         col.addView(text("Version " + BuildInfo.VERSION + " · photos are saved in Pictures/NightSky", 12, RED_DIM, false), gap(24));
+    }
+
+    /** Settings most nights don't need, folded away under one line. */
+    private void addAdvanced(LinearLayout col) {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        final TextView head = text(advancedHead(prefs.advancedOpen()), 15, RED, true);
+        head.setPadding(0, dp(10), 0, dp(10));
+        head.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean open = !prefs.advancedOpen();
+                prefs.setAdvancedOpen(open);
+                head.setText(advancedHead(open));
+                box.setVisibility(open ? View.VISIBLE : View.GONE);
+            }
+        });
+        box.setVisibility(prefs.advancedOpen() ? View.VISIBLE : View.GONE);
+        col.addView(head, gap(10));
+        col.addView(box);
+
+        box.addView(label("Removing satellites and planes"), gap(4));
+        final Rejection.Method[] ms = {Rejection.Method.AUTO, Rejection.Method.PERCENTILE, Rejection.Method.WINSORIZED,
+                Rejection.Method.GESD, Rejection.Method.LINEAR_FIT, Rejection.Method.SIGMA};
+        final String[] names = {"Automatic", "Percentile", "Winsorized", "GESD", "Linear fit", "Sigma"};
+        final Button[] chips = new Button[ms.length];
+        final Rejection.Method current = Rejection.Method.parse(prefs.rejection());
+        final TextView help = text(rejectionHelp(current), 13, RED_DIM, false);
+        LinearLayout r1 = row(), r2 = row();
+        for (int k = 0; k < ms.length; k++) {
+            final Rejection.Method m = ms[k];
+            Button b = chip(names[k], m == current);
+            b.setTextSize(14);
+            chips[k] = b;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setRejection(m.name());
+                    for (int j = 0; j < ms.length; j++) styleChip(chips[j], ms[j] == m);
+                    help.setText(rejectionHelp(m));
+                }
+            });
+            (k < 3 ? r1 : r2).addView(b, weight());
+        }
+        box.addView(r1, gap(8));
+        box.addView(r2, gap(6));
+        box.addView(help, gap(6));
+    }
+
+    private static String advancedHead(boolean open) {
+        return open ? "Advanced \u25BE" : "Advanced \u25B8";
+    }
+
+    private static String rejectionHelp(Rejection.Method m) {
+        switch (m) {
+            case PERCENTILE:
+                return "Drops values far from each pixel's middle value. Best with 6 frames or fewer.";
+            case WINSORIZED:
+                return "Sigma clipping that first pulls in the extremes, so one bright trail can't hide another. "
+                        + "Best from 7 to about 50 frames.";
+            case GESD:
+                return "A statistical test that removes outliers one at a time. Best with more than 50 frames.";
+            case LINEAR_FIT:
+                return "Follows a sky that brightens or darkens during the session (twilight, moonrise) before clipping.";
+            case SIGMA:
+                return "Plain sigma clipping in one pass. Uses the least memory.";
+            default:
+                return "Picks for you from the number of frames, and switches to linear fit when the sky brightens "
+                        + "during the session. The log says which it used and why.";
+        }
     }
 
     private static String modeHelp(boolean trails) {

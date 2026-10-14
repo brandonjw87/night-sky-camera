@@ -5,7 +5,9 @@ import java.util.Arrays;
 /**
  * Finds stars in a RAW frame using the half-resolution green image (average of the two green CFA sites):
  * coarse background removal, 3x3 matched filter, local maxima above k sigma, then flux-weighted centroids.
- * Single-pixel spikes (hot pixels), elongated blobs and extended blobs are rejected.
+ * Single-pixel spikes (hot pixels), elongated blobs and extended blobs are rejected. The kept stars' positions
+ * are then refined with a Gaussian-windowed centroid on the green pixels at full resolution, sized to the
+ * frame's stars, which roughly halves the position error of faint stars.
  */
 public final class StarDetector {
     public static final int TILE = 32;
@@ -15,6 +17,12 @@ public final class StarDetector {
     private final float[] D, S;
     private final float[] tileBg, tileSig;
     public float kSigma = 5f;
+    /** Shape limits: elongation, and half-flux radius in RAW pixels (tightened for faint searches). */
+    public float maxElong = 2.2f, minHfr = 0f, maxHfr = 5.2f;
+    /** Known hot pixels, so a faint search doesn't take them for stars (optional). */
+    public HotPixels hot;
+    /** Window (sigma, RAW pixels) of the last frame's refined centroids: twice the size of its stars. */
+    public float window;
 
     public StarDetector(SensorSpec spec) {
         W = spec.width;
@@ -188,6 +196,7 @@ public final class StarDetector {
             measureStar(raw, invScale, idx, out, ox1, oy1, ox2, oy2);
         }
         out.sortAndTrim(maxStars);
+        refine(raw, invScale, out);
         // diagnostics: median tile background / noise
         float[] tb = tileBg.clone();
         float[] ts = tileSig.clone();
@@ -243,8 +252,9 @@ public final class StarDetector {
         double l1 = tr / 2 + disc, l2 = Math.max(1e-6, tr / 2 - disc);
         double elong = Math.sqrt(l1 / l2);
         double hfrHalf = hr / sw;
-        if (elong > 2.2 && l1 > 0.5) return;   // streak or cloud edge
-        if (hfrHalf > 2.6) return;             // extended blob
+        if (elong > maxElong && l1 > 0.5) return;   // streak or cloud edge
+        if (2 * hfrHalf > maxHfr || 2 * hfrHalf < minHfr) return; // extended blob, or sharper than a star
+        if (hot != null && (hot.isBad(2 * i0 + ox1, 2 * j0 + oy1) || hot.isBad(2 * i0 + ox2, 2 * j0 + oy2))) return;
         // saturation: check the raw green samples at the peak
         int r1 = (2 * j0 + oy1) * W + 2 * i0 + ox1;
         int r2 = (2 * j0 + oy2) * W + 2 * i0 + ox2;
@@ -252,6 +262,133 @@ public final class StarDetector {
         float rx = (float) (2 * (i0 + cx) + 1.0);
         float ry = (float) (2 * (j0 + cy) + 1.0);
         out.add(rx, ry, (float) flux, (float) (2 * hfrHalf), (float) elong, sat);
+    }
+
+    /** Most stars used to size the centroid window. */
+    static final int SIZE_STARS = 40;
+    /** Signal to noise (5 x 5 box) a star needs to help size the window. */
+    static final float SIZE_SNR = 6f;
+
+    /**
+     * Replaces the moment centroids with Gaussian-windowed ones (SExtractor's XWIN): the frame's star size
+     * comes from the windowed second moments of its brightest unsaturated stars, the window is twice that,
+     * and each star's position is iterated until it settles. A star whose refinement fails keeps its
+     * moment centroid. With too few clear stars to size it, the window stays as the last frame's.
+     */
+    private void refine(short[] raw, float invScale, StarList s) {
+        if (s.count == 0) return;
+        float[] ts = tileSig.clone();
+        float noise = Stats.median(ts, ts.length);
+        float minFlux = SIZE_SNR * 5 * noise;
+        // first guess: the last frame's window, or from the moment sizes of the brightest stars
+        double sw = window;
+        if (sw <= 0) {
+            float[] h = new float[Math.min(s.count, SIZE_STARS)];
+            int nh = 0;
+            for (int i = 0; i < s.count && nh < h.length; i++) if (!s.saturated[i] && s.flux[i] >= minFlux) h[nh++] = s.hfr[i];
+            sw = nh > 0 ? Stats.clamp(1.6f * Stats.median(h, nh), 0.9f, 3f) : 1.5;
+        }
+        double[] xy = new double[2], m2 = new double[1];
+        float[] size = new float[SIZE_STARS];
+        for (int pass = 0; pass < 2; pass++) {
+            int ns = 0;
+            double w = sw * sw;
+            for (int i = 0; i < s.count && ns < size.length; i++) {
+                if (s.saturated[i] || s.flux[i] < minFlux) continue;
+                xy[0] = s.x[i];
+                xy[1] = s.y[i];
+                if (!windowed(raw, invScale, sw, xy, m2)) continue;
+                // a Gaussian star of variance v seen through a Gaussian window of variance w: m2 = v w / (v + w).
+                // Hot pixels are sharper than any star, flat noise fills the window.
+                if (m2[0] <= 0.06 * w || m2[0] >= 0.8 * w) continue;
+                size[ns++] = (float) Math.sqrt(m2[0] * w / (w - m2[0]));
+            }
+            if (ns < 3) break;
+            double next = Stats.clamp(2f * Stats.median(size, ns), 0.9f, 3f);
+            boolean settled = Math.abs(next - sw) < 0.1 * sw;
+            sw = next;
+            if (settled) break;
+        }
+        window = (float) sw;
+        for (int i = 0; i < s.count; i++) {
+            xy[0] = s.x[i];
+            xy[1] = s.y[i];
+            if (windowed(raw, invScale, sw, xy, null)) {
+                s.x[i] = (float) xy[0];
+                s.y[i] = (float) xy[1];
+            }
+        }
+    }
+
+    /**
+     * Gaussian-windowed centroid of the green pixels around xy (RAW coordinates, pixel centres at +0.5), with
+     * the background of step 3 removed, iterated until it moves less than a thousandth of a pixel. On success
+     * xy holds the position and m2 (if given) the windowed second moment per axis.
+     */
+    private boolean windowed(short[] raw, float invScale, double sw, double[] xy, double[] m2) {
+        int r = (int) Math.ceil(3 * sw);
+        double x0 = xy[0], y0 = xy[1], cx = x0, cy = y0;
+        float bg = bgAt((int) ((x0 - 1) / 2), (int) ((y0 - 1) / 2));
+        double inv = 1 / (2 * sw * sw);
+        double[] wx = new double[2 * r + 2], wy = new double[2 * r + 2];
+        double sv = 0, sxx = 0;
+        for (int it = 0; it < 12; it++) {
+            int ax = (int) Math.floor(cx) - r, ay = (int) Math.floor(cy) - r;
+            if (ax < 0 || ay < 0 || ax + 2 * r + 1 >= W || ay + 2 * r + 1 >= H) return false;
+            for (int q = 0; q <= 2 * r + 1; q++) {
+                double dx = ax + q + 0.5 - cx, dy = ay + q + 0.5 - cy;
+                wx[q] = Math.exp(-dx * dx * inv);
+                wy[q] = Math.exp(-dy * dy * inv);
+            }
+            double sx = 0, sy = 0;
+            sv = 0;
+            sxx = 0;
+            for (int qy = 0; qy <= 2 * r + 1; qy++) {
+                int y = ay + qy;
+                int o = y * W;
+                // the green sites of this row: one per 2 x 2 cell, at x parity ox1 or ox2
+                int par = (y & 1) == gp1 >> 1 ? gp1 & 1 : gp2 & 1;
+                if ((y & 1) != gp1 >> 1 && (y & 1) != gp2 >> 1) continue;
+                int x = ax + (((ax & 1) == par) ? 0 : 1);
+                double dy = y + 0.5 - cy;
+                for (; x <= ax + 2 * r + 1; x += 2) {
+                    double w = wx[x - ax] * wy[qy];
+                    double v = ((raw[o + x] & 0xFFFF) * invScale - blackG - bg) * w;
+                    double dx = x + 0.5 - cx;
+                    sv += v;
+                    sx += v * dx;
+                    sy += v * dy;
+                    sxx += v * (dx * dx + dy * dy);
+                }
+            }
+            if (sv <= 0) return false;
+            double ddx = sx / sv, ddy = sy / sv;
+            cx += ddx;
+            cy += ddy;
+            if (Math.abs(cx - x0) > 1.5 * Math.max(1, sw) || Math.abs(cy - y0) > 1.5 * Math.max(1, sw)) return false;
+            if (ddx * ddx + ddy * ddy < 1e-6) break;
+        }
+        xy[0] = cx;
+        xy[1] = cy;
+        if (m2 != null) m2[0] = 0.5 * sxx / sv;
+        return true;
+    }
+
+    /** Background (ADU above black) that step 3 subtracted at half-resolution pixel (i, j). */
+    private float bgAt(int i, int j) {
+        i = Stats.clamp(i, 0, w2 - 1);
+        j = Stats.clamp(j, 0, h2 - 1);
+        double gy = (j + 0.5) / TILE - 0.5, gx = (i + 0.5) / TILE - 0.5;
+        int ty = (int) Math.floor(gy), tx = (int) Math.floor(gx);
+        double fy = gy - ty, fx = gx - tx;
+        if (ty < 0) { ty = 0; fy = 0; }
+        if (ty >= tny - 1) { ty = Math.max(0, tny - 2); fy = tny > 1 ? 1 : 0; }
+        if (tx < 0) { tx = 0; fx = 0; }
+        if (tx >= tnx - 1) { tx = Math.max(0, tnx - 2); fx = tnx > 1 ? 1 : 0; }
+        int ty1 = Math.min(ty + 1, tny - 1), tx1 = Math.min(tx + 1, tnx - 1);
+        double a = tileBg[ty * tnx + tx] * (1 - fx) + tileBg[ty * tnx + tx1] * fx;
+        double b = tileBg[ty1 * tnx + tx] * (1 - fx) + tileBg[ty1 * tnx + tx1] * fx;
+        return (float) (a * (1 - fy) + b * fy);
     }
 
     private void medianFilterGrid(float[] g) {

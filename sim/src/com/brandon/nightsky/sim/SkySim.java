@@ -40,6 +40,12 @@ public final class SkySim {
     public int partialFrom = -1, partialTo = -1;
     public int bumpFrame = -1;
     public double bumpDeg = 0.25;
+    /** Star brightness factor (below 1 for a sparse field: haze, a bright town, a short exposure). */
+    public double starGain = 1;
+    /** A tree branch over the left edge: a dark silhouette with small gaps of sky and a few lit leaves. */
+    public boolean branch;
+    private float[] branchT;
+    private int[] glints;
 
     private double[] sx, sy, sz;
     private float[] flux, cr, cg, cb;
@@ -215,7 +221,8 @@ public final class SkySim {
         return hotRate.clone();
     }
 
-    /** Debug: every star in frame i (middle of the exposure): x, y, flux, cam R/G, cam B/G per row. */
+    /** Debug: every star in frame i (middle of the exposure): x, y, flux, cam R/G, cam B/G, and the electrons it
+     *  puts in the frame (after cloud, vignetting and the branch) per row. */
     public double[][] starTable(int i) {
         java.util.List<double[]> out = new java.util.ArrayList<double[]>();
         double[] b = new double[3], p = new double[2];
@@ -224,9 +231,17 @@ public final class SkySim {
             Rot.apply(C, sx[k], sy[k], sz[k], b);
             if (b[2] < 0.3 || !truth.project(b[0], b[1], b[2], p)) continue;
             if (p[0] < 0 || p[1] < 0 || p[0] >= W || p[1] >= H) continue;
-            out.add(new double[]{p[0], p[1], flux[k], cr[k] / cg[k], cb[k] / cg[k]});
+            out.add(new double[]{p[0], p[1], flux[k], cr[k] / cg[k], cb[k] / cg[k], expected(i, p[0], p[1], flux[k])});
         }
         return out.toArray(new double[0][]);
+    }
+
+    /** Electrons a star of catalogue flux {@code f} (per second) at (x, y) puts into frame i. */
+    public double expected(int i, double x, double y, double f) {
+        double v = f * starGain * frameExp * transparency(i, x) * vignetting(x, y);
+        if (branch && branchT == null) buildBranch();
+        if (branchT != null && x >= 0 && y >= 0 && x < W && y < H) v *= branchT[(int) y * W + (int) x];
+        return v;
     }
 
     /** Debug: the stars within r pixels of (x, y) at the middle of frame i (position, flux, camera colour). */
@@ -244,8 +259,59 @@ public final class SkySim {
         return sb.toString();
     }
 
+    /** Transmission of the branch per pixel (1 = open sky), built once. */
+    private void buildBranch() {
+        branchT = new float[W * H];
+        java.util.Arrays.fill(branchT, 1f);
+        Random rnd = new Random(11);
+        double s = W / 4080.0;
+        // a limb from the left edge with a few twigs, as thick strokes
+        double[][] strokes = {
+                {0, 0.30 * H, 0.22 * W, 0.42 * H, 46 * s},
+                {0.10 * W, 0.36 * H, 0.17 * W, 0.20 * H, 20 * s},
+                {0.16 * W, 0.39 * H, 0.27 * W, 0.33 * H, 14 * s},
+                {0, 0.62 * H, 0.12 * W, 0.58 * H, 30 * s},
+                {0.07 * W, 0.60 * H, 0.15 * W, 0.70 * H, 12 * s}};
+        for (double[] k : strokes) {
+            double len = Math.hypot(k[2] - k[0], k[3] - k[1]);
+            for (double t = 0; t <= 1; t += 0.5 / len) {
+                double cx = k[0] + (k[2] - k[0]) * t, cy = k[1] + (k[3] - k[1]) * t;
+                double r = k[4] * (1 - 0.5 * t);
+                for (int y = (int) (cy - r); y <= (int) (cy + r); y++) {
+                    if (y < 0 || y >= H) continue;
+                    for (int x = (int) (cx - r); x <= (int) (cx + r); x++) {
+                        if (x < 0 || x >= W) continue;
+                        if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) branchT[y * W + x] = 0.03f;
+                    }
+                }
+            }
+        }
+        // gaps between leaves: tiny holes of open sky inside the silhouette
+        int holes = 0;
+        for (int tries = 0; tries < 20000 && holes < 40; tries++) {
+            int x = rnd.nextInt(W), y = rnd.nextInt(H);
+            if (branchT[y * W + x] > 0.5f) continue;
+            double r = 1.0 + 0.8 * rnd.nextDouble();
+            for (int yy = (int) (y - r); yy <= (int) (y + r); yy++) {
+                for (int xx = (int) (x - r); xx <= (int) (x + r); xx++) {
+                    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+                    if ((xx - x) * (xx - x) + (yy - y) * (yy - y) <= r * r) branchT[yy * W + xx] = 1f;
+                }
+            }
+            holes++;
+        }
+        // leaves lit by a porch light: small bright static spots on the branch
+        glints = new int[12];
+        for (int g = 0, tries = 0; g < glints.length && tries < 20000; tries++) {
+            int x = rnd.nextInt(W), y = rnd.nextInt(H);
+            if (branchT[y * W + x] > 0.5f) continue;
+            glints[g++] = y * W + x;
+        }
+    }
+
     /** Renders frame i into raw (unsigned 16-bit in a short[]), filling info. */
     public void render(final int i, final short[] raw, UnitProcessor.FrameInfo info, final long seed) {
+        if (branch && branchT == null) buildBranch();
         final float[] img = new float[W * H];
         final double exp = frameExp;
         final int[] cfa = {0, 1, 1, 2};
@@ -259,7 +325,8 @@ public final class SkySim {
                         double grad = 1 + gradient * (x / (double) W - 0.5) * 2 + 0.15 * gradient * (y / (double) H - 0.5);
                         double tr = transparency(i, x);
                         double glow = 1 + 0.8 * (1 - tr);
-                        img[y * W + x] = (float) ((skyRate[c] * grad * glow * vignetting(x + 0.5, y + 0.5) + darkRate) * exp);
+                        double open = branchT != null ? branchT[y * W + x] : 1;
+                        img[y * W + x] = (float) ((skyRate[c] * grad * glow * vignetting(x + 0.5, y + 0.5) * open + darkRate) * exp);
                     }
                 }
             }
@@ -276,7 +343,8 @@ public final class SkySim {
                 if (!truth.project(b[0], b[1], b[2], p)) continue;
                 double px = p[0], py = p[1];
                 if (px < -8 || py < -8 || px > W + 8 || py > H + 8) continue;
-                double amp = flux[k] * exp / substeps * transparency(i, px) * vignetting(px, py);
+                double amp = flux[k] * starGain * exp / substeps * transparency(i, px) * vignetting(px, py);
+                if (branchT != null && px >= 0 && py >= 0 && px < W && py < H) amp *= branchT[(int) py * W + (int) px];
                 if (amp < 0.05) continue;
                 double rr = Math.hypot(px - W / 2.0, py - H / 2.0) / (0.5 * Math.hypot(W, H));
                 double sg = psfSigma * (1 + 0.45 * rr * rr);
@@ -285,11 +353,24 @@ public final class SkySim {
         }
         // transients
         if (i == satelliteFrame) addLine(img, W * 0.08, H * 0.1, W * 0.9, H * 0.85, 1.0, 140 * exp / 8, 0);
-        if (i == planeFrame || i == planeFrame + 1) {
+        if (planeFrame >= 0 && (i == planeFrame || i == planeFrame + 1)) {
             double fr = i == planeFrame ? 0 : 0.5;
             addLine(img, W * (0.1 + fr * 0.8), H * (0.9 - fr * 0.7), W * (0.1 + (fr + 0.5) * 0.8), H * (0.9 - (fr + 0.5) * 0.7), 1.2, 400, 28);
         }
         if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
+        // the branch's lit leaves: fixed bright spots
+        if (branchT != null) {
+            for (int g : glints) {
+                int gx = g % W, gy = g / W;
+                for (int dy = -2; dy <= 2; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int x = gx + dx, y = gy + dy;
+                        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+                        img[y * W + x] += (float) (60 * exp / 8 * Math.exp(-(dx * dx + dy * dy) / (2 * 0.9 * 0.9)));
+                    }
+                }
+            }
+        }
         // hot pixels
         for (int h = 0; h < hotIdx.length; h++) img[hotIdx[h]] += (float) (hotRate[h] * exp);
         // noise and quantisation

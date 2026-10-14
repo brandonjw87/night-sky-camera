@@ -1,9 +1,9 @@
 package com.brandon.nightsky.processing;
 
 /**
- * A coarse grid of per-region weight factors for one frame, in reference-frame pixel coordinates, used to
- * down-weight only the clouded part of a partly cloudy frame. Values are interpolated bilinearly between
- * cell centres.
+ * A coarse grid of per-region factors for one frame, in reference-frame pixel coordinates: which parts of a
+ * partly cloudy frame to use, and how much to scale them. Values are interpolated bilinearly between cell
+ * centres.
  */
 public final class LocalWeights {
     public final int gx, gy, width, height;
@@ -18,54 +18,16 @@ public final class LocalWeights {
         java.util.Arrays.fill(w, 1f);
     }
 
-    public int cellOf(double x, double y) {
-        int cx = Stats.clamp((int) (x * gx / width), 0, gx - 1);
-        int cy = Stats.clamp((int) (y * gy / height), 0, gy - 1);
-        return cy * gx + cx;
+    /** Value at continuous position (x, y), held constant beyond the outer cell centres. */
+    public float at(double x, double y) {
+        return BackgroundGrid.interp(w, gx, gy, width, height, x, y);
     }
 
-    /** Fills {@code out[x]} for every pixel of row y (continuous centre y + 0.5). */
-    public void row(int y, float[] out) {
-        double fy = (y + 0.5) * gy / height - 0.5;
-        int ya = (int) Math.floor(fy);
-        double ty = fy - ya;
-        if (ya < 0) {
-            ya = 0;
-            ty = 0;
-        }
-        if (ya >= gy - 1) {
-            ya = gy - 1;
-            ty = 0;
-        }
-        int yb = Math.min(ya + 1, gy - 1);
-        for (int x = 0; x < width; x++) {
-            double fx = (x + 0.5) * gx / width - 0.5;
-            int xa = (int) Math.floor(fx);
-            double tx = fx - xa;
-            if (xa < 0) {
-                xa = 0;
-                tx = 0;
-            }
-            if (xa >= gx - 1) {
-                xa = gx - 1;
-                tx = 0;
-            }
-            int xb = Math.min(xa + 1, gx - 1);
-            double top = w[ya * gx + xa] * (1 - tx) + w[ya * gx + xb] * tx;
-            double bot = w[yb * gx + xa] * (1 - tx) + w[yb * gx + xb] * tx;
-            out[x] = (float) (top * (1 - ty) + bot * ty);
-        }
-    }
-
-    public float min() {
-        float m = Float.MAX_VALUE;
-        for (float v : w) m = Math.min(m, v);
-        return m;
-    }
-
-    public float mean() {
-        double s = 0;
-        for (float v : w) s += v;
-        return (float) (s / w.length);
+    /** The smallest of the cell values that {@link #at} interpolates between at (x, y). */
+    public float minAt(double x, double y) {
+        double fx = x * gx / width - 0.5, fy = y * gy / height - 0.5;
+        int xa = Stats.clamp((int) Math.floor(fx), 0, gx - 1), ya = Stats.clamp((int) Math.floor(fy), 0, gy - 1);
+        int xb = fx > xa && xa + 1 < gx ? xa + 1 : xa, yb = fy > ya && ya + 1 < gy ? ya + 1 : ya;
+        return Math.min(Math.min(w[ya * gx + xa], w[ya * gx + xb]), Math.min(w[yb * gx + xa], w[yb * gx + xb]));
     }
 }

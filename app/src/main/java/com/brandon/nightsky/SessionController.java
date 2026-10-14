@@ -22,6 +22,7 @@ import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Progress;
+import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.SensorSpec;
@@ -886,6 +887,7 @@ final class SessionController {
         p.setProperty("saveDng", Boolean.toString(settings.saveDng));
         p.setProperty("durationSec", Integer.toString(settings.durationSec));
         p.setProperty("plan", plan.describe());
+        p.setProperty("rejection", Rejection.Method.parse(prefs.rejection()).name());
         p.setProperty("state", "capturing");
         store.writeSettings(p);
         store.log("Night Sky Camera " + BuildInfo.VERSION + " on " + spec.deviceMake + " " + spec.deviceModel
@@ -1335,7 +1337,14 @@ final class SessionController {
             }
         };
         try {
-            PostProcessor.Output o = new PostProcessor(st, sp).run(trails, progress);
+            PostProcessor pp = new PostProcessor(st, sp);
+            try {
+                // the rejection chosen when the session started, so redeveloping a session gives the same result
+                pp.rejection = Rejection.Method.parse(st.readSettings().getProperty("rejection"));
+            } catch (IOException e) {
+                st.log("could not read the session settings: " + e.getMessage());
+            }
+            PostProcessor.Output o = pp.run(trails, progress);
             String name = "NightSky_" + st.id() + (trails ? "_trails" : "");
             post(Phase.DEVELOPING, "Saving", "Full-size photo", -1f);
             Uri jpeg = saveJpeg(o, sp, brightness, name);

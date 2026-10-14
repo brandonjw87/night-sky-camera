@@ -33,6 +33,47 @@ public final class Stats {
         return select(a, 0, n - 1, k);
     }
 
+    /**
+     * Weighted median of the first n values: where the cumulative weight, in order of value, reaches half.
+     * Weights must be &gt;= 0; with no weight at all it is the plain median. Leaves both arrays as they were.
+     *
+     * @param scratch at least n long, or null to allocate
+     */
+    public static float weightedMedian(float[] v, float[] w, int n, long[] scratch) {
+        if (n <= 0) return 0f;
+        long[] key = scratch != null && scratch.length >= n ? scratch : new long[n];
+        double total = 0;
+        for (int i = 0; i < n; i++) {
+            // float bits made to sort like the floats themselves, with the index in the low half
+            int b = Float.floatToIntBits(v[i]);
+            b ^= (b >> 31) & 0x7FFFFFFF;
+            key[i] = ((long) b << 32) | i;
+            total += w[i];
+        }
+        java.util.Arrays.sort(key, 0, n);
+        if (!(total > 0)) {
+            int lo = (int) key[(n - 1) >>> 1], hi = (int) key[n >>> 1];
+            return 0.5f * (v[lo] + v[hi]);
+        }
+        double half = 0.5 * total, acc = 0;
+        for (int j = 0; j < n; j++) {
+            int i = (int) key[j];
+            acc += w[i];
+            if (acc >= half) {
+                // exactly half: halfway to the next value that carries weight, as the plain median does for an
+                // even count
+                if (acc == half) {
+                    for (int q = j + 1; q < n; q++) {
+                        int k = (int) key[q];
+                        if (w[k] > 0) return 0.5f * (v[i] + v[k]);
+                    }
+                }
+                return v[i];
+            }
+        }
+        return v[(int) key[n - 1]];
+    }
+
     /** Median absolute deviation around {@code center}, scaled to a Gaussian sigma. Reorders the array. */
     public static float madSigma(float[] a, int n, float center) {
         for (int i = 0; i < n; i++) a[i] = Math.abs(a[i] - center);

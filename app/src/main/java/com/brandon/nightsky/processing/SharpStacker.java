@@ -1,6 +1,7 @@
 package com.brandon.nightsky.processing;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -20,39 +21,108 @@ import java.util.concurrent.ThreadFactory;
  * moats around bright stars) and no per-frame demosaicing. Where the drift is too small to cover all colour
  * phases (very close to the celestial pole), bilinear interpolation of the planes fills in.
  * <p>
- * Integration is a weighted mean with outlier rejection, done in two passes per band of rows so memory
- * stays bounded: pass A gathers per-pixel mean, spread and the two largest values of the interpolated
- * frames; the clipping limits come from the statistics without those two values, so a satellite, plane,
- * meteor or cosmic ray in one or two frames cannot hide itself by inflating the spread. Pass B accumulates
- * the frames inside the limits.
+ * Every sample is normalised before it is compared or averaged: the frame's own smooth sky background
+ * (measured on a grid of regions of the frame) is swapped for the session's target background, and the
+ * starlight left over is scaled by the frame's transparency in that region relative to the clearest frames.
+ * Thin cloud, a passing light dome or a brightening sky then doesn't make a frame look like an outlier. Each
+ * sample is weighted by the inverse of its noise after normalisation (transparency squared over the
+ * background variance), regions that a cloud covered get no weight at all, and all of this changes smoothly
+ * between regions, so a frame clouded over in one part still adds its clear part without leaving a seam.
+ * <p>
+ * Outliers (satellites, planes, meteors, cosmic rays) are rejected per pixel and channel with a method that
+ * suits the number of frames ({@link Rejection}). When memory allows, every frame's sample of a band of rows
+ * is kept as a half float so the method can look at all of them at once: pass A collects them, the
+ * rejection marks the outliers, pass B adds up the rest. Otherwise one-pass sigma clipping: pass A gathers a
+ * noise-weighted mean and spread without the extreme values at both ends (so a satellite or a dark cloud edge
+ * in one or two frames can't hide itself by inflating the spread), and pass B adds up the samples within the
+ * limits. Each sample's noise allows for the smoothing of the interpolation that produced it, so frames
+ * sampled at pixel centres (the reference frame) aren't clipped more than frames sampled between them.
  */
 public final class SharpStacker {
     public static final class Plan {
         public int unit;
         /** Rotation taking reference-frame bearings to this unit's bearings. */
         public double[] R;
+        /** Weight factor for the whole frame (1 = normal). */
         public float weight = 1f;
         /** stored value * invScale = per-frame ADU including black level */
         public float invScale = 1f;
         public final float[] black = new float[4];
-        /** Optional per-region weight factors (partly cloudy frames). */
-        public LocalWeights local;
+        /** Capture time in seconds, for linear-fit clipping. */
+        public double t;
+        /** The frame's sky background and noise, in its own sensor coordinates; null leaves the frame as it is. */
+        public BackgroundGrid background;
+        /**
+         * Per region, in reference coordinates: the frame's transparency relative to the clearest frames (1 =
+         * clear). Interpolated between the region centres, it scales the starlight up to the clear level and
+         * leaves the frame out wherever it is below {@link #minTransparency}. Null: 1 everywhere.
+         */
+        public LocalWeights transparency;
     }
 
     public static final class Result {
         public RgbImage image;
-        /** Per plan: samples rejected (counted per channel) and valid pixel samples. */
-        public long[] rejected, samples;
+        /**
+         * Per plan: samples rejected as outliers (counted per channel), pixel samples on the frame, and pixel
+         * samples that went into the stack.
+         */
+        public long[] rejected, samples, included;
         /** Per output row: first and one-past-last column with good coverage (-1 when none). */
         public int[] rowL, rowR;
+        /** The rejection method asked for, and whether every sample was kept for it (false: one-pass sigma clipping). */
+        public Rejection.Method method;
+        public boolean keptSamples;
+        public int bandRows;
+        /** Samples from next to a cloud edge, judged against the frames clear all around, and how many of them went. */
+        public long edgeSamples, edgeRejected;
     }
 
     public static final int STEP = 32;
-    public float kHigh = 3f, kLow = 4f, sigmaFloor = 0.5f;
-    /** Bytes for the per-band statistics. */
+    /** Clipping limits in units of the spread (the low side looser: dark outliers are rare and noise isn't). */
+    public float kHigh = 3f, kLow = 4f;
+    /** One-pass clipping: smallest spread, in units of each sample's expected noise. */
+    public float sigmaFloor = 0.25f;
+    /** Bytes for the per-band statistics (and kept samples). */
     public long memoryBudget = 48L << 20;
     /** Fraction of the frames a pixel needs to count as well covered (for the crop). */
     public float coverageFraction = 0.7f;
+    /** How outliers are rejected; AUTO picks by the number of frames covering each pixel. */
+    public Rejection.Method method = Rejection.Method.AUTO;
+    /** The sky background (and its noise) every frame is matched to, in reference coordinates; null: no matching. */
+    public BackgroundGrid target;
+    /** Transparency below which a frame is left out (thick cloud); its starlight is scaled by at most the inverse. */
+    public float minTransparency = 0.5f;
+    /** Transparency above which a frame's starlight isn't scaled down any further. */
+    static final float MAX_TRANSPARENCY = 1.5f;
+
+    /** Keeping every sample needs bands at least this tall, or re-reading the frames' overlapping rows costs too much. */
+    static final int MIN_KEEP_ROWS = 24;
+    /** Bytes per output pixel besides the kept samples: centre and four sums per channel, three counters. */
+    private static final int KEEP_BYTES = 5 * 12 + 6;
+    /** One-pass clipping: ten statistics per channel, a sum of squares in double and three counters. */
+    private static final int STREAM_BYTES = 10 * 12 + 24 + 6;
+    /**
+     * Values per warp node in a frame's normalisation: scale, weight, transparency, offset per channel and
+     * noise per channel (of one photosite, after normalisation).
+     */
+    private static final int K_T = 2, K_OFF = 3, K_NOISE = 6, K_DOUBT = 9, NK = 10;
+    /**
+     * One-pass clipping trims k values at each end before measuring the spread (k = 1 below
+     * {@link #TRIM2_FROM} samples, else 2). The trimmed spread of normal noise is too small by a known factor:
+     * the expected variance of the m - 2k middle values of m, from a simulation, for m = 2k + 2 .. 64.
+     */
+    static final int TRIM2_FROM = 10;
+    private static final float[] TRIM1_VAR = {0.3002f, 0.3592f, 0.4066f, 0.4463f, 0.4792f, 0.5083f, 0.5334f, 0.5548f, 0.5747f, 0.5926f, 0.6086f,
+            0.6232f, 0.6366f, 0.6488f, 0.6591f, 0.6699f, 0.6796f, 0.6888f, 0.6969f, 0.7045f, 0.7125f, 0.7194f,
+            0.7256f, 0.7318f, 0.7376f, 0.7433f, 0.7484f, 0.7538f, 0.7588f, 0.7631f, 0.7676f, 0.7717f, 0.7761f,
+            0.7805f, 0.7833f, 0.7875f, 0.7901f, 0.7936f, 0.7971f, 0.8004f, 0.803f, 0.8059f, 0.8087f, 0.8118f, 0.8145f,
+            0.8158f, 0.8191f, 0.8213f, 0.8236f, 0.8254f, 0.8283f, 0.8299f, 0.832f, 0.8339f, 0.8359f, 0.8374f, 0.8394f,
+            0.8414f, 0.8435f, 0.8448f, 0.8465f};
+    private static final float[] TRIM2_VAR = {0.1438f, 0.1875f, 0.2261f, 0.2613f, 0.2927f, 0.32f, 0.346f, 0.3698f, 0.3912f, 0.4107f, 0.4288f, 0.4461f,
+            0.4616f, 0.476f, 0.4896f, 0.5027f, 0.5151f, 0.5263f, 0.5373f, 0.5472f, 0.5568f, 0.5657f, 0.5747f, 0.583f,
+            0.5908f, 0.5982f, 0.6056f, 0.6125f, 0.6197f, 0.6257f, 0.6316f, 0.6376f, 0.6434f, 0.6491f, 0.6543f, 0.659f,
+            0.6642f, 0.6684f, 0.6729f, 0.6775f, 0.6821f, 0.6859f, 0.6904f, 0.694f, 0.6979f, 0.7013f, 0.705f, 0.7079f,
+            0.712f, 0.7153f, 0.7182f, 0.7214f, 0.7242f, 0.7275f, 0.7301f, 0.7334f, 0.7362f, 0.7384f, 0.7411f};
 
     private static final float NEG = -Float.MAX_VALUE, POS = Float.MAX_VALUE;
 
@@ -90,6 +160,17 @@ public final class SharpStacker {
         pB = b;
     }
 
+    /** True if keeping every sample fits the memory budget for {@code frames} frames. */
+    public boolean keepsSamples(int frames) {
+        return method != Rejection.Method.SIGMA && keepRows(frames) >= MIN_KEEP_ROWS;
+    }
+
+    /** Rows per band when keeping every sample: what the budget allows, and what one Java array can hold. */
+    private long keepRows(int frames) {
+        long rows = memoryBudget / ((long) W * (6L * frames + KEEP_BYTES));
+        return Math.min(rows, (Integer.MAX_VALUE - 8L) / (3L * W * Math.max(1, frames)));
+    }
+
     /** One loaded band of a unit: black-subtracted float ADU for rows [rs, re). */
     private static final class Loaded {
         short[] raw = new short[0];
@@ -103,27 +184,45 @@ public final class SharpStacker {
         final double[] nodeB = WarpGrid.nodeBearings(model, W, H, STEP);
         final WarpGrid[] grids = new WarpGrid[nf];
         for (int f = 0; f < nf; f++) grids[f] = WarpGrid.build(model, nodeB, W, H, STEP, plans.get(f).R);
+        final int nx = WarpGrid.nodesX(W, STEP), ny = WarpGrid.nodesY(H, STEP);
+        final byte[][] doubt = doubtful(plans, nx, ny);
 
         final Result res = new Result();
         final RgbImage out = new RgbImage(W, H);
         res.image = out;
         res.rejected = new long[nf];
         res.samples = new long[nf];
+        res.included = new long[nf];
         res.rowL = new int[H];
         res.rowR = new int[H];
-
-        int bandRows = (int) Math.min(512, Math.max(32, memoryBudget / ((long) W * 76)));
-        bandRows &= ~1;
-        final int bandPix = bandRows * W;
-        final float[] s0 = new float[bandPix * 3];
-        final float[] s1 = new float[bandPix * 3];
-        final float[] s2 = new float[bandPix * 3];
-        final float[] s3 = new float[bandPix * 3];
-        final float[] s4 = new float[bandPix * 3];
-        final float[] s5 = new float[bandPix * 3];
-        final short[] cnt = new short[bandPix];
-        final short[] ccnt = new short[bandPix];
         out.clip = new byte[W * H];
+
+        final boolean keep = keepsSamples(nf);
+        long rows = keep ? keepRows(nf) : Math.max(32, memoryBudget / ((long) W * STREAM_BYTES));
+        int bandRows = (int) Math.min(Math.min(512, rows), H + 1) & ~1;
+        res.method = method;
+        res.keptSamples = keep;
+        res.bandRows = bandRows;
+        final int bandPix = bandRows * W;
+        final float[][] acc = new float[keep ? 5 : 10][bandPix * 3];
+        final double[] sq = keep ? null : new double[bandPix * 3];
+        final short[] cnt = new short[bandPix], icnt = new short[bandPix], ccnt = new short[bandPix];
+        final short[] vals = keep ? new short[bandPix * nf * 3] : null;
+        final Rejection rej = keep ? new Rejection(nf) : null;
+        if (rej != null) {
+            rej.kHigh = kHigh;
+            rej.kLow = kLow;
+            rej.prepare(method);
+        }
+        // capture times about their mean, for linear-fit clipping
+        final float[] times = new float[nf];
+        double tm = 0;
+        for (Plan p : plans) tm += p.t / nf;
+        for (int f = 0; f < nf; f++) times[f] = (float) (plans.get(f).t - tm);
+        final int maxNodeRows = bandRows / STEP + 3;
+        // per frame, the normalisation at the band's warp nodes (one shared array when frames go one at a time)
+        final float[][] nv = new float[keep ? nf : 1][maxNodeRows * nx * NK];
+        final float[] tgt = new float[maxNodeRows * nx * 3];
         final int covThr = Math.max(1, Math.round(coverageFraction * nf));
 
         ExecutorService io = Executors.newSingleThreadExecutor(new ThreadFactory() {
@@ -140,29 +239,44 @@ public final class SharpStacker {
             for (int b = 0; b < bands; b++) {
                 final int y0 = b * bandRows, y1 = Math.min(H, y0 + bandRows);
                 final int n = (y1 - y0) * W;
-                java.util.Arrays.fill(s0, 0, n * 3, 0f);
-                java.util.Arrays.fill(s1, 0, n * 3, 0f);
-                java.util.Arrays.fill(s2, 0, n * 3, NEG);
-                java.util.Arrays.fill(s3, 0, n * 3, NEG);
-                java.util.Arrays.fill(s4, 0, n * 3, 0f);
-                java.util.Arrays.fill(s5, 0, n * 3, 0f);
-                java.util.Arrays.fill(cnt, 0, n, (short) 0);
-                java.util.Arrays.fill(ccnt, 0, n, (short) 0);
+                final int iyA = Stats.clamp((int) ((y0 + 0.5) / STEP), 0, ny - 2);
+                final int iyB = Stats.clamp((int) ((y1 - 0.5) / STEP), 0, ny - 2) + 1;
+                targetNodes(iyA, iyB, nx, tgt);
+                if (keep) {
+                    for (int f = 0; f < nf; f++) normNodes(plans.get(f), grids[f], doubt[f], iyA, iyB, nx, tgt, nv[f]);
+                    Arrays.fill(vals, 0, n * nf * 3, Half.MISSING);
+                    for (int i = 1; i < 5; i++) Arrays.fill(acc[i], 0, n * 3, 0f);
+                } else {
+                    for (int i = 0; i < 10; i++) Arrays.fill(acc[i], 0, n * 3, i == 3 || i == 5 ? NEG : (i == 7 || i == 9 ? POS : 0f));
+                    Arrays.fill(sq, 0, n * 3, 0.0);
+                }
+                Arrays.fill(cnt, 0, n, (short) 0);
+                Arrays.fill(icnt, 0, n, (short) 0);
+                Arrays.fill(ccnt, 0, n, (short) 0);
                 for (int pass = 0; pass < 2; pass++) {
                     Future<Loaded> next = io.submit(loader(plans.get(0), grids[0], y0, y1, bufs[0]));
                     for (int f = 0; f < nf; f++) {
                         Loaded cur = await(next);
                         if (f + 1 < nf) next = io.submit(loader(plans.get(f + 1), grids[f + 1], y0, y1, bufs[(f + 1) & 1]));
                         if (cur.valid) {
-                            if (pass == 0) accumulate(cur, grids[f], plans.get(f), y0, y1, s0, s1, s2, s3, cnt, ccnt);
-                            else integrate(cur, grids[f], plans.get(f), f, y0, y1, s0, s1, s2, s3, s4, s5, res);
+                            Plan p = plans.get(f);
+                            float[] nvf = keep ? nv[f] : nv[0];
+                            if (!keep) normNodes(p, grids[f], doubt[f], iyA, iyB, nx, tgt, nvf);
+                            if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, res);
+                            else if (keep) integrateKept(cur, grids[f], p, nvf, iyA, f, nf, y0, y1, vals, acc, icnt, ccnt, res);
+                            else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, res);
+                            else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, res);
                         }
                         if (progress.cancelled()) throw new CancelledException();
                         progress.update("Stacking", ((b * 2 + pass) + (f + 1f) / nf) / (bands * 2f));
                     }
-                    if (pass == 0) limits(n, s0, s1, s2, s3, cnt);
+                    if (pass == 0) {
+                        if (keep) reject(nv, grids, iyA, ny, nx, times, nf, y0, y1, vals, cnt, acc[0], tgt, rej, res);
+                        else limits(n, y0, acc, sq, icnt);
+                    }
                 }
-                finish(y0, y1, s0, s1, s2, s3, s4, s5, cnt, ccnt, covThr, out, res);
+                if (keep) finish(y0, y1, acc[1], acc[2], acc[3], acc[4], acc[0], false, cnt, icnt, ccnt, covThr, out, res);
+                else finish(y0, y1, acc[3], acc[4], acc[5], acc[0], acc[6], true, cnt, icnt, ccnt, covThr, out, res);
             }
         } finally {
             io.shutdownNow();
@@ -228,32 +342,163 @@ public final class SharpStacker {
         };
     }
 
+    // ------------------------------------------------------------------------------------------------
+    // Normalisation at the warp nodes
+    // ------------------------------------------------------------------------------------------------
+
+    /** The target background at the warp nodes of node rows [iyA, iyB]: [((iy - iyA) * nx + ix) * 3 + c]. */
+    private void targetNodes(int iyA, int iyB, int nx, float[] tgt) {
+        for (int iy = iyA; iy <= iyB; iy++) {
+            for (int ix = 0; ix < nx; ix++) {
+                int o = ((iy - iyA) * nx + ix) * 3;
+                for (int c = 0; c < 3; c++) tgt[o + c] = target != null ? target.level(c, ix * STEP, iy * STEP) : 0f;
+            }
+        }
+    }
+
+    /**
+     * A frame's normalisation at the warp nodes of node rows [iyA, iyB]: per node the scale, the weight, the
+     * offset per channel (normalised = value * scale + offset) and the noise per channel after normalisation.
+     * Scale and cut come from the transparency interpolated to the node, so the frame is left out right up to
+     * where its cloud thins below {@link #minTransparency}, and scaled by 1 / transparency where it is used;
+     * the weight is the inverse of its noise after scaling, relative to the target's, at most 4. Last, 1 where
+     * the frame's samples are only judged against the others' limits ({@link #doubtful}).
+     */
+    private void normNodes(Plan p, WarpGrid g, byte[] doubt, int iyA, int iyB, int nx, float[] tgt, float[] a) {
+        boolean match = p.background != null && target != null;
+        for (int iy = iyA; iy <= iyB; iy++) {
+            for (int ix = 0; ix < nx; ix++) {
+                int k = iy * nx + ix;
+                double X = ix * STEP, Y = iy * STEP;
+                float mx = g.mx[k], my = g.my[k];
+                boolean on = mx > -1e5f && my > -1e5f;
+                float tr = p.transparency != null ? p.transparency.at(X, Y) : 1f;
+                float tc = Stats.clamp(tr, minTransparency, MAX_TRANSPARENCY);
+                float sc = 1f / tc;
+                float r = sc;
+                if (match && on) {
+                    float sf = p.background.sigma(1, mx, my), st = target.sigma(1, X, Y);
+                    if (sf > 0 && st > 0) r = sf / (tc * st);
+                }
+                int o = ((iy - iyA) * nx + ix) * NK;
+                int to = ((iy - iyA) * nx + ix) * 3;
+                a[o] = sc;
+                // the weight before the cut, which each pixel makes from the transparency interpolated to it
+                a[o + 1] = p.weight * Math.min(4f, 1f / (r * r));
+                a[o + K_T] = tr;
+                a[o + K_DOUBT] = doubt != null ? doubt[k] : 0f;
+                for (int c = 0; c < 3; c++) {
+                    float bg = 0f, sig = 1f;
+                    if (p.background != null && on) {
+                        bg = p.background.level(c, mx, my);
+                        sig = p.background.sigma(c, mx, my);
+                    }
+                    a[o + K_OFF + c] = match ? tgt[to + c] - bg * sc : 0f;
+                    a[o + K_NOISE + c] = Math.max(1e-3f, sc * sig);
+                }
+            }
+        }
+    }
+
+    /**
+     * Per frame and warp node, 1 where the frame is used close to a region that cloud cut it out of. Its
+     * background and scale there are interpolated across the cloud's edge, which can be much sharper than
+     * the regions, so its samples there may be off by more than the noise; in a run where most frames have
+     * the edge, they would drag the rejection's centre with them. So where at least
+     * {@link Rejection#MIN_TRUSTED} frames are clear all around, those set the limits and the others are only
+     * judged against them. Null for a frame without such nodes.
+     */
+    private byte[][] doubtful(List<Plan> plans, int nx, int ny) {
+        int nf = plans.size(), nodes = nx * ny;
+        byte[][] d = new byte[nf][];
+        int[] clear = new int[nodes];
+        for (int f = 0; f < nf; f++) {
+            LocalWeights tr = plans.get(f).transparency;
+            for (int k = 0; k < nodes; k++) {
+                if (tr == null || edgeMin(tr, (k % nx) * STEP, (k / nx) * STEP) >= minTransparency) {
+                    clear[k]++;
+                    continue;
+                }
+                if (d[f] == null) d[f] = new byte[nodes];
+                d[f][k] = 1;
+            }
+        }
+        for (int f = 0; f < nf; f++) {
+            if (d[f] == null) continue;
+            boolean any = false;
+            for (int k = 0; k < nodes; k++) {
+                if (clear[k] < Rejection.MIN_TRUSTED) d[f][k] = 0;
+                any |= d[f][k] != 0;
+            }
+            if (!any) d[f] = null;
+        }
+        return d;
+    }
+
+    /**
+     * The least transparency among the regions interpolated between anywhere within a node step of (X, Y),
+     * so that a pixel between two nodes is doubtful when its own interpolation reaches a cut region.
+     */
+    private static float edgeMin(LocalWeights tr, double X, double Y) {
+        float m = Float.MAX_VALUE;
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++) m = Math.min(m, tr.minAt(X + dx * STEP, Y + dy * STEP));
+        return m;
+    }
+
+    /** Node values for continuous output row yc, interpolated between the node rows like {@link WarpGrid#row}. */
+    private static void normRow(float[] a, int iyA, int ny, int nx, double yc, float[] out) {
+        double gy = yc / STEP;
+        int iy = (int) gy;
+        if (iy > ny - 2) iy = ny - 2;
+        if (iy < 0) iy = 0;
+        float fy = (float) (gy - iy);
+        int r0 = (iy - iyA) * nx * NK, r1 = r0 + nx * NK;
+        for (int i = 0; i < nx * NK; i++) out[i] = a[r0 + i] + (a[r1 + i] - a[r0 + i]) * fy;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Sampling
+    // ------------------------------------------------------------------------------------------------
+
     /**
      * Bilinear R, G, B of the unit at frame position (mx, my) into rgb[0..2] (green from both green planes).
      * Returns true if one of the samples used is at or above its clip threshold ({@code thr}, may be null).
-     * {@code t} is scratch (2 floats).
+     * {@code nz} (may be null) gets each channel's noise relative to one photosite's ({@link #noiseFactors}).
+     * {@code t} is scratch (3 floats).
      */
-    private boolean sampleRgb(float[] d, int rs, float mx, float my, float[] t, float[] rgb, float[] thr) {
+    private boolean sampleRgb(float[] d, int rs, float mx, float my, float[] t, float[] rgb, float[] thr, float[] nz) {
         boolean clip = false;
         bilinear(d, rs, pR, mx, my, t);
         rgb[0] = t[0];
+        float vr = t[2];
         if (thr != null && t[1] >= thr[pR]) clip = true;
         bilinear(d, rs, pG1, mx, my, t);
-        float g = t[0];
+        float g = t[0], vg = t[2];
         if (thr != null && t[1] >= thr[pG1]) clip = true;
         if (pG2 != pG1) {
             bilinear(d, rs, pG2, mx, my, t);
             g = 0.5f * (g + t[0]);
+            vg = 0.25f * (vg + t[2]);
             if (thr != null && t[1] >= thr[pG2]) clip = true;
         }
         rgb[1] = g;
         bilinear(d, rs, pB, mx, my, t);
         rgb[2] = t[0];
         if (thr != null && t[1] >= thr[pB]) clip = true;
+        if (nz != null) {
+            nz[0] = (float) Math.sqrt(vr);
+            nz[1] = (float) Math.sqrt(vg);
+            nz[2] = (float) Math.sqrt(t[2]);
+        }
         return clip;
     }
 
-    /** Bilinear value of plane p at (mx, my) into t[0], the largest of its four samples into t[1]. */
+    /**
+     * Bilinear value of plane p at (mx, my) into t[0], the largest of its four samples into t[1], and the
+     * variance of the interpolated value relative to one sample's into t[2]: interpolation averages
+     * neighbouring photosites, so a value between them is less noisy than one at a photosite.
+     */
     private void bilinear(float[] d, int rs, int p, float mx, float my, float[] t) {
         int ox = p & 1, oy = p >> 1;
         float fx = (mx - 0.5f - ox) * 0.5f, fy = (my - 0.5f - oy) * 0.5f;
@@ -263,6 +508,29 @@ public final class SharpStacker {
         float d00 = d[i], d01 = d[i + 2], d10 = d[i + 2 * W], d11 = d[i + 2 * W + 2];
         t[0] = (1f - ay) * (d00 + ax * (d01 - d00)) + ay * (d10 + ax * (d11 - d10));
         t[1] = Math.max(Math.max(d00, d01), Math.max(d10, d11));
+        t[2] = interpVariance(ax) * interpVariance(ay);
+    }
+
+    /** Variance of linear interpolation at fraction a between two independent samples, relative to one: (1-a)^2 + a^2. */
+    private static float interpVariance(float a) {
+        return 1f - 2f * a * (1f - a);
+    }
+
+    /**
+     * Each channel's noise at frame position (mx, my) relative to one photosite's, as {@link #sampleRgb} gives
+     * it in {@code nz}, without sampling.
+     */
+    private void noiseFactors(float mx, float my, float[] nz) {
+        float vr = planeVariance(pR, mx, my), vg = planeVariance(pG1, mx, my);
+        if (pG2 != pG1) vg = 0.25f * (vg + planeVariance(pG2, mx, my));
+        nz[0] = (float) Math.sqrt(vr);
+        nz[1] = (float) Math.sqrt(vg);
+        nz[2] = (float) Math.sqrt(planeVariance(pB, mx, my));
+    }
+
+    private static float planeVariance(int p, float mx, float my) {
+        float fx = (mx - 0.5f - (p & 1)) * 0.5f, fy = (my - 0.5f - (p >> 1)) * 0.5f;
+        return interpVariance(fx - (float) Math.floor(fx)) * interpVariance(fy - (float) Math.floor(fy));
     }
 
     /**
@@ -306,159 +574,536 @@ public final class SharpStacker {
         return t;
     }
 
-    /** Pass A: Welford mean / M2 and the two largest values per pixel and channel. */
-    private void accumulate(final Loaded cur, final WarpGrid grid, final Plan plan, final int y0, final int y1,
-                            final float[] s0, final float[] s1, final float[] s2, final float[] s3, final short[] cnt,
-                            final short[] ccnt) {
-        final float[] thr = clipThresholds(plan);
+    // ------------------------------------------------------------------------------------------------
+    // Keeping every sample
+    // ------------------------------------------------------------------------------------------------
+
+    /** Pass A: every frame's normalised sample of every pixel, as half floats [pixel][frame][channel]. */
+    private void collect(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int nf,
+                         final int y0, final int y1, final short[] vals, final short[] cnt, final Result res) {
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
-                float[] rx = new float[grid.nx], ry = new float[grid.nx];
-                float[] st = new float[2], rgb = new float[3];
+                float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
+                float[] st = new float[3], rgb = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
+                long smp = 0;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
+                    normRow(nvf, iyA, grid.ny, grid.nx, y + 0.5, nr);
                     for (int ix = 0; ix < grid.nx - 1; ix++) {
                         int xa = ix * STEP;
                         if (xa >= W) break;
                         int xb = Math.min(W, xa + STEP);
                         float ax = rx[ix], ay = ry[ix];
                         float dx = (rx[ix + 1] - ax) / STEP, dy = (ry[ix + 1] - ay) / STEP;
+                        int q = ix * NK;
+                        float sc0 = nr[q], dsc = (nr[q + NK] - sc0) / STEP;
+                        float or0 = nr[q + K_OFF], dor = (nr[q + NK + K_OFF] - or0) / STEP;
+                        float og0 = nr[q + K_OFF + 1], dog = (nr[q + NK + K_OFF + 1] - og0) / STEP;
+                        float ob0 = nr[q + K_OFF + 2], dob = (nr[q + NK + K_OFF + 2] - ob0) / STEP;
                         for (int x = xa; x < xb; x++) {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
-                            boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr);
+                            sampleRgb(d, rs, mx, my, st, rgb, null, null);
+                            float sc = sc0 + dsc * t;
                             int bp = j * W + x;
-                            int c = cnt[bp] + 1;
-                            cnt[bp] = (short) c;
-                            if (clipped) ccnt[bp]++;
-                            float inv = 1f / c;
-                            int k = bp * 3;
-                            for (int ch = 0; ch < 3; ch++, k++) {
-                                float v = rgb[ch];
-                                float m = s0[k];
-                                float dd = v - m;
-                                m += dd * inv;
-                                s0[k] = m;
-                                s1[k] += dd * (v - m);
-                                if (v > s2[k]) {
-                                    s3[k] = s2[k];
-                                    s2[k] = v;
-                                } else if (v > s3[k]) {
-                                    s3[k] = v;
-                                }
-                            }
+                            cnt[bp]++;
+                            smp++;
+                            int k = (bp * nf + f) * 3;
+                            vals[k] = Half.fromFloat(rgb[0] * sc + (or0 + dor * t));
+                            vals[k + 1] = Half.fromFloat(rgb[1] * sc + (og0 + dog * t));
+                            vals[k + 2] = Half.fromFloat(rgb[2] * sc + (ob0 + dob * t));
                         }
                     }
                 }
-            }
-        });
-    }
-
-    /** Between the passes: turn the statistics into per-pixel acceptance limits (s0 = low, s1 = high). */
-    private void limits(final int n, final float[] s0, final float[] s1, final float[] s2, final float[] s3, final short[] cnt) {
-        Parallel.forRange(n, 4096, new Parallel.Range() {
-            @Override
-            public void run(int a, int b) {
-                for (int bp = a; bp < b; bp++) {
-                    int c = cnt[bp];
-                    for (int ch = 0, k = bp * 3; ch < 3; ch++, k++) {
-                        if (c < 4) {
-                            s0[k] = NEG;
-                            s1[k] = POS;
-                        } else {
-                            double mean = s0[k], m2 = s1[k];
-                            int m = c;
-                            // drop the largest value, and for 8+ samples the second largest too
-                            double x = s2[k];
-                            double mean1 = (m * mean - x) / (m - 1);
-                            m2 -= (x - mean) * (x - mean1);
-                            mean = mean1;
-                            m--;
-                            if (c >= 8) {
-                                x = s3[k];
-                                mean1 = (m * mean - x) / (m - 1);
-                                m2 -= (x - mean) * (x - mean1);
-                                mean = mean1;
-                                m--;
-                            }
-                            double sd = Math.sqrt(Math.max(m2, 0) / (m - 1)) * (1 + 1.5 / m);
-                            if (sd < sigmaFloor) sd = sigmaFloor;
-                            s0[k] = (float) (mean - kLow * sd);
-                            s1[k] = (float) (mean + kHigh * sd);
-                        }
-                        s2[k] = 0f;
-                        s3[k] = 0f;
-                    }
+                synchronized (res) {
+                    res.samples[f] += smp;
                 }
             }
         });
     }
 
     /**
-     * Pass B: for the frames inside the limits, drizzle sums (s2 = weighted values, s3 = weights) and
-     * interpolated sums (s4 = values, s5 = frame weights).
+     * Between the passes: per pixel and channel, the rejection method decides which samples to keep (the
+     * others are marked {@link Half#REJECTED}), and the plain mean of the kept ones goes to {@code centre}
+     * for pixels that end up with no weight. Samples from where a frame isn't used (weight 0, or cloud
+     * thicker than {@link #minTransparency}) take no part, unless no frame uses that pixel. Each sample's
+     * noise is its frame's there, allowing for the smoothing of the interpolation that produced it; samples
+     * from next to a cloud edge are judged against the limits of the others ({@link #doubtful}).
      */
-    private void integrate(final Loaded cur, final WarpGrid grid, final Plan plan, final int fi, final int y0, final int y1,
-                           final float[] s0, final float[] s1, final float[] s2, final float[] s3, final float[] s4,
-                           final float[] s5, final Result res) {
+    private void reject(final float[][] nv, final WarpGrid[] grids, final int iyA, final int ny, final int nx,
+                        final float[] times, final int nf, final int y0, final int y1, final short[] vals,
+                        final short[] cnt, final float[] centre, final float[] tgt, final Rejection rej, final Result res) {
+        Parallel.forRange(y1 - y0, 1, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                Rejection.Work wk = new Rejection.Work(nf);
+                float[][] nr = new float[nf][nx * NK];
+                float[][] rxs = new float[nf][nx], rys = new float[nf][nx];
+                float[] base = new float[nx * 3];
+                float[] wf = new float[nf], nzf = new float[nf * 3], nz = new float[3];
+                boolean[] trf = new boolean[nf];
+                int[] idx = new int[nf];
+                long[] rejF = new long[nf];
+                long edge = 0, edgeRej = 0;
+                for (int j = j0; j < j1; j++) {
+                    int y = y0 + j;
+                    double yc = y + 0.5;
+                    for (int f = 0; f < nf; f++) {
+                        normRow(nv[f], iyA, ny, nx, yc, nr[f]);
+                        grids[f].row(yc, rxs[f], rys[f]);
+                    }
+                    targetRow(tgt, iyA, ny, nx, yc, base);
+                    for (int x = 0; x < W; x++) {
+                        int bp = j * W + x;
+                        int k3 = bp * 3;
+                        if (cnt[bp] == 0) {
+                            centre[k3] = centre[k3 + 1] = centre[k3 + 2] = 0f;
+                            continue;
+                        }
+                        int ix = x / STEP;
+                        float t = x + 0.5f - ix * STEP;
+                        int q = ix * NK;
+                        int kv = bp * nf * 3;
+                        boolean anyW = false;
+                        for (int f = 0; f < nf; f++) {
+                            if (vals[kv + f * 3 + 1] == Half.MISSING) {
+                                wf[f] = Float.NaN;
+                                continue;
+                            }
+                            float[] a = nr[f];
+                            float w = a[q + 1] + (a[q + NK + 1] - a[q + 1]) / STEP * t;
+                            float tr = a[q + K_T] + (a[q + NK + K_T] - a[q + K_T]) / STEP * t;
+                            if (tr < minTransparency) w = 0f;
+                            wf[f] = w;
+                            trf[f] = a[q + K_DOUBT] + (a[q + NK + K_DOUBT] - a[q + K_DOUBT]) / STEP * t < 0.5f;
+                            if (w > 0) anyW = true;
+                            float[] rx = rxs[f], ry = rys[f];
+                            float mx = rx[ix] + (rx[ix + 1] - rx[ix]) / STEP * t, my = ry[ix] + (ry[ix + 1] - ry[ix]) / STEP * t;
+                            noiseFactors(mx, my, nz);
+                            nzf[3 * f] = nz[0];
+                            nzf[3 * f + 1] = nz[1];
+                            nzf[3 * f + 2] = nz[2];
+                        }
+                        for (int c = 0; c < 3; c++) {
+                            int n = 0;
+                            for (int f = 0; f < nf; f++) {
+                                float w = wf[f];
+                                if (w != w || (anyW && !(w > 0))) continue;
+                                float[] a = nr[f];
+                                float s0 = a[q + K_NOISE + c], ds = (a[q + NK + K_NOISE + c] - s0) / STEP;
+                                wk.v[n] = Half.toFloat(vals[kv + f * 3 + c]);
+                                wk.s[n] = Math.max(1e-3f, (s0 + ds * t) * nzf[3 * f + c]);
+                                wk.t[n] = times[f];
+                                wk.trusted[n] = trf[f];
+                                idx[n] = f;
+                                n++;
+                            }
+                            float b0 = base[ix * 3 + c];
+                            float bl = b0 + (base[(ix + 1) * 3 + c] - b0) / STEP * t;
+                            if (n > 0) {
+                                rej.run(method, n, bl, wk);
+                                edge += wk.judged;
+                                edgeRej += wk.judgedRejected;
+                            }
+                            double sum = 0;
+                            int m = 0;
+                            for (int i = 0; i < n; i++) {
+                                if (wk.keep[i]) {
+                                    sum += wk.v[i];
+                                    m++;
+                                } else {
+                                    vals[kv + idx[i] * 3 + c] = Half.REJECTED;
+                                    rejF[idx[i]]++;
+                                }
+                            }
+                            centre[k3 + c] = m > 0 ? (float) (sum / m) : 0f;
+                        }
+                    }
+                }
+                synchronized (res) {
+                    for (int f = 0; f < nf; f++) res.rejected[f] += rejF[f];
+                    res.edgeSamples += edge;
+                    res.edgeRejected += edgeRej;
+                }
+            }
+        });
+    }
+
+    /** The target background interpolated to output row yc at the warp nodes: out[ix * 3 + c]. */
+    private static void targetRow(float[] tgt, int iyA, int ny, int nx, double yc, float[] out) {
+        double gy = yc / STEP;
+        int iy = (int) gy;
+        if (iy > ny - 2) iy = ny - 2;
+        if (iy < 0) iy = 0;
+        float fy = (float) (gy - iy);
+        int r0 = (iy - iyA) * nx * 3, r1 = r0 + nx * 3;
+        for (int i = 0; i < nx * 3; i++) out[i] = tgt[r0 + i] + (tgt[r1 + i] - tgt[r0 + i]) * fy;
+    }
+
+    /**
+     * Pass B with kept samples: for the samples not rejected, drizzle sums (s2 = weighted values, s3 =
+     * weights) and interpolated sums (s4 = values, s5 = frame weights) of the normalised values.
+     */
+    private void integrateKept(final Loaded cur, final WarpGrid grid, final Plan plan, final float[] nvf, final int iyA,
+                               final int f, final int nf, final int y0, final int y1, final short[] vals, final float[][] acc,
+                               final short[] icnt, final short[] ccnt, final Result res) {
+        final float[] thr = clipThresholds(plan);
+        final float[] s2 = acc[1], s3 = acc[2], s4 = acc[3], s5 = acc[4];
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
-                float[] rx = new float[grid.nx], ry = new float[grid.nx];
-                float[] st = new float[2], rgb = new float[3], dz = new float[6];
-                float[] lw = plan.local != null ? new float[W] : null;
+                float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
+                float[] st = new float[3], rgb = new float[3], dz = new float[6];
+                float[] o0 = new float[3], dO = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
-                long rej = 0, smp = 0;
+                long inc = 0;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
-                    if (lw != null) plan.local.row(y, lw);
+                    normRow(nvf, iyA, grid.ny, grid.nx, y + 0.5, nr);
                     for (int ix = 0; ix < grid.nx - 1; ix++) {
                         int xa = ix * STEP;
                         if (xa >= W) break;
                         int xb = Math.min(W, xa + STEP);
                         float ax = rx[ix], ay = ry[ix];
                         float dx = (rx[ix + 1] - ax) / STEP, dy = (ry[ix + 1] - ay) / STEP;
+                        int q = ix * NK;
+                        float sc0 = nr[q], dsc = (nr[q + NK] - sc0) / STEP;
+                        float w0 = nr[q + 1], dw = (nr[q + NK + 1] - w0) / STEP;
+                        float tr0 = nr[q + K_T], dtr = (nr[q + NK + K_T] - tr0) / STEP;
+                        for (int c = 0; c < 3; c++) {
+                            o0[c] = nr[q + K_OFF + c];
+                            dO[c] = (nr[q + NK + K_OFF + c] - o0[c]) / STEP;
+                        }
                         for (int x = xa; x < xb; x++) {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
-                            sampleRgb(d, rs, mx, my, st, rgb, null);
+                            float w = tr0 + dtr * t < minTransparency ? 0f : w0 + dw * t;
+                            if (!(w > 0)) continue;
+                            int bp = j * W + x;
+                            int kv = (bp * nf + f) * 3;
+                            if (vals[kv + 1] == Half.MISSING) continue;
+                            boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr, null);
                             drizzleRgb(d, rs, mx, my, st, dz);
-                            float wt = lw != null ? plan.weight * lw[x] : plan.weight;
-                            int k = (j * W + x) * 3;
-                            smp++;
-                            for (int ch = 0; ch < 3; ch++, k++) {
-                                float v = rgb[ch];
-                                if (v < s0[k] || v > s1[k]) {
-                                    rej++;
-                                    continue;
-                                }
-                                s2[k] += wt * dz[ch];
-                                s3[k] += wt * dz[ch + 3];
-                                s4[k] += wt * v;
-                                s5[k] += wt;
+                            float sc = sc0 + dsc * t;
+                            boolean any = false;
+                            for (int c = 0, k = bp * 3; c < 3; c++, k++) {
+                                if (vals[kv + c] == Half.REJECTED) continue;
+                                float o = o0[c] + dO[c] * t;
+                                s2[k] += w * (dz[c] * sc + o * dz[c + 3]);
+                                s3[k] += w * dz[c + 3];
+                                s4[k] += w * (rgb[c] * sc + o);
+                                s5[k] += w;
+                                any = true;
+                            }
+                            if (any) {
+                                icnt[bp]++;
+                                if (clipped) ccnt[bp]++;
+                                inc++;
                             }
                         }
                     }
                 }
                 synchronized (res) {
-                    res.rejected[fi] += rej;
-                    res.samples[fi] += smp;
+                    res.included[f] += inc;
                 }
             }
         });
     }
 
-    private void finish(final int y0, final int y1, final float[] s0, final float[] s1, final float[] s2, final float[] s3,
-                        final float[] s4, final float[] s5, final short[] cnt, final short[] ccnt, final int covThr,
-                        final RgbImage out, final Result res) {
+    // ------------------------------------------------------------------------------------------------
+    // One-pass sigma clipping
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * Pass A without kept samples: per pixel and channel the noise-weighted mean and spread of the normalised
+     * samples (West's weighted form of Welford's method: acc[0] weights, acc[1] mean, sq the sum of weighted
+     * squares, in double so that a very bright outlier can be taken out again exactly), and the two largest
+     * and the two smallest values with their noise (acc[3], acc[4] and acc[5], acc[6]; acc[7], acc[8] and
+     * acc[9], acc[2]). Samples from next to a cloud edge ({@link #doubtful}) are left out here and only judged
+     * in pass B.
+     */
+    private void gather(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int y0,
+                        final int y1, final float[][] acc, final double[] sq, final short[] cnt, final short[] icnt,
+                        final Result res) {
+        final float[] sW = acc[0], sM = acc[1], t1v = acc[3], t1s = acc[4], t2v = acc[5], t2s = acc[6];
+        final float[] b1v = acc[7], b1s = acc[8], b2v = acc[9], b2s = acc[2];
+        Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
+                float[] st = new float[3], rgb = new float[3], nz = new float[3];
+                float[] o0 = new float[3], dO = new float[3], n0 = new float[3], dN = new float[3];
+                float[] d = cur.data;
+                int rs = cur.rs;
+                long smp = 0;
+                for (int j = j0; j < j1; j++) {
+                    int y = y0 + j;
+                    grid.row(y + 0.5, rx, ry);
+                    normRow(nvf, iyA, grid.ny, grid.nx, y + 0.5, nr);
+                    for (int ix = 0; ix < grid.nx - 1; ix++) {
+                        int xa = ix * STEP;
+                        if (xa >= W) break;
+                        int xb = Math.min(W, xa + STEP);
+                        float ax = rx[ix], ay = ry[ix];
+                        float dx = (rx[ix + 1] - ax) / STEP, dy = (ry[ix + 1] - ay) / STEP;
+                        int q = ix * NK;
+                        float sc0 = nr[q], dsc = (nr[q + NK] - sc0) / STEP;
+                        float w0 = nr[q + 1], dw = (nr[q + NK + 1] - w0) / STEP;
+                        float tr0 = nr[q + K_T], dtr = (nr[q + NK + K_T] - tr0) / STEP;
+                        float du0 = nr[q + K_DOUBT], ddu = (nr[q + NK + K_DOUBT] - du0) / STEP;
+                        for (int c = 0; c < 3; c++) {
+                            o0[c] = nr[q + K_OFF + c];
+                            dO[c] = (nr[q + NK + K_OFF + c] - o0[c]) / STEP;
+                            n0[c] = nr[q + K_NOISE + c];
+                            dN[c] = (nr[q + NK + K_NOISE + c] - n0[c]) / STEP;
+                        }
+                        for (int x = xa; x < xb; x++) {
+                            float t = x + 0.5f - xa;
+                            float mx = ax + dx * t, my = ay + dy * t;
+                            if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
+                            int bp = j * W + x;
+                            cnt[bp]++;
+                            smp++;
+                            float w = tr0 + dtr * t < minTransparency ? 0f : w0 + dw * t;
+                            if (!(w > 0) || du0 + ddu * t >= 0.5f) continue;
+                            sampleRgb(d, rs, mx, my, st, rgb, null, nz);
+                            float sc = sc0 + dsc * t;
+                            icnt[bp]++;
+                            for (int c = 0, k = bp * 3; c < 3; c++, k++) {
+                                float v = rgb[c] * sc + (o0[c] + dO[c] * t);
+                                float s = Math.max(1e-3f, (n0[c] + dN[c] * t) * nz[c]);
+                                float ws = 1f / (s * s);
+                                float wn = sW[k] + ws;
+                                float dl = v - sM[k];
+                                float r = dl * ws / wn;
+                                sM[k] += r;
+                                sq[k] += (double) sW[k] * dl * r;
+                                sW[k] = wn;
+                                if (v > t1v[k]) {
+                                    t2v[k] = t1v[k];
+                                    t2s[k] = t1s[k];
+                                    t1v[k] = v;
+                                    t1s[k] = s;
+                                } else if (v > t2v[k]) {
+                                    t2v[k] = v;
+                                    t2s[k] = s;
+                                }
+                                if (v < b1v[k]) {
+                                    b2v[k] = b1v[k];
+                                    b2s[k] = b1s[k];
+                                    b1v[k] = v;
+                                    b1s[k] = s;
+                                } else if (v < b2v[k]) {
+                                    b2v[k] = v;
+                                    b2s[k] = s;
+                                }
+                            }
+                        }
+                    }
+                }
+                synchronized (res) {
+                    res.samples[f] += smp;
+                }
+            }
+        });
+    }
+
+    /**
+     * Between the passes: the centre (acc[1]) and the spread in units of each sample's noise (acc[2]) from
+     * the statistics without the largest and the smallest value (the two largest and two smallest from
+     * {@link #TRIM2_FROM} samples), the spread corrected for that trimming. Up to
+     * {@link Rejection#PERCENTILE_MAX} samples say too little about their spread, so there acc[2] holds minus
+     * percentile clipping's starlight allowance instead, as when keeping the samples. The other arrays are
+     * cleared for pass B's sums and {@code icnt} for its count.
+     */
+    private void limits(final int n, final int y0, final float[][] acc, final double[] sq, final short[] icnt) {
+        final float[] sW = acc[0], sM = acc[1], sd = acc[2], t1v = acc[3], t1s = acc[4], t2v = acc[5], t2s = acc[6];
+        final float[] b1v = acc[7], b1s = acc[8], b2v = acc[9], b2s = acc[2];
+        Parallel.forRange(n, 4096, new Parallel.Range() {
+            @Override
+            public void run(int a, int b) {
+                double[] xs = new double[4], ss4 = new double[4];
+                for (int bp = a; bp < b; bp++) {
+                    int m0 = icnt[bp];
+                    for (int c = 0, k = bp * 3; c < 3; c++, k++) {
+                        float centre, spread;
+                        if (m0 < 4) {
+                            centre = sM[k];
+                            spread = Float.POSITIVE_INFINITY;
+                        } else {
+                            int trim = m0 >= TRIM2_FROM ? 2 : 1;
+                            xs[0] = t1v[k];
+                            ss4[0] = t1s[k];
+                            xs[1] = b1v[k];
+                            ss4[1] = b1s[k];
+                            xs[2] = t2v[k];
+                            ss4[2] = t2s[k];
+                            xs[3] = b2v[k];
+                            ss4[3] = b2s[k];
+                            double w = sW[k], mean = sM[k], ss = sq[k];
+                            int m = m0;
+                            for (int drop = 0; drop < 2 * trim; drop++) {
+                                double x = xs[drop], s = ss4[drop];
+                                double ws = 1.0 / (s * s);
+                                double w1 = w - ws;
+                                if (!(w1 > 1e-6 * w)) break;
+                                double mean1 = (w * mean - ws * x) / w1;
+                                ss -= ws * (x - mean) * (x - mean1);
+                                w = w1;
+                                mean = mean1;
+                                m--;
+                            }
+                            centre = (float) mean;
+                            if (m0 <= Rejection.PERCENTILE_MAX) {
+                                float base = target != null ? target.level(c, bp % W + 0.5, y0 + bp / W + 0.5) : 0f;
+                                spread = -Math.max(1e-6f, (centre - base) * Rejection.PERCENTILE_FRACTION);
+                            } else {
+                                double var = Math.max(ss, 0) / (m - 1) / trimVariance(m0, trim);
+                                spread = (float) Math.max(sigmaFloor, Math.sqrt(var));
+                            }
+                        }
+                        sM[k] = centre;
+                        sd[k] = spread;
+                        sW[k] = 0f;
+                        t1v[k] = 0f;
+                        t1s[k] = 0f;
+                        t2v[k] = 0f;
+                        t2s[k] = 0f;
+                        sq[k] = 0.0;
+                    }
+                    icnt[bp] = 0;
+                }
+            }
+        });
+    }
+
+    /** Expected variance of the m - 2k middle values of m normal values, relative to the whole sample's. */
+    static double trimVariance(int m, int k) {
+        float[] tab = k == 1 ? TRIM1_VAR : TRIM2_VAR;
+        int first = 2 * k + 2;
+        if (m < first) return tab[0];
+        if (m - first < tab.length) return tab[m - first];
+        // beyond the table: the shortfall shrinks about as a power of m
+        double last = tab[tab.length - 1];
+        return 1 - (1 - last) * Math.pow(64.0 / m, k == 1 ? 0.75 : 0.7);
+    }
+
+    /**
+     * Pass B with one-pass clipping: samples within centre - kLow sd s .. centre + kHigh sd s (s: the sample's
+     * noise; for few samples, percentile clipping's limits, see {@link #limits}) go into the drizzle sums (acc[3] weighted values, acc[4] weights) and the interpolated sums
+     * (acc[5] values, acc[0] frame weights); acc[6] collects the plain sum of every sample, for pixels that
+     * end up with no weight.
+     */
+    private void integrateClipped(final Loaded cur, final WarpGrid grid, final Plan plan, final float[] nvf, final int iyA,
+                                  final int f, final int y0, final int y1, final float[][] acc, final short[] icnt,
+                                  final short[] ccnt, final Result res) {
+        final float[] thr = clipThresholds(plan);
+        final float[] cen = acc[1], sd = acc[2], s2 = acc[3], s3 = acc[4], s4 = acc[5], s5 = acc[0], fb = acc[6];
+        Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
+                float[] st = new float[3], rgb = new float[3], dz = new float[6], nz = new float[3];
+                float[] o0 = new float[3], dO = new float[3], n0 = new float[3], dN = new float[3];
+                float[] d = cur.data;
+                int rs = cur.rs;
+                long rej = 0, inc = 0, edge = 0, edgeRej = 0;
+                for (int j = j0; j < j1; j++) {
+                    int y = y0 + j;
+                    grid.row(y + 0.5, rx, ry);
+                    normRow(nvf, iyA, grid.ny, grid.nx, y + 0.5, nr);
+                    for (int ix = 0; ix < grid.nx - 1; ix++) {
+                        int xa = ix * STEP;
+                        if (xa >= W) break;
+                        int xb = Math.min(W, xa + STEP);
+                        float ax = rx[ix], ay = ry[ix];
+                        float dx = (rx[ix + 1] - ax) / STEP, dy = (ry[ix + 1] - ay) / STEP;
+                        int q = ix * NK;
+                        float sc0 = nr[q], dsc = (nr[q + NK] - sc0) / STEP;
+                        float w0 = nr[q + 1], dw = (nr[q + NK + 1] - w0) / STEP;
+                        float tr0 = nr[q + K_T], dtr = (nr[q + NK + K_T] - tr0) / STEP;
+                        float du0 = nr[q + K_DOUBT], ddu = (nr[q + NK + K_DOUBT] - du0) / STEP;
+                        for (int c = 0; c < 3; c++) {
+                            o0[c] = nr[q + K_OFF + c];
+                            dO[c] = (nr[q + NK + K_OFF + c] - o0[c]) / STEP;
+                            n0[c] = nr[q + K_NOISE + c];
+                            dN[c] = (nr[q + NK + K_NOISE + c] - n0[c]) / STEP;
+                        }
+                        for (int x = xa; x < xb; x++) {
+                            float t = x + 0.5f - xa;
+                            float mx = ax + dx * t, my = ay + dy * t;
+                            if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
+                            boolean edgeSample = du0 + ddu * t >= 0.5f;
+                            boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr, nz);
+                            float sc = sc0 + dsc * t;
+                            float w = tr0 + dtr * t < minTransparency ? 0f : w0 + dw * t;
+                            int bp = j * W + x;
+                            if (!(w > 0)) {
+                                for (int c = 0, k = bp * 3; c < 3; c++, k++) fb[k] += rgb[c] * sc + (o0[c] + dO[c] * t);
+                                continue;
+                            }
+                            drizzleRgb(d, rs, mx, my, st, dz);
+                            boolean any = false;
+                            for (int c = 0, k = bp * 3; c < 3; c++, k++) {
+                                float o = o0[c] + dO[c] * t;
+                                float v = rgb[c] * sc + o;
+                                fb[k] += v;
+                                float s = Math.max(1e-3f, (n0[c] + dN[c] * t) * nz[c]);
+                                float sk = sd[k], dv = v - cen[k];
+                                boolean out;
+                                if (sk >= 0) out = dv > kHigh * sk * s || -dv > kLow * sk * s;
+                                else out = dv * dv > kHigh * kHigh * s * s + sk * sk && dv > 0
+                                        || dv * dv > kLow * kLow * s * s + sk * sk && dv < 0;
+                                if (edgeSample) {
+                                    edge++;
+                                    if (out) edgeRej++;
+                                }
+                                if (out) {
+                                    rej++;
+                                    continue;
+                                }
+                                s2[k] += w * (dz[c] * sc + o * dz[c + 3]);
+                                s3[k] += w * dz[c + 3];
+                                s4[k] += w * v;
+                                s5[k] += w;
+                                any = true;
+                            }
+                            if (any) {
+                                icnt[bp]++;
+                                if (clipped) ccnt[bp]++;
+                                inc++;
+                            }
+                        }
+                    }
+                }
+                synchronized (res) {
+                    res.rejected[f] += rej;
+                    res.included[f] += inc;
+                    res.edgeSamples += edge;
+                    res.edgeRejected += edgeRej;
+                }
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * The weighted mean of the interpolated samples, moved toward the drizzle mean as far as there are enough
+     * drizzle samples. Pixels without weight take {@code fallback} (a mean already, or a sum over all
+     * {@code cnt} samples when {@code fallbackIsSum}).
+     */
+    private void finish(final int y0, final int y1, final float[] s2, final float[] s3, final float[] s4, final float[] s5,
+                        final float[] fallback, final boolean fallbackIsSum, final short[] cnt, final short[] icnt,
+                        final short[] ccnt, final int covThr, final RgbImage out, final Result res) {
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -467,13 +1112,13 @@ public final class SharpStacker {
                     int left = -1, right = -1;
                     for (int x = 0; x < W; x++) {
                         int bp = j * W + x;
-                        int c = cnt[bp];
+                        int c = cnt[bp], ic = icnt[bp];
                         if (c >= covThr) {
                             if (left < 0) left = x;
                             right = x + 1;
                         }
                         int o = y * W + x;
-                        out.clip[o] = c > 0 ? (byte) Math.min(255, (255 * ccnt[bp] + c - 1) / c) : 0;
+                        out.clip[o] = ic > 0 ? (byte) Math.min(255, (255 * ccnt[bp] + ic - 1) / ic) : 0;
                         for (int ch = 0, k = bp * 3; ch < 3; ch++, k++) {
                             float v;
                             if (c == 0) {
@@ -482,14 +1127,12 @@ public final class SharpStacker {
                                 v = s4[k] / s5[k];
                                 if (s3[k] > 0) {
                                     // effective number of drizzle samples ~ frames x mean drop weight
-                                    float eff = s3[k] / s5[k] * c;
+                                    float eff = s3[k] / s5[k] * ic;
                                     float a = Math.min(1f, eff * 0.5f);
                                     v += a * (s2[k] / s3[k] - v);
                                 }
-                            } else if (s0[k] > NEG) {
-                                v = s0[k] + kLow * (s1[k] - s0[k]) / (kHigh + kLow);
                             } else {
-                                v = 0f;
+                                v = fallbackIsSum ? fallback[k] / c : fallback[k];
                             }
                             out.channel(ch)[o] = v;
                         }
