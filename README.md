@@ -24,16 +24,28 @@ and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws ea
 
 ## Install it on your phone
 
-You only need the file `NightSky.apk`.
+You only need the file `NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
+[`dist/NightSky.apk`](dist/NightSky.apk).
 
-### Easiest: straight on the phone
+### Straight on the phone
 
-1. Open `NightSky.apk` on the phone (download it from the chat or from this repository's files).
-2. If the phone asks, tap **Settings** and turn on **Allow from this source**, then go back.
-3. Tap **Install**. If Play Protect warns you about an unknown app, tap **More details**, then **Install anyway**.
-4. Open **Night Sky** from your app drawer.
+1. Download `NightSky.apk` on the phone: tap it in the Claude chat, or open
+   https://github.com/brandonjw87/night-sky-camera/blob/main/dist/NightSky.apk in the phone's browser (signed in
+   to GitHub) and tap the download button.
+2. Open the downloaded file (tap the download notification, or open the **Files** app, then **Downloads**).
+3. If the phone asks, tap **Settings** and turn on **Allow from this source**, then go back.
+4. Tap **Install**. If Play Protect warns you about an unknown app, tap **More details**, then **Install anyway**.
+5. Open **Night Sky** from your app drawer.
 
-### If the phone refuses: install over USB from Windows
+### From a Windows PC with a USB cable
+
+1. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+2. In File Explorer on the PC, open the phone, then its **Download** folder, and copy `NightSky.apk` into it.
+3. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, and carry on from step 3 above.
+
+### If the phone refuses to install it
+
+Install it with Google's USB tool instead:
 
 1. On the phone, open **Settings > About phone** and tap **Build number** seven times. It says you are now a
    developer.
@@ -51,7 +63,8 @@ You only need the file `NightSky.apk`.
 
    It prints `Success` when it's done.
 
-Updates install over the old version and keep your settings, as long as they come from the same place.
+Updates install over the old version and keep your settings, as long as they come from this repository or the
+chat.
 
 ## Taking a photo
 
