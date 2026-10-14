@@ -401,6 +401,7 @@ public final class MainActivity extends Activity {
     private void startSession() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = true;
+            askedNotifications = true; // asked together with the camera: don't ask again if it is refused
             requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS}, 1);
             return;
         }

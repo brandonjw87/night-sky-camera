@@ -211,6 +211,20 @@ public final class CaptureService extends Service implements SessionController.H
         return b.build();
     }
 
+    /**
+     * Android 15+ limits data-sync services to 6 hours a day: stop cleanly rather than be stopped. Frames already
+     * saved stay on disk, and the start screen offers to develop them.
+     */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        releaseLocks();
+        if (foreground) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            foreground = false;
+        }
+        stopSelf();
+    }
+
     @Override
     public void onDestroy() {
         releaseLocks();

@@ -101,6 +101,8 @@ final class SessionController {
     private static final int PROBE = 1, FRAME = 2;
     private static final long STILL_NS = 3_000_000_000L;
     private static final long SETTLE_MS = 1500;
+    /** A capture paused this long (phone not put back down) is finished with what it has. */
+    private static final long MAX_PAUSE_MS = 5 * 60_000L;
     /** A rotation rate above this during an exposure spoils the frame (rad/s). */
     private static final float DISTURBED_RAD_S = 0.05f;
 
@@ -241,7 +243,8 @@ final class SessionController {
         h.post(new Runnable() {
             @Override
             public void run() {
-                if (phase == Phase.DEVELOPING) {
+                if (phase == Phase.FINISHING || phase == Phase.DEVELOPING) {
+                    // stop developing but keep the frames
                     cancelDevelop = true;
                     return;
                 }
@@ -338,6 +341,10 @@ final class SessionController {
             @Override
             public void run() {
                 releaseCapture();
+                if (up != null) {
+                    up.abort(); // the units saved so far stay on disk for "Develop it"
+                    up = null;
+                }
                 thread.quitSafely();
             }
         });
@@ -353,6 +360,9 @@ final class SessionController {
         small = null;
         result = null;
         preview = null;
+        if (up != null) up.abort();
+        up = null;
+        store = null;
         settings = s;
         token++;
         resetCapture();
@@ -500,8 +510,9 @@ final class SessionController {
                     return;
                 }
                 if (!probeDone && probeSent && now - probeSentMs > 12000) {
-                    // the test frame never came back: go with the default plan
+                    // the test frame never came back: go with the default plan, and ignore it if it turns up
                     log("test frame timed out");
+                    forgetProbe();
                     probeDone = true;
                 }
                 if (countdownLeft > 0 && now >= nextBeepMs) {
@@ -533,11 +544,17 @@ final class SessionController {
                 } else {
                     awayTicks = 0;
                 }
-                if (inFlight > 0 && now - lastProgressMs > plan.frameExpNs / 1_000_000L * 2 + 15000) watchdog();
-                if (now - lastPublishMs >= 1000) publishCapture();
+                if (now - lastProgressMs > plan.frameExpNs / 1_000_000L * 2 + 15000) {
+                    // nothing for too long, also when nothing could be queued: restart, reopen, give up
+                    watchdog();
+                } else if (now - captureStartMs - pausedTotalMs > settings.durationSec * 2000L + 120000L) {
+                    finishCapture("it was taking far longer than planned");
+                }
+                if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
                 break;
             case PAUSED:
                 if (motion.faceDown() && motion.stillNs() >= STILL_NS) resume();
+                else if (now - pausedAtMs > MAX_PAUSE_MS) finishCapture("the phone was not put back down");
                 else if (now - lastPublishMs >= 1000) publishCapture();
                 break;
             default:
@@ -605,9 +622,21 @@ final class SessionController {
         return v[n / 2];
     }
 
+    private void forgetProbe() {
+        if (probe == null) return;
+        reqs.remove(probe.seq);
+        if (probe.startNs >= 0) tsToSeq.remove(probe.startNs);
+        probe = null;
+    }
+
     private void probeArrived() {
         Req r = probe;
         if (r == null || r.result == null || (Double.isNaN(probeBg) && !r.lost)) return;
+        if (phase.ordinal() >= Phase.CAPTURING.ordinal()) {
+            // too late: the capture has its plan and must not change under it
+            forgetProbe();
+            return;
+        }
         probe = null;
         reqs.remove(r.seq);
         TotalCaptureResult res = r.result;
@@ -835,17 +864,13 @@ final class SessionController {
 
         @Override
         public void onImage(Image img) {
+            // Camera2 reports the start of every capture before its image, so the timestamp names the request.
+            // Anything else is an image from an aborted or forgotten request.
             Integer seq = tsToSeq.get(img.getTimestamp());
             Req r = seq != null ? reqs.get(seq) : null;
-            if (r == null) {
-                // no start callback seen: the oldest request still waiting for its image
-                for (Req q : reqs.values()) {
-                    if (q.buf == null && !q.dropped && !q.lost && (q.kind == PROBE ? Double.isNaN(probeBg) : true)
-                            && (r == null || q.seq < r.seq)) r = q;
-                }
-                if (r == null) return;
-            }
+            if (r == null || r.buf != null || r.dropped || r.lost) return;
             if (r.kind == PROBE) {
+                if (!Double.isNaN(probeBg)) return;
                 probeBg = sampleGreen(img);
                 probeArrived();
                 return;
@@ -888,9 +913,11 @@ final class SessionController {
                 }
                 return;
             }
-            if (imageCaptured) return; // the image may still come; the result will not
+            // no result will follow, even if an image was captured: let the request go (a late image is ignored)
             reqs.remove(seq);
+            if (r.startNs >= 0) tsToSeq.remove(r.startNs);
             if (r.buf != null && up != null) up.releaseBuffer(r.buf);
+            r.buf = null;
             inFlight--;
             framesDropped++;
             log("frame " + seq + " failed");
@@ -976,6 +1003,15 @@ final class SessionController {
         @Override
         public void onError(Throwable t) {
             log("unit processing error: " + t);
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    // an aborted processor (after a re-plan) also reports here; only the current one counts
+                    if ((phase == Phase.CAPTURING || phase == Phase.PAUSED) && up != null && up.failed()) {
+                        finishCapture("processing failed");
+                    }
+                }
+            });
         }
     };
 
@@ -1010,6 +1046,7 @@ final class SessionController {
         final SensorSpec sp = spec;
         final Settings se = settings;
         up = null;
+        store = null; // the develop thread owns it now; a later cancel must not delete it
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -1036,6 +1073,10 @@ final class SessionController {
             fail("That session cannot be read: " + e.getMessage());
             return;
         }
+        output = null; // free the last result's memory before developing another
+        small = null;
+        result = null;
+        preview = null;
         resetCapture();
         settings = new Settings();
         settings.trails = "trails".equals(p.getProperty("mode"));
