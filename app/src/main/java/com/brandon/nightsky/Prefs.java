@@ -55,6 +55,15 @@ final class Prefs {
         sp.edit().putBoolean("saveDng", v).apply();
     }
 
+    /** Serve the remote viewer during sessions (local network only, with a secret link). */
+    boolean remoteViewer() {
+        return sp.getBoolean("remoteViewer", true);
+    }
+
+    void setRemoteViewer(boolean v) {
+        sp.edit().putBoolean("remoteViewer", v).apply();
+    }
+
     int countdownSec() {
         return sp.getInt("countdownSec", 5);
     }

@@ -19,6 +19,7 @@ import android.util.Size;
 import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
+import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Renderer;
@@ -43,6 +44,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * One night-sky session from start to finish:
@@ -66,6 +71,8 @@ final class SessionController {
         boolean sounds = true;
         boolean saveDng = true;
         int countdownSec = 5;
+        /** Started from the remote viewer: keep the viewer's mute setting. */
+        boolean fromViewer;
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -79,6 +86,14 @@ final class SessionController {
         int previewVersion;
         Result result;
         long version;
+        /** Plan of the current session (0 before there is one). */
+        long frameExpNs;
+        int iso;
+        /** Started from the viewer: no need to lie face-down. */
+        boolean forced;
+        boolean muted, soundsOn;
+        /** Live-frame picture for the viewer: bumped with each processed unit. */
+        int latestVersion = -1;
     }
 
     static final class Result {
@@ -100,6 +115,10 @@ final class SessionController {
 
     private static final int PROBE = 1, FRAME = 2;
     private static final long STILL_NS = 3_000_000_000L;
+    /** Stillness needed after "Start now" from the viewer (the phone need not be face-down). */
+    private static final long FORCED_STILL_NS = 1_000_000_000L;
+    /** Longest session that "+5 minutes" can build up to. */
+    private static final int MAX_DURATION_SEC = 2 * 60 * 60;
     private static final long SETTLE_MS = 1500;
     /** A capture paused this long (phone not put back down) is finished with what it has. */
     private static final long MAX_PAUSE_MS = 5 * 60_000L;
@@ -174,6 +193,14 @@ final class SessionController {
     private long captureStartMs, lastProgressMs, pausedAtMs, pausedTotalMs;
     private volatile int liveStars;
     private volatile boolean liveAligned;
+
+    // remote viewer
+    private volatile boolean forced, muted, remoteWanted;
+    private final LiveStats liveStats = new LiveStats();
+    private volatile UnitProcessor.Latest latest;
+    private volatile Renderer.Analysis liveAnalysis;
+    private volatile SensorSpec liveSpec;
+    private volatile int latestVersion = -1;
 
     // developed result, kept for brightness changes
     private PostProcessor.Output output;
@@ -351,6 +378,170 @@ final class SessionController {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // Remote viewer (called from the viewer's threads, never from the session thread)
+    // ------------------------------------------------------------------------------------------------
+
+    /** Whether a viewer may be watching: the live processor then keeps a picture of each new frame. */
+    void setRemoteWanted(final boolean on) {
+        remoteWanted = on;
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (up != null) up.setKeepLatest(on);
+                if (!on) latest = null;
+            }
+        });
+    }
+
+    /** Copies of the per-unit statistics from position {@code from} on. */
+    List<LiveStats.Unit> liveUnits(int from) {
+        return liveStats.from(from);
+    }
+
+    UnitProcessor.Latest latestFrame() {
+        return latest;
+    }
+
+    /** How the live stack is stretched (the same is used for the latest frame), or null before the first. */
+    Renderer.Analysis liveAnalysis() {
+        return liveAnalysis;
+    }
+
+    SensorSpec liveSpec() {
+        return liveSpec;
+    }
+
+    float sessionBrightness() {
+        Settings s = settings;
+        return s != null ? s.brightness : prefs.brightness();
+    }
+
+    /** Skip waiting for the phone to lie screen-down and the countdown. */
+    String remoteStartNow() {
+        return onSession(new Callable<String>() {
+            @Override
+            public String call() {
+                switch (phase) {
+                    case STARTING:
+                    case PLACE:
+                    case STEADY:
+                    case COUNTDOWN:
+                        forced = true;
+                        log("start now: asked from the viewer");
+                        if (phase == Phase.COUNTDOWN && countdownLeft > 0) {
+                            countdownLeft = 0;
+                            nextBeepMs = SystemClock.elapsedRealtime();
+                        }
+                        return "Starting as soon as the phone is still";
+                    default:
+                        return "It is not waiting to start";
+                }
+            }
+        });
+    }
+
+    String remoteStop() {
+        return onSession(new Callable<String>() {
+            @Override
+            public String call() {
+                if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
+                    finishCapture("stopped from the viewer");
+                    return "Stopped. Developing the frames taken so far.";
+                }
+                return "It is not capturing";
+            }
+        });
+    }
+
+    /** Cancels a session that has not started capturing yet. */
+    String remoteCancel() {
+        return onSession(new Callable<String>() {
+            @Override
+            public String call() {
+                if (phase.ordinal() >= Phase.STARTING.ordinal() && phase.ordinal() <= Phase.COUNTDOWN.ordinal()) {
+                    cancelAll();
+                    return "Cancelled";
+                }
+                return "Only a session that has not started can be cancelled from here";
+            }
+        });
+    }
+
+    String remoteAddTime(final int seconds) {
+        return onSession(new Callable<String>() {
+            @Override
+            public String call() {
+                if (phase != Phase.CAPTURING && phase != Phase.PAUSED) return "Time can only be added while capturing";
+                if (settings.durationSec + seconds > MAX_DURATION_SEC) {
+                    return "It is already as long as a session can be (" + MAX_DURATION_SEC / 60 + " minutes)";
+                }
+                int extra = (int) Math.max(1, Math.round(seconds * 1e9 / plan.frameExpNs));
+                long unitBytes = 2L * spec.width * spec.height;
+                int unitsLeft = (plan.frames + extra - framesDone + plan.framesPerUnit - 1) / plan.framesPerUnit;
+                long need = unitBytes * (unitsLeft + 2) + (400L << 20);
+                try {
+                    if (new StatFs(root.getAbsolutePath()).getAvailableBytes() < need) return "Not enough free storage for more time";
+                } catch (IllegalArgumentException ignored) {
+                }
+                plan.frames += extra;
+                settings.durationSec += seconds;
+                log(String.format(Locale.US, "viewer added %d s: %d frames planned", seconds, plan.frames));
+                publishCapture();
+                return String.format(Locale.US, "Added %d minutes: %d minutes in all", Math.round(seconds / 60f),
+                        Math.round(settings.durationSec / 60f));
+            }
+        });
+    }
+
+    String remoteMute(final boolean on) {
+        return onSession(new Callable<String>() {
+            @Override
+            public String call() {
+                muted = on;
+                if (sounds != null) sounds.setMuted(on);
+                republish();
+                return on ? "The phone is muted" : "The phone will beep and speak again";
+            }
+        });
+    }
+
+    /**
+     * Runs {@code c} on the session thread and waits for its answer (a short message for the viewer). If the
+     * session thread is too busy to answer in time, the command is dropped rather than run late, so pressing
+     * the button again doesn't do it twice.
+     */
+    private String onSession(final Callable<String> c) {
+        final String[] out = {null};
+        final CountDownLatch done = new CountDownLatch(1);
+        final AtomicBoolean claimed = new AtomicBoolean();
+        boolean posted = h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!claimed.compareAndSet(false, true)) return;
+                try {
+                    out[0] = c.call();
+                } catch (Exception e) {
+                    out[0] = "That did not work: " + e.getMessage();
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        if (!posted) return "The app is closing";
+        try {
+            if (!done.await(4, TimeUnit.SECONDS)) {
+                if (claimed.compareAndSet(false, true)) return "The phone is busy, try again";
+                done.await(10, TimeUnit.SECONDS); // it has just started: wait for its answer
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            claimed.set(true);
+            return "Interrupted";
+        }
+        return out[0] != null ? out[0] : "The phone is busy, try again";
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // Start
     // ------------------------------------------------------------------------------------------------
 
@@ -364,6 +555,7 @@ final class SessionController {
         up = null;
         store = null;
         settings = s;
+        if (!s.fromViewer) muted = false;
         token++;
         resetCapture();
         phase = Phase.STARTING;
@@ -401,6 +593,7 @@ final class SessionController {
             motion = new MotionMonitor(ctx);
             motion.start();
             sounds = new Sounds(ctx, s.sounds);
+            sounds.setMuted(muted);
             rig = new CameraRig(ctx, h, rigListener);
             rig.open(cameraId, cc, rawSize);
         } catch (CameraAccessException | SecurityException e) {
@@ -463,6 +656,11 @@ final class SessionController {
         liveStars = 0;
         liveAligned = false;
         cancelDevelop = false;
+        forced = false;
+        latest = null;
+        latestVersion = -1;
+        liveAnalysis = null;
+        liveStats.clear();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -487,24 +685,24 @@ final class SessionController {
         long now = SystemClock.elapsedRealtime();
         switch (phase) {
             case PLACE:
-                if (motion.faceDown()) {
+                if (forced || motion.faceDown()) {
                     phase = Phase.STEADY;
                     publish("Hold still", "Starting once the phone is still", -1);
                 }
                 break;
             case STEADY:
-                if (!motion.faceDown()) {
+                if (!forced && !motion.faceDown()) {
                     phase = Phase.PLACE;
                     publishPlace();
-                } else if (motion.stillNs() >= STILL_NS) {
+                } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
                     startCountdown(now);
                 }
                 break;
             case COUNTDOWN:
-                if (!motion.faceDown() || motion.rate() > 0.15f) {
+                if ((!forced && !motion.faceDown()) || motion.rate() > 0.15f) {
                     // picked up again: wait for stillness again
                     startToken++;
-                    phase = motion.faceDown() ? Phase.STEADY : Phase.PLACE;
+                    phase = forced || motion.faceDown() ? Phase.STEADY : Phase.PLACE;
                     if (phase == Phase.PLACE) publishPlace();
                     else publish("Hold still", "Starting once the phone is still", -1);
                     return;
@@ -536,7 +734,7 @@ final class SessionController {
                 }
                 break;
             case CAPTURING:
-                if (!motion.faceDown() || motion.rate() > 0.3f) {
+                if ((!forced && !motion.faceDown()) || motion.rate() > 0.3f) {
                     if (++awayTicks >= 3) {
                         pause();
                         break;
@@ -553,7 +751,7 @@ final class SessionController {
                 if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
                 break;
             case PAUSED:
-                if (motion.faceDown() && motion.stillNs() >= STILL_NS) resume();
+                if (forced ? motion.quietNs() >= STILL_NS : motion.stillNs() >= STILL_NS) resume();
                 else if (now - pausedAtMs > MAX_PAUSE_MS) finishCapture("the phone was not put back down");
                 else if (now - lastPublishMs >= 1000) publishCapture();
                 break;
@@ -568,7 +766,7 @@ final class SessionController {
 
     private void startCountdown(long now) {
         phase = Phase.COUNTDOWN;
-        countdownLeft = Math.max(1, settings.countdownSec);
+        countdownLeft = forced ? 0 : Math.max(1, settings.countdownSec);
         nextBeepMs = now;
         if (!probeSent) sendProbe();
     }
@@ -697,6 +895,8 @@ final class SessionController {
         float tilt = motion.tiltDeg();
         if (!Float.isNaN(tilt)) store.log(String.format(Locale.US, "tilt from vertical %.1f deg", tilt));
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
+        up.setKeepLatest(remoteWanted);
+        liveSpec = spec;
     }
 
     private void submitNext() {
@@ -980,24 +1180,29 @@ final class SessionController {
         private int n;
 
         @Override
-        public void onUnit(UnitRecord rec, Aligner.Result live, int unitsDone) {
+        public void onUnit(UnitProcessor src, UnitRecord rec, Aligner.Result live, int unitsDone) {
             liveStars = rec.stars;
             liveAligned = live.ok;
-            // refresh the live picture now and then (it is the 1/4 size running stack)
-            if (++n % 2 == 1 || unitsDone <= 3) {
+            liveStats.add(rec, live, System.currentTimeMillis());
+            UnitProcessor.Latest l = src.latest();
+            if (l != null && l.index == rec.index) latest = l;
+            // refresh the live picture now and then (it is the 1/4 size running stack); every unit for a viewer
+            if (++n % 2 == 1 || unitsDone <= 3 || remoteWanted) {
                 try {
-                    RgbImage img = up != null ? up.preview().image() : null;
+                    RgbImage img = src.preview().image();
                     if (img != null) {
                         Renderer.Analysis a = Renderer.analyze(img, spec);
                         Renderer.Params p = new Renderer.Params();
                         p.brightness = settings.brightness;
                         int[] px = Renderer.renderSmall(img.binned(1), a, p, 1);
                         preview = Bitmap.createBitmap(px, img.cropWidth(), img.cropHeight(), Bitmap.Config.ARGB_8888);
+                        liveAnalysis = a;
                         previewVersion++;
                     }
                 } catch (Throwable ignored) {
                 }
             }
+            latestVersion = rec.index;
         }
 
         @Override
@@ -1052,6 +1257,7 @@ final class SessionController {
             public void run() {
                 u[0].finish();
                 u[0] = null; // its buffers are big: let them go before developing
+                latest = null; // the viewer keeps its last picture; developing needs the memory
                 try {
                     st.setState("captured");
                 } catch (IOException ignored) {
@@ -1362,6 +1568,16 @@ final class SessionController {
         commit(s);
     }
 
+    /** Publishes the current state again (after a setting changed). */
+    private void republish() {
+        if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
+            publishCapture();
+        } else {
+            Status cur = status;
+            publish(cur.headline, cur.detail, cur.progress);
+        }
+    }
+
     /** From the develop thread. */
     private void post(final Phase ph, final String headline, final String detail, final float progress) {
         h.post(new Runnable() {
@@ -1383,7 +1599,13 @@ final class SessionController {
         if (plan != null) {
             s.planned = plan.frames;
             s.done = framesDone;
+            s.frameExpNs = plan.frameExpNs;
+            s.iso = plan.iso;
         }
+        s.forced = forced;
+        s.muted = muted;
+        s.soundsOn = settings != null && settings.sounds;
+        s.latestVersion = latestVersion;
         return s;
     }
 

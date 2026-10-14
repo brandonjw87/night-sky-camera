@@ -4,6 +4,7 @@ import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.ColorMath;
 import com.brandon.nightsky.processing.DngWriter;
+import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Renderer;
@@ -67,10 +68,15 @@ public final class SimRunner {
         SessionStore store = SessionStore.create(root);
         long t0 = System.currentTimeMillis();
         final int[] aligned = {0};
+        // what the remote viewer sees while capturing: provisional verdicts and the latest frame
+        final LiveStats liveStats = new LiveStats();
+        final UnitProcessor.Latest[] latest = {null};
         UnitProcessor up = new UnitProcessor(store, spec, 1, 3, new UnitProcessor.Listener() {
             @Override
-            public void onUnit(UnitRecord rec, Aligner.Result live, int unitsDone) {
+            public void onUnit(UnitProcessor src, UnitRecord rec, Aligner.Result live, int unitsDone) {
                 if (live.ok) aligned[0]++;
+                liveStats.add(rec, live, System.currentTimeMillis());
+                if (src.latest() != null) latest[0] = src.latest();
             }
 
             @Override
@@ -78,6 +84,7 @@ public final class SimRunner {
                 t.printStackTrace();
             }
         });
+        up.setKeepLatest(true);
         long simMs = 0;
         for (int i = 0; i < frames; i++) {
             short[] buf = up.obtainBuffer(60000);
@@ -96,6 +103,24 @@ public final class SimRunner {
             Renderer.Analysis pa = Renderer.analyze(prev, spec);
             int[] px = Renderer.renderSmall(prev.binned(1), pa, new Renderer.Params(), 1);
             writePng(px, prev.cropWidth(), prev.cropHeight(), new File(outDir, "preview.png"));
+            if (latest[0] != null) {
+                // the latest frame as the viewer shows it: the live stack's crop and stretch
+                RgbImage li = latest[0].image;
+                RgbImage view = new RgbImage(li.width, li.height, li.r, li.g, li.b);
+                view.x0 = pa.cx0;
+                view.y0 = pa.cy0;
+                view.x1 = pa.cx0 + pa.cw;
+                view.y1 = pa.cy0 + pa.ch;
+                RgbImage ls = view.binned(1);
+                int[] lp = Renderer.renderSmall(ls, pa, new Renderer.Params(), 1);
+                writePng(lp, ls.width, ls.height, new File(outDir, "latest.png"));
+                System.out.printf(Locale.US, "latest frame %d: clipped red %.5f green %.5f blue %.5f%n", latest[0].index,
+                        latest[0].clipped[0], latest[0].clipped[1], latest[0].clipped[2]);
+            }
+        }
+        for (LiveStats.Unit u : liveStats.from(0)) {
+            System.out.printf(Locale.US, "  live %2d T=%.2f hfr=%.2f stars=%d %s%n", u.index, u.transparency, u.hfr, u.stars,
+                    u.reason == null ? "kept" : "left out: " + u.reason);
         }
 
         if (System.getenv("SIM_HOTTEST") != null) hotTest(sim, store, spec, W, H);

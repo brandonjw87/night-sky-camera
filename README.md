@@ -21,6 +21,11 @@ and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws ea
   the home screen offers to develop them.
 - **Files.** JPEG (and optionally a RAW DNG) in `Pictures/NightSky`, so they show up in Google Photos. A short
   log of each session goes in `Documents/NightSky`.
+- **Viewer.** Watch the photo build up from a laptop, tablet or another phone while your phone lies screen-down:
+  the stack so far, the latest frame, how many frames were kept and why any were thrown out. From there you can
+  start the countdown early, add 5 minutes, mute the beeps, stop and develop, start another photo, and download
+  the finished files. It only works on your local Wi-Fi (or the phone's own hotspot) and needs the code shown on
+  the phone.
 
 ## Install it on your phone
 
@@ -81,6 +86,25 @@ chat.
 
 The app's screen is dim red so it doesn't ruin your night vision.
 
+## Watch it from a Windows laptop
+
+The viewer is on unless you untick **Viewer** on the home screen.
+
+1. Put the laptop on the **same Wi-Fi** as the phone.
+   No Wi-Fi out there? On the phone's start screen, tap **No Wi-Fi here? Start a hotspot for it**. Then on the
+   laptop, click the Wi-Fi icon at the bottom right of the screen, pick the network name the phone shows, and
+   type the password it shows.
+2. On the phone, tap **Start**. The screen shows an address like `http://192.168.1.23:8765` and a 6-digit
+   code.
+3. On the laptop, open Chrome or Edge, type that address into the address bar exactly as shown (with the
+   `http://`), and press Enter.
+4. Type the 6-digit code and click **Open the viewer**.
+5. Lay the phone down. The laptop page shows the countdown, then the stack building up.
+
+A phone or tablet can scan the QR code on the phone's screen instead of typing anything. The address and code
+also appear on the phone during the capture and on the finished photo. After the photo is done, the viewer
+stops by itself 30 minutes after you last used it, or tap **Stop the viewer** on the phone.
+
 ## Things to know
 
 - The Pixel decides how long each single frame can be. The app measures this the first time and adapts, so the
@@ -103,6 +127,8 @@ app/src/main/java/com/brandon/nightsky/
     MotionMonitor       face-down and stillness detection from the gyro and gravity sensors
     SensorSpecFactory   camera calibration from Camera2 metadata
     MediaSaver          MediaStore saving
+    RemoteHost          the remote viewer: what the web page shows and the commands it can send
+    remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
     processing/         the engine, plain Java with no Android dependencies
         UnitProcessor   live processing while capturing: hot pixels, star detection, alignment
         Aligner         3D rotation fit between frames using the lens model

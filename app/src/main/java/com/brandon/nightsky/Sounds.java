@@ -18,6 +18,8 @@ import java.util.Locale;
 final class Sounds {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final boolean enabled;
+    /** Silenced from the remote viewer for now (the setting itself stays on). */
+    private volatile boolean muted;
     private ToneGenerator tone;
     private TextToSpeech tts;
     private volatile boolean ttsReady;
@@ -50,6 +52,20 @@ final class Sounds {
         }
     }
 
+    void setMuted(boolean m) {
+        muted = m;
+        if (m && tts != null) {
+            try {
+                tts.stop();
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    boolean muted() {
+        return muted;
+    }
+
     /** Short tick, for the countdown. */
     void tick() {
         play(ToneGenerator.TONE_PROP_BEEP, 120);
@@ -66,7 +82,7 @@ final class Sounds {
     }
 
     private void play(int t, int ms) {
-        if (!enabled || tone == null) return;
+        if (!enabled || muted || tone == null) return;
         try {
             tone.startTone(t, ms);
         } catch (RuntimeException ignored) {
@@ -85,7 +101,7 @@ final class Sounds {
                 if (done != null) done.run();
             }
         };
-        if (!enabled || tts == null || !ttsReady) {
+        if (!enabled || muted || tts == null || !ttsReady) {
             main.post(once);
             return;
         }

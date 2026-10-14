@@ -37,6 +37,8 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.brandon.nightsky.remote.QrCode;
+
 import java.io.File;
 import java.util.List;
 import java.util.Locale;
@@ -51,6 +53,8 @@ public final class MainActivity extends Activity {
     static final int RED_DIM = 0xFF9A2A25;
     static final int RED_DARK = 0xFF2A0807;
     static final int RED_SEL = 0xFF6E1512;
+    /** Light modules of the QR codes: pale enough for any phone camera to read, still reddish. */
+    static final int QR_LIGHT = 0xFFFFCDD2;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private Prefs prefs;
@@ -70,6 +74,15 @@ public final class MainActivity extends Activity {
     private SeekBar resultBrightness;
     private Button saveVersion;
     private float shownBrightness = -1f;
+    /** Holds the remote viewer's card on the session screens; rebuilt when its content changes. */
+    private LinearLayout viewerBox;
+    private String shownViewer;
+    private boolean viewerCompact;
+    /** The result screen: the viewer outlives the session there, so it gets a stop button. */
+    private boolean viewerStoppable;
+    private long viewerCheckedMs;
+    /** The arm screen is temporarily brighter so another phone can read the QR code. */
+    private boolean qrBright;
 
     private final ServiceConnection conn = new ServiceConnection() {
         @Override
@@ -90,6 +103,7 @@ public final class MainActivity extends Activity {
         @Override
         public void run() {
             refresh();
+            refreshViewer(false);
             main.postDelayed(this, 250);
         }
     };
@@ -205,7 +219,7 @@ public final class MainActivity extends Activity {
         WindowManager.LayoutParams lp = getWindow().getAttributes();
         if (active) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            lp.screenBrightness = 0.12f;
+            lp.screenBrightness = qrBright ? 0.6f : 0.12f;
         } else {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
@@ -221,6 +235,9 @@ public final class MainActivity extends Activity {
         resultBrightness = null;
         saveVersion = null;
         shownPreview = -1;
+        viewerBox = null;
+        shownViewer = null;
+        setQrBright(false);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -356,8 +373,16 @@ public final class MainActivity extends Activity {
                 prefs.setSaveDng(on);
             }
         });
+        CheckBox viewer = check("Viewer: watch and stop it from a laptop or another phone on the same Wi-Fi", prefs.remoteViewer());
+        viewer.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setRemoteViewer(on);
+            }
+        });
         col.addView(snd, gap(18));
         col.addView(dng);
+        col.addView(viewer);
 
         Button start = button("Start", true);
         start.setTextSize(22);
@@ -418,13 +443,23 @@ public final class MainActivity extends Activity {
                 .putExtra(CaptureService.EXTRA_DURATION, prefs.durationMin() * 60)
                 .putExtra(CaptureService.EXTRA_BRIGHTNESS, prefs.brightness())
                 .putExtra(CaptureService.EXTRA_SOUNDS, prefs.sounds())
-                .putExtra(CaptureService.EXTRA_DNG, prefs.saveDng());
+                .putExtra(CaptureService.EXTRA_DNG, prefs.saveDng())
+                .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer());
         startForegroundService(i);
     }
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
+        if (code == 3) {
+            if (service != null && android.os.Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED) {
+                service.startHotspot();
+            } else {
+                toastish("The hotspot needs the Nearby devices permission");
+            }
+            return;
+        }
         if (!pendingStart) return;
         pendingStart = false;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -442,9 +477,12 @@ public final class MainActivity extends Activity {
     private void showArming() {
         clearRefs();
         root.removeAllViews();
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
         LinearLayout col = column();
         col.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.addView(col, match());
+        sv.addView(col);
+        root.addView(sv, match());
         headline = text("", 30, RED, true);
         headline.setGravity(Gravity.CENTER);
         detail = text("", 16, RED_DIM, false);
@@ -453,6 +491,12 @@ public final class MainActivity extends Activity {
         col.addView(headline);
         col.addView(detail, gap(14));
         col.addView(spacer(), new LinearLayout.LayoutParams(1, 0, 1f));
+        viewerBox = new LinearLayout(this);
+        viewerBox.setOrientation(LinearLayout.VERTICAL);
+        viewerCompact = false;
+        viewerStoppable = false;
+        col.addView(viewerBox, gap(12));
+        refreshViewer(true);
         Button cancel = button("Cancel", false);
         cancel.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -479,6 +523,12 @@ public final class MainActivity extends Activity {
         col.addView(bar, gap(10));
         col.addView(live, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         col.addView(text("Live view of the stack so far. Leave the phone face-down; lifting it pauses the capture.", 13, RED_DIM, false), gap(8));
+        viewerBox = new LinearLayout(this);
+        viewerBox.setOrientation(LinearLayout.VERTICAL);
+        viewerCompact = true;
+        viewerStoppable = false;
+        col.addView(viewerBox, gap(4));
+        refreshViewer(true);
         LinearLayout row = row();
         Button stop = button("Hold to stop and develop", true);
         stop.setOnLongClickListener(new View.OnLongClickListener() {
@@ -620,6 +670,190 @@ public final class MainActivity extends Activity {
         col.addView(row2, gap(6));
         String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG)" : "");
         col.addView(text(where, 12, RED_DIM, false), gap(4));
+        viewerBox = new LinearLayout(this);
+        viewerBox.setOrientation(LinearLayout.VERTICAL);
+        viewerCompact = true;
+        viewerStoppable = true;
+        col.addView(viewerBox, gap(2));
+        refreshViewer(true);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Remote viewer card
+    // ------------------------------------------------------------------------------------------------
+
+    /** Rebuilds the viewer card if what it shows has changed (addresses are re-read every 2 seconds). */
+    private void refreshViewer(boolean force) {
+        if (viewerBox == null || service == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!force && now - viewerCheckedMs < 2000) return;
+        viewerCheckedMs = now;
+        RemoteHost r = service.remote();
+        List<RemoteHost.Address> as = r != null ? RemoteHost.addresses(this) : null;
+        StringBuilder sig = new StringBuilder();
+        sig.append(service.viewerVersion()).append('|').append(viewerCompact).append('|').append(viewerStoppable);
+        if (r != null) {
+            sig.append('|').append(r.port());
+            for (RemoteHost.Address a : as) sig.append('|').append(a.ip);
+        }
+        String key = sig.toString();
+        if (key.equals(shownViewer)) return;
+        shownViewer = key;
+        viewerBox.removeAllViews();
+        if (r == null) return;
+        if (viewerCompact) buildViewerLine(r, as);
+        else buildViewerCard(r, as);
+    }
+
+    private static RemoteHost.Address pick(List<RemoteHost.Address> as, boolean hotspotOn) {
+        if (as.isEmpty()) return null;
+        if (hotspotOn) {
+            for (RemoteHost.Address a : as) if (a.hotspot) return a;
+        }
+        for (RemoteHost.Address a : as) if (a.wifi) return a;
+        return as.get(0);
+    }
+
+    /** One line on the capture and result screens; on the result screen with a button to stop the viewer. */
+    private void buildViewerLine(RemoteHost r, List<RemoteHost.Address> as) {
+        RemoteHost.Address a = pick(as, service.hotspotInfo() != null);
+        if (a != null) {
+            TextView t = text("Viewer: " + r.typedFor(a.ip) + " · code " + spaced(r.pairCode()), 13, RED_DIM, false);
+            t.setTextIsSelectable(true);
+            viewerBox.addView(t);
+        }
+        if (!viewerStoppable) return;
+        Button stop = button("Stop the viewer", false);
+        stop.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (service != null) service.stopViewer();
+                refreshViewer(true);
+            }
+        });
+        viewerBox.addView(stop, gap(6));
+    }
+
+    /** The arm screen's card: QR codes, the address to type, the pairing code and the hotspot. */
+    private void buildViewerCard(final RemoteHost r, List<RemoteHost.Address> as) {
+        LinearLayout card = card();
+        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.addView(text("Watch it from another device", 16, RED, true));
+        final String[] hs = service.hotspotInfo();
+        RemoteHost.Address a = pick(as, hs != null);
+        int qrPx = Math.min(dp(230), getResources().getDisplayMetrics().widthPixels - dp(90));
+        if (hs != null) {
+            card.addView(text("1. On the other device, join the phone's Wi-Fi: scan this code", 14, RED_DIM, false), gap(8));
+            card.addView(qrView(QrCode.wifiPayload(hs[0], hs[1], "sae".equals(hs[2])), qrPx), gapWrap(6));
+            TextView creds = text("Network " + hs[0] + "\nPassword " + hs[1], 14, RED, false);
+            creds.setTextIsSelectable(true);
+            creds.setGravity(Gravity.CENTER);
+            card.addView(creds, gap(4));
+            if (a != null) card.addView(text("2. Then open the viewer: scan this code", 14, RED_DIM, false), gap(12));
+        }
+        if (a == null) {
+            card.addView(text("The phone is not on a Wi-Fi network. Connect it to Wi-Fi, or start a hotspot for the "
+                    + "other device to join.", 14, RED_DIM, false), gap(8));
+        } else {
+            if (hs == null) card.addView(text("Scan with a phone or tablet camera on the same Wi-Fi:", 14, RED_DIM, false), gap(8));
+            card.addView(qrView(r.linkFor(a.ip), qrPx), gapWrap(6));
+            TextView typed = text("On a laptop, open " + r.typedFor(a.ip) + " and type the code " + spaced(r.pairCode()), 14, RED, false);
+            typed.setTextIsSelectable(true);
+            typed.setGravity(Gravity.CENTER);
+            card.addView(typed, gap(6));
+            if (as.size() > 1) {
+                StringBuilder more = new StringBuilder("Other addresses: ");
+                boolean first = true;
+                for (RemoteHost.Address o : as) {
+                    if (o == a) continue;
+                    if (!first) more.append(", ");
+                    more.append(r.typedFor(o.ip)).append(" (").append(o.label).append(')');
+                    first = false;
+                }
+                TextView m = text(more.toString(), 12, RED_DIM, false);
+                m.setTextIsSelectable(true);
+                card.addView(m, gap(4));
+            }
+            String warn = RemoteHost.wifiWarning(this);
+            if (warn != null && hs == null) card.addView(text(warn, 13, 0xFFFFCDD2, false), gap(6));
+            card.addView(text("Tap a code if the other camera can't read it (the screen gets brighter).", 12, RED_DIM, false), gap(4));
+        }
+        String err = service.hotspotError();
+        if (err != null) card.addView(text(err, 13, 0xFFFFCDD2, false), gap(6));
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            Button hb;
+            if (hs != null) {
+                hb = button("Turn off the viewer hotspot", false);
+                hb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (service != null) service.stopHotspot();
+                        refreshViewer(true);
+                    }
+                });
+            } else {
+                hb = button(service.hotspotStarting() ? "Starting the hotspot…" : "No Wi-Fi here? Start a hotspot for it", a == null);
+                hb.setEnabled(!service.hotspotStarting());
+                hb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                            requestPermissions(new String[]{Manifest.permission.NEARBY_WIFI_DEVICES}, 3);
+                        } else if (service != null) {
+                            service.startHotspot();
+                        }
+                        refreshViewer(true);
+                    }
+                });
+            }
+            card.addView(hb, gap(10));
+        }
+        viewerBox.addView(card);
+    }
+
+    private static String spaced(String code) {
+        return code.length() == 6 ? code.substring(0, 3) + " " + code.substring(3) : code;
+    }
+
+    /** A QR code with dark modules on a pale square, pixel-exact so it stays sharp. */
+    private ImageView qrView(String text, int targetPx) {
+        QrCode q = QrCode.encodeText(text, QrCode.MEDIUM);
+        int n = q.size + 8; // four light modules around the code
+        int scale = Math.max(2, targetPx / n);
+        int dim = n * scale;
+        int[] px = new int[dim * dim];
+        for (int y = 0; y < dim; y++) {
+            int my = y / scale - 4;
+            for (int x = 0; x < dim; x++) px[y * dim + x] = q.get(x / scale - 4, my) ? 0xFF000000 : QR_LIGHT;
+        }
+        ImageView iv = new ImageView(this);
+        iv.setImageBitmap(Bitmap.createBitmap(px, dim, dim, Bitmap.Config.ARGB_8888));
+        iv.setScaleType(ImageView.ScaleType.CENTER);
+        iv.setContentDescription("QR code");
+        iv.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setQrBright(!qrBright);
+            }
+        });
+        return iv;
+    }
+
+    private void setQrBright(boolean on) {
+        if (qrBright == on) return;
+        qrBright = on;
+        if (windowActive != null && windowActive) {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.screenBrightness = on ? 0.6f : 0.12f;
+            getWindow().setAttributes(lp);
+        }
+    }
+
+    private LinearLayout.LayoutParams gapWrap(int topDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(topDp);
+        lp.gravity = Gravity.CENTER_HORIZONTAL;
+        return lp;
     }
 
     private void showFailed(SessionController.Status s) {

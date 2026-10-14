@@ -8,7 +8,10 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.WifiManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -16,19 +19,26 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 
 import java.io.File;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Keeps a session alive while the screen is off and the phone lies face-down: a foreground service that
  * owns the {@link SessionController}, holds the CPU awake, turns the screen off while the proximity sensor
- * is covered, and shows progress in a silent notification.
+ * is covered, and shows progress in a silent notification. It also runs the remote viewer ({@link RemoteHost})
+ * and, if asked, a Wi-Fi hotspot for it; while a viewer is watching it stays up after the photo is done, until
+ * nobody has used the viewer for {@link RemoteHost#IDLE_STOP_MS} (and at most {@link RemoteHost#MAX_KEEP_MS}).
  */
 public final class CaptureService extends Service implements SessionController.Host {
     static final String ACTION_START = "com.brandon.nightsky.START";
     static final String ACTION_FINISH = "com.brandon.nightsky.FINISH";
     static final String ACTION_CANCEL = "com.brandon.nightsky.CANCEL";
     static final String ACTION_RECOVER = "com.brandon.nightsky.RECOVER";
+    static final String ACTION_STOP_VIEWER = "com.brandon.nightsky.STOP_VIEWER";
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_BRIGHTNESS = "brightness",
-            EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir";
+            EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -44,9 +54,21 @@ public final class CaptureService extends Service implements SessionController.H
     private SessionController controller;
     private NotificationManager nm;
     private PowerManager.WakeLock cpuLock, proximityLock;
-    private boolean foreground;
+    private volatile boolean foreground, foregroundCamera;
     private long lastNotifyMs;
     private SessionController.Phase lastPhase;
+
+    // remote viewer
+    private volatile RemoteHost remote;
+    private WifiManager.WifiLock wifiLock;
+    private WifiManager.LocalOnlyHotspotReservation hotspot;
+    private volatile String hotspotSsid, hotspotPass, hotspotError;
+    private volatile boolean hotspotSae, hotspotStarting;
+    /** Bumped whenever what the arm screen shows about the viewer changes. */
+    private volatile int viewerVersion;
+    /** The session is over but a viewer is in use: the service stays in the foreground for it. */
+    private volatile boolean keepingForViewer;
+    private long endedMs;
 
     @Override
     public void onCreate() {
@@ -80,11 +102,15 @@ public final class CaptureService extends Service implements SessionController.H
             s.brightness = intent.getFloatExtra(EXTRA_BRIGHTNESS, 0.5f);
             s.sounds = intent.getBooleanExtra(EXTRA_SOUNDS, true);
             s.saveDng = intent.getBooleanExtra(EXTRA_DNG, true);
+            keepingForViewer = false;
             if (!goForeground(true)) {
+                stopRemote();
                 stopSelf();
                 return START_NOT_STICKY;
             }
             acquireLocks(true);
+            if (intent.getBooleanExtra(EXTRA_VIEWER, false)) startRemote();
+            else stopRemote();
             controller.start(s);
         } else if (ACTION_RECOVER.equals(a)) {
             String dir = intent.getStringExtra(EXTRA_DIR);
@@ -92,14 +118,269 @@ public final class CaptureService extends Service implements SessionController.H
                 stopSelf();
                 return START_NOT_STICKY;
             }
+            // developing again: the service works for the session now, not just for the viewer
+            keepingForViewer = false;
             acquireLocks(false);
             controller.recover(new File(dir));
         } else if (ACTION_FINISH.equals(a)) {
             controller.finishNow();
         } else if (ACTION_CANCEL.equals(a)) {
             controller.cancel();
+        } else if (ACTION_STOP_VIEWER.equals(a)) {
+            stopViewer();
         }
         return START_NOT_STICKY;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Remote viewer
+    // ------------------------------------------------------------------------------------------------
+
+    RemoteHost remote() {
+        return remote;
+    }
+
+    int viewerVersion() {
+        return viewerVersion;
+    }
+
+    private void startRemote() {
+        RemoteHost r = remote;
+        if (r == null || !r.running()) {
+            r = new RemoteHost(this, controller);
+            if (!r.start()) {
+                remote = null;
+                viewerVersion++;
+                return;
+            }
+            remote = r;
+            viewerVersion++;
+        }
+        controller.setRemoteWanted(true);
+        main.removeCallbacks(remoteTick);
+        main.postDelayed(remoteTick, 10_000);
+    }
+
+    /** "Stop the viewer", from the notification or the result screen. */
+    void stopViewer() {
+        stopRemote();
+        if (keepingForViewer && sessionOver()) finishIdle();
+    }
+
+    private void stopRemote() {
+        main.removeCallbacks(remoteTick);
+        RemoteHost r = remote;
+        remote = null;
+        if (r != null) {
+            r.stop();
+            viewerVersion++;
+        }
+        controller.setRemoteWanted(false);
+        releaseWifiLock();
+        stopHotspot();
+    }
+
+    /** True when no session is running or developing (only then may the service let go). */
+    private boolean sessionOver() {
+        SessionController.Phase p = controller.status().phase;
+        return p == SessionController.Phase.IDLE || p == SessionController.Phase.DONE || p == SessionController.Phase.FAILED;
+    }
+
+    /** Every 10 s while the viewer runs: Wi-Fi responsiveness while someone watches, and the idle stop. */
+    private final Runnable remoteTick = new Runnable() {
+        @Override
+        public void run() {
+            RemoteHost r = remote;
+            if (r == null) return;
+            long now = System.currentTimeMillis();
+            if (r.watching()) acquireWifiLock();
+            else releaseWifiLock();
+            if (keepingForViewer && sessionOver()) {
+                // only what a person did counts (an open page polling by itself doesn't), and never past the cap
+                long quiet = now - Math.max(r.lastActiveMs(), endedMs);
+                if (quiet > RemoteHost.IDLE_STOP_MS || now - endedMs > RemoteHost.MAX_KEEP_MS) {
+                    stopRemote();
+                    finishIdle();
+                    return;
+                }
+            }
+            main.postDelayed(this, 10_000);
+        }
+    };
+
+    /**
+     * Asks Wi-Fi for low latency while a viewer watches. Since Android 14 this only has an effect while the
+     * screen is on and the app is in front (for example while arming); with the screen off the viewer still
+     * works, at the radio's power-save pace, because the CPU wake lock and the foreground service keep the
+     * app running.
+     */
+    private void acquireWifiLock() {
+        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (wm == null) return;
+        try {
+            if (wifiLock == null) {
+                //noinspection deprecation
+                int mode = Build.VERSION.SDK_INT >= 29 ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                wifiLock = wm.createWifiLock(mode, "nightsky:viewer");
+                wifiLock.setReferenceCounted(false);
+            }
+            if (!wifiLock.isHeld()) wifiLock.acquire();
+        } catch (RuntimeException e) {
+            android.util.Log.w("NightSky", "wifi lock", e);
+        }
+    }
+
+    private void releaseWifiLock() {
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    /** True if "Take another" from the viewer can open the camera (the service never left the foreground). */
+    boolean canArmFromViewer() {
+        return remote != null && foreground && foregroundCamera;
+    }
+
+    /** "Take another" from the viewer: a new session with the saved settings. Called from a viewer thread. */
+    String armFromViewer() {
+        final String[] msg = {"The phone did not answer"};
+        final CountDownLatch done = new CountDownLatch(1);
+        // whoever claims this first wins: the command runs, or the viewer is told to try again (and it never runs)
+        final AtomicBoolean claimed = new AtomicBoolean();
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!claimed.compareAndSet(false, true)) return;
+                try {
+                    SessionController.Phase p = controller.status().phase;
+                    if (p != SessionController.Phase.IDLE && p != SessionController.Phase.DONE && p != SessionController.Phase.FAILED) {
+                        msg[0] = "A session is already running";
+                        return;
+                    }
+                    if (!canArmFromViewer()) {
+                        // a camera service can only start while the app is on screen
+                        msg[0] = "Open the app on the phone to take another";
+                        return;
+                    }
+                    Prefs prefs = new Prefs(CaptureService.this);
+                    SessionController.Settings s = new SessionController.Settings();
+                    s.trails = prefs.trails();
+                    s.durationSec = prefs.durationMin() * 60;
+                    s.brightness = prefs.brightness();
+                    s.sounds = prefs.sounds();
+                    s.saveDng = prefs.saveDng();
+                    s.fromViewer = true;
+                    keepingForViewer = false;
+                    acquireLocks(true);
+                    controller.setRemoteWanted(true);
+                    controller.start(s);
+                    msg[0] = "Starting. It begins once the phone lies still, screen-down (or tap Start now).";
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            if (!done.await(3, TimeUnit.SECONDS)) {
+                if (claimed.compareAndSet(false, true)) return "The phone is busy, try again";
+                done.await(10, TimeUnit.SECONDS); // already running: it is quick
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            claimed.set(true);
+        }
+        return msg[0];
+    }
+
+    /** SSID, passphrase and WPA3-only flag of the viewer hotspot, or null if it is off. */
+    String[] hotspotInfo() {
+        String s = hotspotSsid, p = hotspotPass;
+        if (hotspot == null || s == null) return null;
+        return new String[]{s, p, hotspotSae ? "sae" : "wpa"};
+    }
+
+    boolean hotspotStarting() {
+        return hotspotStarting;
+    }
+
+    String hotspotError() {
+        return hotspotError;
+    }
+
+    /** Starts a Wi-Fi network of the phone's own for the viewer (needs the nearby-devices permission). */
+    void startHotspot() {
+        if (hotspot != null || hotspotStarting || remote == null) return;
+        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (wm == null) return;
+        hotspotStarting = true;
+        hotspotError = null;
+        viewerVersion++;
+        try {
+            wm.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
+                @Override
+                public void onStarted(WifiManager.LocalOnlyHotspotReservation r) {
+                    hotspotStarting = false;
+                    if (remote == null) {
+                        r.close();
+                        return;
+                    }
+                    hotspot = r;
+                    SoftApConfiguration c = r.getSoftApConfiguration();
+                    hotspotSsid = ssidOf(c);
+                    hotspotPass = c.getPassphrase();
+                    hotspotSae = c.getSecurityType() == SoftApConfiguration.SECURITY_TYPE_WPA3_SAE;
+                    viewerVersion++;
+                }
+
+                @Override
+                public void onStopped() {
+                    hotspot = null;
+                    hotspotSsid = null;
+                    hotspotPass = null;
+                    hotspotStarting = false;
+                    viewerVersion++;
+                }
+
+                @Override
+                public void onFailed(int reason) {
+                    hotspotStarting = false;
+                    hotspotError = reason == ERROR_INCOMPATIBLE_MODE
+                            ? "The phone's own hotspot is already on: join that from the other device instead."
+                            : reason == ERROR_TETHERING_DISALLOWED ? "Hotspots are not allowed on this phone."
+                            : "The phone could not start a hotspot (error " + reason + ").";
+                    viewerVersion++;
+                }
+            }, main);
+        } catch (SecurityException | IllegalStateException e) {
+            hotspotStarting = false;
+            hotspotError = "The phone could not start a hotspot: " + e.getMessage();
+            viewerVersion++;
+        }
+    }
+
+    void stopHotspot() {
+        if (hotspot != null) {
+            try {
+                hotspot.close();
+            } catch (RuntimeException ignored) {
+            }
+            hotspot = null;
+            hotspotSsid = null;
+            hotspotPass = null;
+            viewerVersion++;
+        }
+    }
+
+    private static String ssidOf(SoftApConfiguration c) {
+        String s = null;
+        if (Build.VERSION.SDK_INT >= 33 && c.getWifiSsid() != null) {
+            s = c.getWifiSsid().toString();
+            if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) s = s.substring(1, s.length() - 1);
+        }
+        //noinspection deprecation
+        if (s == null || s.isEmpty()) s = c.getSsid();
+        return s;
     }
 
     private boolean goForeground(boolean camera) {
@@ -109,6 +390,7 @@ public final class CaptureService extends Service implements SessionController.H
         try {
             startForeground(NOTIF_ID, n, type);
             foreground = true;
+            foregroundCamera = camera;
             return true;
         } catch (RuntimeException e) {
             android.util.Log.e("NightSky", "startForeground failed", e);
@@ -157,7 +439,7 @@ public final class CaptureService extends Service implements SessionController.H
         if (s.phase == lastPhase && now - lastNotifyMs < 2000) return;
         lastPhase = s.phase;
         lastNotifyMs = now;
-        if (!foreground) return;
+        if (!foreground || keepingForViewer) return;
         boolean capturing = s.phase.ordinal() <= SessionController.Phase.PAUSED.ordinal();
         nm.notify(NOTIF_ID, build(s.headline, s.detail, s.progress, capturing));
     }
@@ -177,17 +459,53 @@ public final class CaptureService extends Service implements SessionController.H
         main.post(new Runnable() {
             @Override
             public void run() {
-                releaseLocks();
-                if (foreground) {
-                    stopForeground(STOP_FOREGROUND_REMOVE);
-                    foreground = false;
-                }
                 SessionController.Status s = controller.status();
                 if (s.phase == SessionController.Phase.DONE || s.phase == SessionController.Phase.FAILED) {
                     nm.notify(NOTIF_ID + 1, build(s.headline, s.detail, -1, false));
                 }
+                RemoteHost r = remote;
+                if (r != null && r.running() && r.watching() && foreground) {
+                    // someone is watching: stay up for the downloads and another session until the viewer is quiet
+                    keepingForViewer = true;
+                    endedMs = System.currentTimeMillis();
+                    releaseProximity();
+                    nm.notify(NOTIF_ID, viewerNotification(r));
+                    return;
+                }
+                stopRemote();
+                finishIdle();
             }
         });
+    }
+
+    /** Nothing runs any more: let go of the locks and the foreground state. */
+    private void finishIdle() {
+        keepingForViewer = false;
+        releaseLocks();
+        if (foreground) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            foreground = false;
+            foregroundCamera = false;
+        }
+    }
+
+    private Notification viewerNotification(RemoteHost r) {
+        List<RemoteHost.Address> as = RemoteHost.addresses(this);
+        String where = as.isEmpty() ? "" : "Open " + r.typedFor(as.get(0).ip) + " · ";
+        Intent stop = new Intent(this, CaptureService.class).setAction(ACTION_STOP_VIEWER);
+        PendingIntent ps = PendingIntent.getService(this, 2, stop, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        return new Notification.Builder(this, CHANNEL)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Viewer still on")
+                .setContentText(where + "stops " + RemoteHost.IDLE_STOP_MS / 60_000L + " min after it was last used")
+                .setContentIntent(pi)
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setColor(0xFFE53935)
+                .addAction(new Notification.Action.Builder(null, "Stop viewer", ps).build())
+                .build();
     }
 
     private Notification build(String title, String text, float progress, boolean capturing) {
@@ -217,16 +535,14 @@ public final class CaptureService extends Service implements SessionController.H
      */
     @Override
     public void onTimeout(int startId, int fgsType) {
-        releaseLocks();
-        if (foreground) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            foreground = false;
-        }
+        stopRemote();
+        finishIdle();
         stopSelf();
     }
 
     @Override
     public void onDestroy() {
+        stopRemote();
         releaseLocks();
         controller.shutdown();
         super.onDestroy();

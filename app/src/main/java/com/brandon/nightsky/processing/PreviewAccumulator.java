@@ -79,6 +79,77 @@ public final class PreviewAccumulator {
         units++;
     }
 
+    /**
+     * One unit at preview size without any alignment (what the sensor saw), lens shading applied, for the
+     * remote viewer. {@code clippedOut} receives the fraction of red, green and blue samples at the white level.
+     */
+    public RgbImage thumbnail(final short[] raw, final float invScale, final float[] black, float[] clippedOut) {
+        final RgbImage img = new RgbImage(pw, ph);
+        final int[] cfa = spec.cfa;
+        final float clipAt = spec.white - 0.02f * (spec.white - Math.min(Math.min(black[0], black[1]), Math.min(black[2], black[3])));
+        final ShadingMap sh = spec.shading;
+        int pR0 = 0, pB0 = 3, pG0 = 1;
+        for (int p = 0; p < 4; p++) {
+            if (cfa[p] == 0) pR0 = p;
+            else if (cfa[p] == 2) pB0 = p;
+            else pG0 = p;
+        }
+        final int pR = pR0, pG = pG0, pB = pB0;
+        final int bands = Math.max(1, Math.min(ph, Parallel.threads() * 3));
+        final long[][] clip = new long[bands][3];
+        Parallel.forRange(bands, new Parallel.Range() {
+            @Override
+            public void run(int b0, int b1) {
+                float[] acc = new float[3];
+                int[] n = new int[3];
+                for (int b = b0; b < b1; b++) {
+                    long[] cl = clip[b];
+                    for (int j = b * ph / bands; j < (b + 1) * ph / bands; j++) {
+                        for (int i = 0; i < pw; i++) {
+                            acc[0] = acc[1] = acc[2] = 0;
+                            n[0] = n[1] = n[2] = 0;
+                            for (int dy = 0; dy < FACTOR; dy++) {
+                                int y = j * FACTOR + dy;
+                                int o = y * W;
+                                int py = (y & 1) << 1;
+                                for (int dx = 0; dx < FACTOR; dx++) {
+                                    int x = i * FACTOR + dx;
+                                    int p = py | (x & 1);
+                                    int c = cfa[p];
+                                    float v = (raw[o + x] & 0xFFFF) * invScale;
+                                    if (v >= clipAt) cl[c]++;
+                                    acc[c] += v - black[p];
+                                    n[c]++;
+                                }
+                            }
+                            int k = j * pw + i;
+                            float gr = 1, gg = 1, gb = 1;
+                            if (sh != null) {
+                                double xc = i * FACTOR + FACTOR * 0.5, yc = j * FACTOR + FACTOR * 0.5;
+                                gr = sh.gain(pR, xc, yc);
+                                gg = sh.gain(pG, xc, yc);
+                                gb = sh.gain(pB, xc, yc);
+                            }
+                            img.r[k] = n[0] > 0 ? acc[0] / n[0] * gr : 0;
+                            img.g[k] = n[1] > 0 ? acc[1] / n[1] * gg : 0;
+                            img.b[k] = n[2] > 0 ? acc[2] / n[2] * gb : 0;
+                        }
+                    }
+                }
+            }
+        });
+        if (clippedOut != null) {
+            long[] tot = new long[3];
+            for (long[] cl : clip) for (int c = 0; c < 3; c++) tot[c] += cl[c];
+            double samples = (double) pw * ph * FACTOR * FACTOR;
+            // a 2x2 Bayer cell holds one red, two green and one blue sample
+            clippedOut[0] = (float) (tot[0] / (samples / 4));
+            clippedOut[1] = (float) (tot[1] / (samples / 2));
+            clippedOut[2] = (float) (tot[2] / (samples / 4));
+        }
+        return img;
+    }
+
     /** Current average as a camera-RGB image (lens shading applied), or null before the first unit. */
     public synchronized RgbImage image() {
         if (units == 0) return null;

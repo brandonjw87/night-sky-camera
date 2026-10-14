@@ -15,9 +15,25 @@ import java.util.concurrent.TimeUnit;
  */
 public final class UnitProcessor {
     public interface Listener {
-        void onUnit(UnitRecord rec, Aligner.Result live, int unitsDone);
+        void onUnit(UnitProcessor src, UnitRecord rec, Aligner.Result live, int unitsDone);
 
         void onError(Throwable t);
+    }
+
+    /** The most recent unit at preview size, unaligned, for the remote viewer. */
+    public static final class Latest {
+        public final RgbImage image;
+        /** Fraction of red, green and blue samples at the white level. */
+        public final float[] clipped;
+        public final int index;
+        public final double t;
+
+        Latest(RgbImage image, float[] clipped, int index, double t) {
+            this.image = image;
+            this.clipped = clipped;
+            this.index = index;
+            this.t = t;
+        }
     }
 
     public static final class FrameInfo {
@@ -50,6 +66,10 @@ public final class UnitProcessor {
     private int sumCount;
     private long t0Ns = Long.MIN_VALUE;
     private volatile boolean failed;
+    private volatile boolean keepLatest;
+    private volatile Latest latest;
+    /** Defective pixels found so far, to keep them out of the live pictures (refreshed as units come in). */
+    private HotPixels liveHot;
 
     public UnitProcessor(SessionStore store, SensorSpec spec, int framesPerUnit, int poolSize, Listener listener) {
         this.store = store;
@@ -87,6 +107,16 @@ public final class UnitProcessor {
 
     public boolean failed() {
         return failed;
+    }
+
+    /** Whether to keep a preview-size copy of each unit (only while someone may look at it). */
+    public void setKeepLatest(boolean keep) {
+        keepLatest = keep;
+        if (!keep) latest = null;
+    }
+
+    public Latest latest() {
+        return latest;
     }
 
     /** A free frame buffer, waiting up to {@code waitMs}; null if processing has fallen too far behind. */
@@ -212,7 +242,15 @@ public final class UnitProcessor {
         StarList stars = detector.detect(raw, sc, 300);
         store.writeStars(r.index, stars);
         Aligner.Result live = aligner.process(r.index, stars, r.t);
+        // the unit is stored and measured: hot pixels can now be painted over for the live pictures
+        if (sumCount >= 2 && Integer.bitCount(sumCount) == 1) updateLiveHot();
+        if (liveHot != null) liveHot.fix(raw);
         if (live.ok && !r.disturbed) preview.add(raw, sc, bl, live.R);
+        if (keepLatest) {
+            float[] clipped = new float[3];
+            RgbImage thumb = preview.thumbnail(raw, sc, bl, clipped);
+            latest = new Latest(thumb, clipped, r.index, r.t);
+        }
         r.stars = stars.count;
         r.liveOk = live.ok;
         r.rms = (float) live.rms;
@@ -224,7 +262,30 @@ public final class UnitProcessor {
                 "unit %d t=%.1fs exp=%.2fs x%d iso=%d stars=%d %s rms=%.2f hfr=%.2f bg=%.1f noise=%.2f gyro=%.4f%s %s",
                 r.index, r.t, r.exposure, r.frames, r.iso, stars.count, live.ok ? "aligned" : "unaligned", live.rms,
                 live.medianHfr, stars.background, stars.noise, r.gyroMax, r.disturbed ? " DISTURBED" : "", live.note));
-        if (listener != null) listener.onUnit(r, live, nextIndex);
+        if (listener != null) listener.onUnit(this, r, live, nextIndex);
+    }
+
+    /** Hot pixel map from the sensor-fixed average so far (as the develop step makes it), after 2, 4, 8... units. */
+    private void updateLiveHot() {
+        final float inv = 1f / sumCount;
+        final float[] s = sensorSum;
+        Parallel.forRange(H, 32, new Parallel.Range() {
+            @Override
+            public void run(int y0, int y1) {
+                for (int i = y0 * W, e = y1 * W; i < e; i++) s[i] *= inv;
+            }
+        });
+        try {
+            liveHot = HotPixels.detect(s, W, H, spec.cfa, sumCount >= 8 ? 8f : 12f);
+        } finally {
+            final float n = sumCount;
+            Parallel.forRange(H, 32, new Parallel.Range() {
+                @Override
+                public void run(int y0, int y1) {
+                    for (int i = y0 * W, e = y1 * W; i < e; i++) s[i] *= n;
+                }
+            });
+        }
     }
 
     /** Stores any partial unit and the sensor-fixed sum, then stops the worker thread. */

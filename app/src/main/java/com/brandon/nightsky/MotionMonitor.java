@@ -35,6 +35,8 @@ final class MotionMonitor implements SensorEventListener {
     private final float[] g = new float[3];
     private volatile boolean haveGravity;
     private volatile long lastDisturbNs = Long.MAX_VALUE;
+    /** Last rotation or knock, whichever way the phone faces. */
+    private volatile long lastMotionNs = Long.MAX_VALUE;
     private volatile float lastRate;
 
     MotionMonitor(Context c) {
@@ -54,6 +56,7 @@ final class MotionMonitor implements SensorEventListener {
         thread.start();
         Handler h = new Handler(thread.getLooper());
         lastDisturbNs = SystemClock.elapsedRealtimeNanos();
+        lastMotionNs = lastDisturbNs;
         if (gyro != null) sm.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME, h);
         if (gravity != null) sm.registerListener(this, gravity, SensorManager.SENSOR_DELAY_GAME, h);
         // the accelerometer also catches knocks the gyroscope can miss
@@ -82,7 +85,10 @@ final class MotionMonitor implements SensorEventListener {
                 if (gCount < RING) gCount++;
             }
             lastRate = m;
-            if (m > QUIET_RAD_S) lastDisturbNs = t;
+            if (m > QUIET_RAD_S) {
+                lastDisturbNs = t;
+                lastMotionNs = t;
+            }
         } else if (type == Sensor.TYPE_GRAVITY) {
             g[0] = e.values[0];
             g[1] = e.values[1];
@@ -103,7 +109,10 @@ final class MotionMonitor implements SensorEventListener {
             if (haveGravity) {
                 float dx = x - g[0], dy = y - g[1], dz = z - g[2];
                 // a knock or a footstep on a wooden deck
-                if (dx * dx + dy * dy + dz * dz > 0.35f * 0.35f) lastDisturbNs = t;
+                if (dx * dx + dy * dy + dz * dz > 0.35f * 0.35f) {
+                    lastDisturbNs = t;
+                    lastMotionNs = t;
+                }
             }
         }
     }
@@ -127,6 +136,12 @@ final class MotionMonitor implements SensorEventListener {
         long now = SystemClock.elapsedRealtimeNanos();
         long d = lastDisturbNs;
         return d == Long.MAX_VALUE ? 0 : Math.max(0, now - d);
+    }
+
+    /** How long the phone has been motionless, in ns, whichever way it faces (for a start from the viewer). */
+    long quietNs() {
+        long d = lastMotionNs;
+        return d == Long.MAX_VALUE ? 0 : Math.max(0, SystemClock.elapsedRealtimeNanos() - d);
     }
 
     /** Latest rotation rate, rad/s. */

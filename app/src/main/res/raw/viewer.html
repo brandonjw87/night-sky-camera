@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Night Sky viewer</title>
+<style>
+:root{--bg:#000;--red:#e53935;--dim:#9a2a25;--dark:#2a0807;--sel:#6e1512;--pale:#ffcdd2}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--red);margin:0;font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:14px 16px 40px}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:20px;margin:0;flex:1}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:6px}
+.dot.on{background:var(--red);box-shadow:0 0 6px var(--red)}
+.muted{color:var(--dim)}
+.grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:16px;margin-top:12px}
+@media (max-width:820px){.grid{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--dark);border:1px solid var(--dim);border-radius:14px;padding:12px 14px}
+#headline{font-size:24px;font-weight:700;margin:0}
+#detail{color:var(--dim);margin-top:2px;min-height:1.4em}
+.bar{height:8px;background:#1a0504;border-radius:4px;overflow:hidden;margin-top:10px}
+.bar>div{height:100%;width:0;background:var(--red);transition:width .6s}
+.bar.ind>div{width:30%;animation:ind 1.4s infinite linear}
+@keyframes ind{from{margin-left:-30%}to{margin-left:100%}}
+.tabs{display:flex;gap:6px;margin-bottom:8px}
+.tabs button{flex:1}
+button{font:inherit;font-size:16px;padding:10px 12px;border-radius:12px;border:1px solid var(--dim);background:var(--dark);color:var(--red);cursor:pointer}
+button.primary{background:var(--red);color:#000;border-color:var(--red);font-weight:600}
+button.sel{background:var(--sel);color:var(--pale);border-color:var(--red);font-weight:600}
+button:disabled{opacity:.35;cursor:default}
+:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+.pic{position:relative;background:#000;border-radius:10px;overflow:hidden;min-height:180px;display:flex;align-items:center;justify-content:center}
+.pic img{width:100%;height:auto;display:block}
+.pic .empty{color:var(--dim);padding:40px 10px;text-align:center}
+.pic .stamp{position:absolute;left:8px;bottom:6px;font-size:12px;color:var(--dim);background:rgba(0,0,0,.6);padding:1px 6px;border-radius:6px}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.controls button{flex:1 1 140px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin:0}
+.stats div{min-width:0}
+.stats dt{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.stats dd{margin:0;font-size:17px;font-weight:600;overflow-wrap:anywhere}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin:16px 0 6px}
+canvas{width:100%;display:block;background:#0b0202;border-radius:8px}
+#files a{display:block;color:var(--pale);padding:8px 0;border-bottom:1px solid var(--sel);text-decoration:none}
+#files a span{color:var(--dim);font-size:13px;margin-left:6px}
+#note{margin-top:10px;min-height:1.3em}
+.warn{color:var(--pale)}
+footer{margin-top:22px;font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Night Sky</h1>
+    <span id="conn"><span class="dot" id="dot"></span><span id="connText">Connecting…</span></span>
+  </header>
+
+  <div class="grid">
+    <section>
+      <div class="card">
+        <p id="headline">…</p>
+        <div id="detail"></div>
+        <div class="bar" id="bar"><div id="barFill"></div></div>
+        <div class="controls" id="controls">
+          <button id="bStartNow" class="primary" hidden>Start now</button>
+          <button id="bStop" class="primary" hidden>Stop and develop</button>
+          <button id="bAdd" hidden>+5 minutes</button>
+          <button id="bMute" hidden>Mute the phone</button>
+          <button id="bArm" class="primary" hidden>Take another</button>
+          <button id="bCancel" hidden>Cancel</button>
+        </div>
+        <div id="note" class="muted"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="tabs">
+          <button id="tStack" class="sel">Stack so far</button>
+          <button id="tLatest">Latest frame</button>
+        </div>
+        <div class="pic" id="pic"><div class="empty" id="picEmpty">The picture appears after the first frames.</div>
+          <img id="img" alt="" hidden><span class="stamp" id="stamp" hidden></span></div>
+        <div class="muted" style="font-size:13px;margin-top:6px" id="picNote">Same brightness and colour as the finished photo.</div>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="filesCard" hidden>
+        <h2 style="margin-top:0">Download</h2>
+        <div id="files"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <dl class="stats">
+          <div><dt>Frame</dt><dd id="sFrame">–</dd></div>
+          <div><dt>Time left</dt><dd id="sLeft">–</dd></div>
+          <div><dt>Exposure</dt><dd id="sExp">–</dd></div>
+          <div><dt>Stars</dt><dd id="sStars">–</dd></div>
+          <div><dt>Sharpness (FWHM)</dt><dd id="sFwhm">–</dd></div>
+          <div><dt>Clear sky</dt><dd id="sTrans">–</dd></div>
+          <div><dt>Frames kept</dt><dd id="sKept">–</dd></div>
+          <div><dt>Last frame</dt><dd id="sLast">–</dd></div>
+          <div><dt>Battery</dt><dd id="sBatt">–</dd></div>
+          <div><dt>Phone heat</dt><dd id="sHeat">–</dd></div>
+          <div><dt>Free space</dt><dd id="sFree">–</dd></div>
+          <div><dt>Mode</dt><dd id="sMode">–</dd></div>
+        </dl>
+        <div id="reject" class="muted" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2 style="margin-top:0">Histogram</h2>
+        <canvas id="hist" height="110"></canvas>
+        <div id="clip" class="muted" style="font-size:13px;margin-top:6px"></div>
+        <h2>Stars per frame</h2>
+        <canvas id="cStars" height="90"></canvas>
+        <h2>Sharpness (FWHM, pixels)</h2>
+        <canvas id="cFwhm" height="90"></canvas>
+        <h2>Sky background</h2>
+        <canvas id="cBg" height="90"></canvas>
+        <div class="muted" style="font-size:12px;margin-top:6px">Hollow dots are frames left out so far.</div>
+      </div>
+    </section>
+  </div>
+
+  <footer id="foot">Works on this Wi-Fi only. The phone stops the viewer 30 minutes after the last visit once the photo is done.</footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var token = new URLSearchParams(location.search).get("t") || "";
+  var q = "t=" + encodeURIComponent(token);
+  var $ = function (id) { return document.getElementById(id); };
+  var st = null, units = [], tab = "stack", shown = {stack: -1, latest: -1}, failures = 0, busy = false;
+  var lastOk = 0, timer = null;
+
+  function api(path, opts) {
+    return fetch(path + (path.indexOf("?") >= 0 ? "&" : "?") + q, opts || {cache: "no-store"}).then(function (r) {
+      if (r.status === 403) throw new Error("forbidden");
+      return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; });
+    });
+  }
+
+  function post(cmd, body) {
+    return api("/api/" + cmd, {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"}, body: body || ""});
+  }
+
+  function fmtClock(ms) {
+    if (ms == null || ms < 0) return "–";
+    var s = Math.ceil(ms / 1000);
+    return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+  }
+
+  function fmtBytes(b) {
+    if (b == null || b < 0) return "–";
+    if (b > 1e9) return (b / 1e9).toFixed(1) + " GB";
+    if (b < 1e6) return Math.max(1, Math.round(b / 1e3)) + " KB";
+    return Math.round(b / 1e6) + " MB";
+  }
+
+  function show(id, on) { $(id).hidden = !on; }
+
+  function render(s) {
+    st = s;
+    document.title = s.headline ? s.headline + " · Night Sky" : "Night Sky viewer";
+    $("headline").textContent = s.headline || stateName(s.state);
+    $("detail").textContent = s.detail || "";
+    var bar = $("bar");
+    if (s.progress >= 0) { bar.classList.remove("ind"); $("barFill").style.width = (100 * s.progress).toFixed(1) + "%"; }
+    else if (s.state === "developing" || s.state === "arming" || s.state === "countdown") { bar.classList.add("ind"); $("barFill").style.width = ""; }
+    else { bar.classList.remove("ind"); $("barFill").style.width = s.state === "done" ? "100%" : "0"; }
+
+    var can = s.can || {};
+    show("bStartNow", !!can.startNow);
+    show("bStop", !!can.stop);
+    show("bAdd", !!can.addTime);
+    show("bMute", !!can.mute);
+    $("bMute").textContent = s.muted ? "Unmute the phone" : "Mute the phone";
+    show("bArm", !!can.arm);
+    show("bCancel", !!can.cancel);
+
+    $("sFrame").textContent = s.frames ? (s.frame + " of " + s.frames) : "–";
+    $("sLeft").textContent = s.state === "capturing" || s.state === "paused" ? fmtClock(s.remainingMs) : "–";
+    $("sExp").textContent = s.exposureS ? (round(s.exposureS, s.exposureS < 10 ? 1 : 0) + " s · ISO " + s.iso) : "–";
+    $("sStars").textContent = s.stars != null ? s.stars : "–";
+    $("sFwhm").textContent = s.fwhmPx != null ? (round(s.fwhmPx, 1) + " px" + (s.fwhmArcsec ? " · " + Math.round(s.fwhmArcsec) + "″" : "")) : "–";
+    $("sTrans").textContent = s.transparency != null ? Math.round(100 * Math.min(1, s.transparency)) + "%" : "–";
+    $("sKept").textContent = s.unitsCount ? (s.used + " of " + s.unitsCount) : "–";
+    $("sLast").textContent = s.lastFrameMs ? ago(s.lastFrameMs, s.nowMs) : "–";
+    var b = s.battery || {};
+    $("sBatt").textContent = b.level != null ? (b.level + "%" + (b.charging ? " charging" : "") + (b.tempC != null ? " · " + round(b.tempC, 0) + " °C" : "")) : "–";
+    $("sHeat").textContent = s.thermal || "–";
+    $("sHeat").className = s.thermal && s.thermal !== "normal" ? "warn" : "";
+    $("sFree").textContent = fmtBytes(s.freeBytes);
+    $("sMode").textContent = s.mode === "trails" ? "Star trails" : "Deep sky";
+    $("reject").textContent = s.rejected ? (s.rejected + " left out so far" + (s.lastReject ? ", the last because of " + s.lastReject : "") + ".") : "";
+
+    var clip = s.clip;
+    $("clip").textContent = clip ? ("Clipped in the last frame: red " + pct(clip[0]) + ", green " + pct(clip[1]) + ", blue " + pct(clip[2])) : "";
+    drawHist(s.hist);
+
+    // pictures
+    var want = tab === "stack" ? s.previewVersion : s.latestVersion;
+    if (want != null && want >= 0 && want !== shown[tab]) loadPic(tab, want);
+    if ((tab === "stack" && s.previewVersion < 0) || (tab === "latest" && s.latestVersion < 0)) {
+      $("img").hidden = true; $("stamp").hidden = true; show("picEmpty", true);
+    }
+    $("picNote").textContent = tab === "stack"
+      ? (s.state === "done" ? "The finished photo." : "Same brightness and colour as the finished photo.")
+      : "One frame, before stacking, at the stack's brightness.";
+
+    // per-frame series
+    if (s.unitsCount != null && s.unitsCount !== units.length) loadUnits(s.unitsCount < units.length ? 0 : units.length);
+
+    // downloads
+    if (s.state === "done" && !filesShown) loadFiles();
+    if (s.state !== "done") { filesShown = false; show("filesCard", false); }
+    if (s.stopsInMin != null) $("foot").textContent = "Works on this Wi-Fi only. Once the photo is done, the viewer stops " + s.stopsInMin + " minutes after you last use it.";
+  }
+
+  function stateName(x) {
+    return {arming: "Getting ready", countdown: "Starting", capturing: "Capturing", paused: "Paused", developing: "Developing", done: "Done", failed: "Something went wrong", idle: "Waiting"}[x] || "";
+  }
+
+  function round(v, d) { var p = Math.pow(10, d); return Math.round(v * p) / p; }
+  function pct(v) { return v == null ? "–" : (v < 0.0001 ? "0%" : (100 * v < 0.1 ? (100 * v).toFixed(2) : (100 * v).toFixed(1)) + "%"); }
+  function ago(ms, now) {
+    var d = Math.max(0, Math.round(((now || Date.now()) - ms) / 1000));
+    var t = new Date(ms);
+    var hh = ("0" + t.getHours()).slice(-2) + ":" + ("0" + t.getMinutes()).slice(-2) + ":" + ("0" + t.getSeconds()).slice(-2);
+    return hh + (d < 600 ? " (" + d + " s ago)" : "");
+  }
+
+  var loading = false;
+  function loadPic(which, version) {
+    if (loading) return;
+    loading = true;
+    var im = new Image();
+    im.onload = function () {
+      loading = false;
+      if (tab !== which) return;
+      shown[which] = version;
+      var img = $("img");
+      img.src = im.src;
+      img.hidden = false;
+      show("picEmpty", false);
+      var stamp = $("stamp");
+      stamp.textContent = which === "stack" ? (st && st.unitsCount ? "stack of " + st.used + " frames" : "") : (st && st.unitsCount ? "frame " + st.unitsCount : "");
+      stamp.hidden = !stamp.textContent;
+    };
+    im.onerror = function () { loading = false; };
+    im.src = "/" + (which === "stack" ? "stack" : "latest") + ".jpg?" + q + "&v=" + version;
+  }
+
+  function loadUnits(from) {
+    if (busy) return;
+    busy = true;
+    api("/api/units?from=" + from).then(function (arr) {
+      busy = false;
+      if (from === 0) units = [];
+      for (var i = 0; i < arr.length; i++) units[arr[i].i] = arr[i];
+      drawCharts();
+    }, function () { busy = false; });
+  }
+
+  var filesShown = false;
+  function loadFiles() {
+    filesShown = true;
+    api("/api/files").then(function (list) {
+      var box = $("files");
+      box.textContent = "";
+      list.forEach(function (f) {
+        var a = document.createElement("a");
+        a.href = "/file?" + q + "&id=" + encodeURIComponent(f.id);
+        a.setAttribute("download", f.name);
+        a.textContent = f.name;
+        var sp = document.createElement("span");
+        sp.textContent = f.size >= 0 ? fmtBytes(f.size) : "";
+        a.appendChild(sp);
+        box.appendChild(a);
+      });
+      show("filesCard", list.length > 0);
+    }, function () { filesShown = false; });
+  }
+
+  // ---- drawing ----
+  function sizeCanvas(c) {
+    var r = window.devicePixelRatio || 1, w = c.clientWidth, h = c.getAttribute("height") | 0;
+    if (c.width !== Math.round(w * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
+    var g = c.getContext("2d");
+    g.setTransform(r, 0, 0, r, 0, 0);
+    g.clearRect(0, 0, w, h);
+    return {g: g, w: w, h: h};
+  }
+
+  function drawHist(hist) {
+    var c = sizeCanvas($("hist")), g = c.g;
+    if (!hist || !hist.r) return;
+    var cols = ["rgba(229,57,53,0.85)", "rgba(255,205,210,0.55)", "rgba(154,42,37,0.9)"];
+    var chans = [hist.r, hist.g, hist.b], max = 1;
+    chans.forEach(function (a) { for (var i = 0; i < a.length; i++) max = Math.max(max, a[i]); });
+    var lmax = Math.log(1 + max);
+    chans.forEach(function (a, k) {
+      g.strokeStyle = cols[k]; g.lineWidth = 1.5; g.beginPath();
+      for (var i = 0; i < a.length; i++) {
+        var x = (i + 0.5) / a.length * c.w, y = c.h - 4 - (c.h - 8) * Math.log(1 + a[i]) / lmax;
+        if (i) g.lineTo(x, y); else g.moveTo(x, y);
+      }
+      g.stroke();
+    });
+  }
+
+  function drawSeries(id, key, scale) {
+    var c = sizeCanvas($(id)), g = c.g;
+    var pts = [];
+    for (var i = 0; i < units.length; i++) {
+      var u = units[i];
+      if (u && u[key] != null && isFinite(u[key])) pts.push(u);
+    }
+    if (pts.length === 0) { g.fillStyle = "#9a2a25"; g.font = "12px system-ui"; g.fillText("No frames yet", 8, 18); return; }
+    var lo = Infinity, hi = -Infinity, t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    pts.forEach(function (u) { var v = u[key] * scale; lo = Math.min(lo, v); hi = Math.max(hi, v); });
+    if (hi - lo < 1e-6) { hi += 1; lo = Math.max(0, lo - 1); }
+    var pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+    if (t1 - t0 < 1e-6) t1 = t0 + 1;
+    var X = function (t) { return 34 + (c.w - 42) * (t - t0) / (t1 - t0); };
+    var Y = function (v) { return c.h - 8 - (c.h - 16) * (v - lo) / (hi - lo); };
+    g.fillStyle = "#9a2a25"; g.font = "11px system-ui";
+    g.fillText(fmtNum(hi - pad), 2, 12); g.fillText(fmtNum(lo + pad), 2, c.h - 6);
+    g.strokeStyle = "#e53935"; g.lineWidth = 1.2; g.beginPath();
+    var first = true;
+    pts.forEach(function (u) { if (!u.ok) return; var x = X(u.t), y = Y(u[key] * scale); if (first) { g.moveTo(x, y); first = false; } else g.lineTo(x, y); });
+    g.stroke();
+    pts.forEach(function (u) {
+      var x = X(u.t), y = Y(u[key] * scale);
+      g.beginPath(); g.arc(x, y, 3, 0, 6.2832);
+      if (u.ok) { g.fillStyle = "#e53935"; g.fill(); } else { g.strokeStyle = "#ffcdd2"; g.lineWidth = 1.2; g.stroke(); }
+    });
+  }
+
+  function fmtNum(v) { return Math.abs(v) >= 100 ? Math.round(v) : (Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)); }
+
+  function drawCharts() {
+    drawSeries("cStars", "stars", 1);
+    drawSeries("cFwhm", "fwhm", 1);
+    drawSeries("cBg", "bg", 1);
+  }
+
+  window.addEventListener("resize", function () { drawCharts(); if (st) drawHist(st.hist); });
+
+  // ---- polling ----
+  function poll() {
+    api("/api/status").then(function (s) {
+      failures = 0;
+      lastOk = Date.now();
+      $("dot").className = "dot on";
+      $("connText").textContent = "Live";
+      render(s);
+      // once the photo is done there is little news: ask less often, and rarely from a tab nobody looks at
+      var ended = s.state === "done" || s.state === "failed" || s.state === "idle";
+      schedule(document.hidden ? (ended ? 120000 : 15000) : (s.state === "countdown" ? 1000 : (ended ? 5000 : 2000)));
+    }, function (e) {
+      failures++;
+      $("dot").className = "dot";
+      if (String(e && e.message) === "forbidden") {
+        $("connText").textContent = "This link has expired";
+        $("headline").textContent = "This viewer link no longer works";
+        $("detail").textContent = "Each session has its own link. Open the new one shown on the phone.";
+        return;
+      }
+      $("connText").textContent = lastOk ? "Lost the phone, retrying…" : "Cannot reach the phone";
+      schedule(Math.min(10000, 2000 + failures * 1000));
+    });
+  }
+
+  function schedule(ms) { clearTimeout(timer); timer = setTimeout(poll, ms); }
+
+  // ---- buttons ----
+  function act(cmd, confirmText) {
+    if (confirmText && !confirm(confirmText)) return;
+    $("note").textContent = "Sending…";
+    post(cmd).then(function (r) {
+      $("note").textContent = r.message || "";
+      schedule(300);
+    }, function (e) { $("note").textContent = "Did not work: " + (e && e.message ? e.message : "no answer"); });
+  }
+
+  $("bStartNow").onclick = function () { act("start-now"); };
+  $("bStop").onclick = function () { act("stop", "Stop now and develop the frames taken so far?"); };
+  $("bAdd").onclick = function () { act("add-time"); };
+  $("bMute").onclick = function () { act(st && st.muted ? "unmute" : "mute"); };
+  $("bArm").onclick = function () { act("arm", "Take another photo with the same settings? Leave the phone where it is."); };
+  $("bCancel").onclick = function () { act("cancel", "Cancel this session?"); };
+
+  function setTab(t) {
+    tab = t;
+    $("tStack").className = t === "stack" ? "sel" : "";
+    $("tLatest").className = t === "latest" ? "sel" : "";
+    shown[t] = -1;
+    if (st) render(st);
+  }
+  $("tStack").onclick = function () { setTab("stack"); };
+  $("tLatest").onclick = function () { setTab("latest"); };
+
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) schedule(0); });
+  poll();
+})();
+</script>
+</body>
+</html>
