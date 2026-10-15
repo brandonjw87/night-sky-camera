@@ -12,6 +12,13 @@ import java.util.List;
  * A bump the gyro saw, or a jump that two frames in a row agree on, starts a new stretch: the path is only
  * smooth while the phone stays put.
  * <p>
+ * No single frame is trusted to start a stretch: a frame matched wrongly, or taken while the phone was still
+ * settling, would set a wrong rate and make every later frame look wrong. The filter starts instead from
+ * three frames that agree with a steady turn, tried from the start, the middle and the end of the stretch
+ * (and around the reference frame), and keeps the start that sets the fewest frames aside. Which frames
+ * are set aside and where stretches split is decided that way first; the path is then smoothed through the
+ * rest.
+ * <p>
  * How far the phone may wander on its own sets the process noise: {@link #DRIFT_RAD} over {@link #DRIFT_TIME}
  * seconds. If the alignments disagree with that more than their uncertainties allow, the smoother loosens
  * (ten times the process noise, up to three times), so a creeping phone is followed rather than smoothed over.
@@ -26,6 +33,8 @@ public final class SkyMotion {
         public double[] cov;
         /** Moved during the exposure (gyro): not used, and a new stretch starts after it. */
         public boolean disturbed;
+        /** The frame every other was aligned to: a start that sets it aside is only taken if no other start fits. */
+        public boolean reference;
 
         /** Smoothed rotation, or null where the frame couldn't be placed. */
         public double[] smoothed;
@@ -58,6 +67,10 @@ public final class SkyMotion {
     static final double DEFAULT_SIGMA_PX = 0.5;
     /** Smallest uncertainty (pixels) of any measurement, so the frame that defines the coordinates isn't singular. */
     static final double MIN_SIGMA_PX = 0.002;
+    /** Measured frames searched for three that agree, from each place a search starts. */
+    static final int TRIPLE_WINDOW = 6;
+    /** Measurements set aside after the path is smoothed, at most, per stretch. */
+    static final int RECHECKS = 5;
 
     private SkyMotion() {}
 
@@ -107,22 +120,28 @@ public final class SkyMotion {
         for (int s = 0; s < spans.size(); s++) {
             int from = spans.get(s)[0], to = spans.get(s)[1];
             while (from <= to) {
-                // loosen the path until the alignments fit it as well as their uncertainties say they should
-                Pass p = null;
-                double qq = q;
-                for (int loosen = 0; loosen <= 3; loosen++) {
-                    p = new Pass(frames, z, M, from, to, qq, rateVar);
-                    if (p.split >= 0 || p.updates < 5 || p.nis / p.updates <= 2 * 3) break;
-                    if (loosen < 3) {
-                        qq *= 10;
-                        res.loosened++;
+                // which frames to set aside, and where the stretch ends; then the path through the others
+                Decision d = decide(frames, z, M, from, to, q, rateVar);
+                // frames before a jump the chosen start saw looking back are a stretch of their own
+                while (d.start > from) d = decide(frames, z, M, from, d.start - 1, q, rateVar);
+                res.loosened += d.loosened;
+                // each measurement was judged from one side only: one the whole path disagrees with goes too, if
+                // the path without it fits its neighbours (otherwise the path bends, and they all stay)
+                Pass p = new Pass(frames, z, M, from, d.end, d.q, rateVar, d.out);
+                for (int round = 0; round < RECHECKS; round++) {
+                    int w = p.worst(frames, z, M);
+                    if (w < 0) break;
+                    d.out[w - from] = true;
+                    Pass without = new Pass(frames, z, M, from, d.end, d.q, rateVar, d.out);
+                    if (!without.isolated(z, M, w)) {
+                        d.out[w - from] = false;
+                        break;
                     }
+                    p = without;
                 }
-                int end = p.split >= 0 ? p.split - 1 : to;
-                if (p.split >= 0) p = new Pass(frames, z, M, from, end, qq, rateVar);
                 p.write(frames, f, seg, res);
                 seg++;
-                from = end + 1;
+                from = d.end + 1;
             }
         }
         res.segments = seg;
@@ -145,36 +164,297 @@ public final class SkyMotion {
         return res;
     }
 
-    /** One forward-backward run over frames [from, to]. */
+    /** Where a stretch starts and ends, which of its frames are set aside, and the process noise that fits it. */
+    private static final class Decision {
+        int start, end;
+        /** Set aside, from the first frame decided on (not {@link #start}) to {@link #end}. */
+        boolean[] out;
+        double q;
+        int loosened;
+    }
+
+    /**
+     * Decides frames [from, to]. From each start that three agreeing frames give (at the beginning, the middle
+     * and the end of the stretch, and around the reference frame) the path is followed forward to the end and
+     * back to the beginning ({@link Sweeps}), each start loosened while the alignments disagree with the path
+     * more than their uncertainties allow. The start that sets the fewest frames aside wins, one that sets the
+     * reference frame aside only if all do. Its stretch begins after {@code from} if it saw a jump looking back:
+     * the frames before that are a stretch of their own.
+     */
+    private static Decision decide(List<Frame> frames, double[][] z, double[][] M, int from, int to, double q, double rateVar) {
+        List<Integer> idx = new ArrayList<Integer>();
+        int refPos = -1;
+        for (int i = from; i <= to; i++) {
+            if (z[i] == null) continue;
+            if (frames.get(i).reference) refPos = idx.size();
+            idx.add(i);
+        }
+        List<Prior> starts = new ArrayList<Prior>();
+        int n = idx.size();
+        if (n >= 3) {
+            int[] at = {0, n / 2 - TRIPLE_WINDOW / 2, n - TRIPLE_WINDOW, refPos - 2};
+            for (int k = 0; k < at.length; k++) {
+                if (k == 3 && refPos < 0) continue;
+                Prior pr = consistentTriple(frames, z, M, idx, Math.max(0, Math.min(n - 3, at[k])), q);
+                if (pr == null) continue;
+                boolean dup = false;
+                for (Prior o : starts) dup |= java.util.Arrays.equals(o.frames, pr.frames);
+                if (!dup) starts.add(pr);
+            }
+        }
+        if (starts.isEmpty()) starts.add(null);
+        Decision best = null;
+        long bestScore = Long.MIN_VALUE;
+        for (Prior pr : starts) {
+            Sweeps s = null;
+            double qq = q;
+            int loosened = 0;
+            for (int loosen = 0; loosen <= 3; loosen++) {
+                s = new Sweeps(frames, z, M, from, to, qq, rateVar, pr);
+                if (s.lo > from || s.hi < to || s.updates < 5 || s.nis / s.updates <= 2 * 3) break;
+                if (loosen < 3) {
+                    qq *= 10;
+                    loosened++;
+                }
+            }
+            int accepted = 0, gated = 0;
+            boolean refOut = false;
+            for (int i = s.lo; i <= s.hi; i++) {
+                if (z[i] == null) continue;
+                if (s.gated[i - from]) {
+                    gated++;
+                    refOut |= frames.get(i).reference;
+                } else {
+                    accepted++;
+                }
+            }
+            // the reference set aside counts against a start above all else; then frames kept, then length
+            long score = (refOut ? 0L : 1L << 40) + ((long) (accepted - gated + (1 << 20)) << 16) + (s.hi - s.lo);
+            if (score > bestScore) {
+                bestScore = score;
+                best = new Decision();
+                best.start = s.lo;
+                best.end = s.hi;
+                best.out = java.util.Arrays.copyOf(s.gated, s.hi - from + 1);
+                best.q = qq;
+                best.loosened = loosened;
+            }
+        }
+        return best;
+    }
+
+    /** A start for a pass: the path's state (position, rate) at time t from three frames, and which they are. */
+    private static final class Prior {
+        double[] x, P;
+        double t;
+        int[] frames;
+
+        boolean has(int i) {
+            for (int f : frames) if (f == i) return true;
+            return false;
+        }
+    }
+
+    /**
+     * The first three measured frames (searching from position {@code start} in idx, each within
+     * {@link #TRIPLE_WINDOW} of the first) whose middle one lies where the other two put it, given their
+     * uncertainties and how far the phone may drift between them; the path they give (weighted least squares
+     * of position and rate) as a start. Null if no three agree.
+     */
+    private static Prior consistentTriple(List<Frame> frames, double[][] z, double[][] M, List<Integer> idx, int start, double q) {
+        int n = idx.size();
+        for (int a = start; a < n; a++) {
+            for (int c = a + 2; c < Math.min(n, a + TRIPLE_WINDOW); c++) {
+                for (int b = a + 1; b < c; b++) {
+                    int i = idx.get(a), j = idx.get(b), k = idx.get(c);
+                    double ti = frames.get(i).t, tj = frames.get(j).t, tk = frames.get(k).t;
+                    double T = tk - ti;
+                    if (!(T > 0)) continue;
+                    double l = (tj - ti) / T, drift = q * T * T * T / 3;
+                    double[] y = new double[3], S = new double[9];
+                    for (int r = 0; r < 3; r++) {
+                        y[r] = z[j][r] - ((1 - l) * z[i][r] + l * z[k][r]);
+                        for (int e = 0; e < 3; e++) {
+                            S[3 * r + e] = M[j][3 * r + e] + (1 - l) * (1 - l) * M[i][3 * r + e] + l * l * M[k][3 * r + e];
+                        }
+                        S[4 * r] += drift;
+                    }
+                    double[] Si = Rot.inverse(S);
+                    if (Si == null || quad(Si, y) > GATE) continue;
+                    return fitLine(frames, z, M, new int[]{i, j, k}, q);
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Weighted least squares of position (at the first frame's time) and rate through the given frames. */
+    private static Prior fitLine(List<Frame> frames, double[][] z, double[][] M, int[] fr, double q) {
+        double t0 = frames.get(fr[0]).t, T = frames.get(fr[fr.length - 1]).t - t0;
+        double drift = q * T * T * T / 3;
+        double[] J = new double[36], b = new double[6];
+        for (int m : fr) {
+            double tau = frames.get(m).t - t0;
+            double[] C = M[m].clone();
+            for (int r = 0; r < 3; r++) C[4 * r] += drift;
+            double[] Wm = Rot.inverse(C);
+            if (Wm == null) return null;
+            for (int r = 0; r < 3; r++) {
+                for (int c = 0; c < 3; c++) {
+                    double w = Wm[3 * r + c];
+                    J[6 * r + c] += w;
+                    J[6 * r + c + 3] += tau * w;
+                    J[6 * (r + 3) + c] += tau * w;
+                    J[6 * (r + 3) + c + 3] += tau * tau * w;
+                    b[r] += w * z[m][c];
+                    b[r + 3] += tau * w * z[m][c];
+                }
+            }
+        }
+        double[] P = inverse6(J);
+        if (P == null) return null;
+        Prior p = new Prior();
+        p.x = new double[6];
+        for (int r = 0; r < 6; r++) for (int c = 0; c < 6; c++) p.x[r] += P[6 * r + c] * b[c];
+        symmetrize(P);
+        p.P = P;
+        p.t = t0;
+        p.frames = fr;
+        return p;
+    }
+
+    /**
+     * The deciding run from one start: forward from it to {@code to} and back from it to {@code from}, each
+     * measurement checked against the path so far and set aside if it doesn't fit. [lo, hi] is the stretch it
+     * saw: hi is the frame before a jump ahead, lo the frame after a jump behind.
+     */
+    private static final class Sweeps {
+        /** Set aside, from {@code from}. */
+        final boolean[] gated;
+        int lo, hi, updates;
+        double nis;
+
+        Sweeps(List<Frame> frames, double[][] z, double[][] M, int from, int to, double q, double rateVar, Prior prior) {
+            gated = new boolean[to - from + 1];
+            lo = from;
+            hi = to;
+            int a = -1;
+            double[] x, P;
+            if (prior != null) {
+                a = prior.frames[0];
+                x = prior.x;
+                P = prior.P;
+            } else {
+                // no three frames agree: the first measured one starts, with the sidereal rate as a loose prior
+                for (int i = from; i <= to && a < 0; i++) if (z[i] != null) a = i;
+                if (a < 0) return;
+                x = new double[6];
+                P = new double[36];
+                for (int c = 0; c < 3; c++) {
+                    x[c] = z[a][c];
+                    for (int d = 0; d < 3; d++) P[6 * c + d] = M[a][3 * c + d];
+                    P[6 * (c + 3) + c + 3] = rateVar;
+                }
+            }
+            int ahead = sweep(frames, z, M, from, a, to, 1, x, P, q, prior);
+            if (ahead >= 0) hi = ahead - 1;
+            int behind = sweep(frames, z, M, from, a, from, -1, x, P, q, prior);
+            if (behind >= 0) lo = behind + 1;
+        }
+
+        /**
+         * From frame a (state x, P) to frame stop in direction dir. Returns the nearest frame beyond a jump
+         * (measurements in a row that don't fit the path but fit each other, not just the first of them, which
+         * may be a wrong match of its own), or -1.
+         */
+        private int sweep(List<Frame> frames, double[][] z, double[][] M, int from, int a, int stop, int dir, double[] x,
+                          double[] P, double q, Prior prior) {
+            double tPrev = frames.get(a).t;
+            List<Integer> streak = new ArrayList<Integer>();
+            for (int i = a + dir; dir > 0 ? i <= stop : i >= stop; i += dir) {
+                if (z[i] == null) continue;
+                double t = frames.get(i).t;
+                x = predictState(x, t - tPrev);
+                P = predictCov(P, t - tPrev, q);
+                tPrev = t;
+                if (prior != null && prior.has(i)) {
+                    // its measurement is in the start already
+                    streak.clear();
+                    continue;
+                }
+                double[] y = new double[3], S = new double[9];
+                for (int c = 0; c < 3; c++) {
+                    y[c] = z[i][c] - x[c];
+                    for (int d = 0; d < 3; d++) S[3 * c + d] = P[6 * c + d] + M[i][3 * c + d];
+                }
+                double[] Si = Rot.inverse(S);
+                double d2 = Si == null ? Double.POSITIVE_INFINITY : quad(Si, y);
+                if (d2 > GATE) {
+                    gated[i - from] = true;
+                    for (int e : streak) if (fitEachOther(z, M, e, i, x, P, t - frames.get(e).t, q)) return e;
+                    streak.add(i);
+                    continue;
+                }
+                streak.clear();
+                double[][] xp = update(x, P, y, Si);
+                x = xp[0];
+                P = xp[1];
+                updates++;
+                nis += d2;
+            }
+            return -1;
+        }
+    }
+
+    /** Kalman update with innovation y and its inverse covariance Si: {x, P}. */
+    private static double[][] update(double[] x, double[] P, double[] y, double[] Si) {
+        // K = P H' S^-1 (6 x 3); x += K y; P -= K H P
+        double[] K = new double[18];
+        for (int r = 0; r < 6; r++) {
+            for (int c = 0; c < 3; c++) {
+                double v = 0;
+                for (int d = 0; d < 3; d++) v += P[6 * r + d] * Si[3 * d + c];
+                K[3 * r + c] = v;
+            }
+        }
+        double[] xn = x.clone();
+        for (int r = 0; r < 6; r++) for (int c = 0; c < 3; c++) xn[r] += K[3 * r + c] * y[c];
+        double[] Pn = P.clone();
+        for (int r = 0; r < 6; r++) {
+            for (int c = 0; c < 6; c++) {
+                double v = 0;
+                for (int d = 0; d < 3; d++) v += K[3 * r + d] * P[6 * d + c];
+                Pn[6 * r + c] -= v;
+            }
+        }
+        symmetrize(Pn);
+        return new double[][]{xn, Pn};
+    }
+
+    /**
+     * The path through frames [from, to] (Kalman filter forward, Rauch-Tung-Striebel smoother back), leaving
+     * out the frames marked in out; frames without a measurement before the first one are extrapolated back.
+     */
     private static final class Pass {
         final int from, to;
-        final double q;
-        /** First frame of a jump (two measurements in a row that don't fit, but fit each other), or -1. */
-        int split = -1;
-        int updates;
-        double nis;
-        final double[][] xf, Pf, xp, Pp;
         final boolean[] gated, has;
-        int first = -1;
+        double[][] xsAll, PsAll;
 
-        Pass(List<Frame> frames, double[][] z, double[][] M, int from, int to, double q, double rateVar) {
+        Pass(List<Frame> frames, double[][] z, double[][] M, int from, int to, double q, double rateVar, boolean[] out) {
             this.from = from;
             this.to = to;
-            this.q = q;
             int m = to - from + 1;
-            xf = new double[m][];
-            Pf = new double[m][];
-            xp = new double[m][];
-            Pp = new double[m][];
+            double[][] xf = new double[m][], Pf = new double[m][], xp = new double[m][], Pp = new double[m][];
             gated = new boolean[m];
             has = new boolean[m];
             double[] x = null, P = null;
             double tPrev = 0;
-            int streak = 0, streakStart = -1;
+            int first = -1;
             for (int k = 0; k < m; k++) {
                 int i = from + k;
                 double t = frames.get(i).t;
-                has[k] = z[i] != null;
+                has[k] = z[i] != null && !out[k];
+                gated[k] = z[i] != null && out[k];
                 if (x == null) {
                     if (!has[k]) continue;
                     x = new double[6];
@@ -186,72 +466,39 @@ public final class SkyMotion {
                     }
                     xp[k] = x.clone();
                     Pp[k] = P.clone();
-                    xf[k] = x.clone();
-                    Pf[k] = P.clone();
+                    xf[k] = x;
+                    Pf[k] = P;
                     first = k;
                     tPrev = t;
                     continue;
                 }
                 double dt = t - tPrev;
+                x = predictState(x, dt);
+                P = predictCov(P, dt, q);
                 tPrev = t;
-                double[] xpk = predictState(x, dt);
-                double[] Ppk = predictCov(P, dt, q);
-                xp[k] = xpk;
-                Pp[k] = Ppk;
-                x = xpk;
-                P = Ppk;
+                xp[k] = x.clone();
+                Pp[k] = P.clone();
                 if (has[k]) {
                     double[] y = new double[3], S = new double[9];
                     for (int c = 0; c < 3; c++) {
-                        y[c] = z[i][c] - xpk[c];
-                        for (int d = 0; d < 3; d++) S[3 * c + d] = Ppk[6 * c + d] + M[i][3 * c + d];
+                        y[c] = z[i][c] - x[c];
+                        for (int d = 0; d < 3; d++) S[3 * c + d] = P[6 * c + d] + M[i][3 * c + d];
                     }
                     double[] Si = Rot.inverse(S);
-                    double d2 = Si == null ? Double.POSITIVE_INFINITY : quad(Si, y);
-                    if (d2 > GATE) {
-                        gated[k] = true;
-                        if (streak == 0) streakStart = k;
-                        streak++;
-                        if (streak >= 2 && fitEachOther(z, M, from + streakStart, i, x, P,
-                                t - frames.get(from + streakStart).t)) {
-                            split = from + streakStart;
-                            break;
-                        }
-                    } else {
-                        streak = 0;
-                        // K = P H' S^-1 (6 x 3); x += K y; P -= K H P
-                        double[] K = new double[18];
-                        for (int r = 0; r < 6; r++) {
-                            for (int c = 0; c < 3; c++) {
-                                double v = 0;
-                                for (int d = 0; d < 3; d++) v += Ppk[6 * r + d] * Si[3 * d + c];
-                                K[3 * r + c] = v;
-                            }
-                        }
-                        double[] xn = xpk.clone();
-                        for (int r = 0; r < 6; r++) for (int c = 0; c < 3; c++) xn[r] += K[3 * r + c] * y[c];
-                        double[] Pn = Ppk.clone();
-                        for (int r = 0; r < 6; r++) {
-                            for (int c = 0; c < 6; c++) {
-                                double v = 0;
-                                for (int d = 0; d < 3; d++) v += K[3 * r + d] * Ppk[6 * d + c];
-                                Pn[6 * r + c] -= v;
-                            }
-                        }
-                        symmetrize(Pn);
-                        x = xn;
-                        P = Pn;
-                        updates++;
-                        nis += d2;
+                    if (Si != null) {
+                        double[][] u = update(x, P, y, Si);
+                        x = u[0];
+                        P = u[1];
                     }
                 }
                 xf[k] = x;
                 Pf[k] = P;
             }
-            if (split >= 0 || first < 0) return;
+            if (first < 0) return;
             // backward pass over [first, end of span]: trailing frames without measurements are extrapolated
             int end = m - 1;
-            double[][] xsAll = new double[m][], PsAll = new double[m][];
+            xsAll = new double[m][];
+            PsAll = new double[m][];
             xsAll[end] = xf[end];
             PsAll[end] = Pf[end];
             for (int k = end - 1; k >= first; k--) {
@@ -281,11 +528,64 @@ public final class SkyMotion {
                 xsAll[k] = predictState(xsAll[first], dt);
                 PsAll[k] = predictCov(PsAll[first], dt, q);
             }
-            this.xsAll = xsAll;
-            this.PsAll = PsAll;
         }
 
-        double[][] xsAll, PsAll;
+        /**
+         * The measurement that disagrees most with the path through all of them, if beyond {@link #GATE}: its
+         * residual against its uncertainty less the path's (the path leans on it too). Not the reference frame,
+         * nor one the path rests on almost alone. The frame's index, or -1.
+         */
+        int worst(List<Frame> frames, double[][] z, double[][] M) {
+            int w = -1;
+            double wd = GATE;
+            for (int k = 0; k < has.length; k++) {
+                if (frames.get(from + k).reference) continue;
+                double d2 = fit(z, M, k);
+                if (d2 > wd) {
+                    wd = d2;
+                    w = from + k;
+                }
+            }
+            return w;
+        }
+
+        /**
+         * True if frame i, left out of this path, doesn't fit it while its nearest measured neighbours on
+         * either side do: a wrong match on its own, rather than a path that bends away from the model.
+         */
+        boolean isolated(double[][] z, double[][] M, int i) {
+            int k = i - from;
+            if (xsAll == null || xsAll[k] == null || z[i] == null) return false;
+            double[] y = new double[3], S = new double[9];
+            for (int c = 0; c < 3; c++) {
+                y[c] = z[i][c] - xsAll[k][c];
+                for (int d = 0; d < 3; d++) S[3 * c + d] = M[i][3 * c + d] + PsAll[k][6 * c + d];
+            }
+            double[] Si = Rot.inverse(S);
+            if (Si == null || !(quad(Si, y) > GATE)) return false;
+            for (int dir = -1; dir <= 1; dir += 2) {
+                for (int j = k + dir; j >= 0 && j < has.length; j += dir) {
+                    if (!has[j]) continue;
+                    if (fit(z, M, j) > GATE / 2.5) return false;
+                    break;
+                }
+            }
+            return true;
+        }
+
+        /** How far measurement k (one the path uses) is from the path, in sigmas squared; NaN if it can't tell. */
+        private double fit(double[][] z, double[][] M, int k) {
+            int i = from + k;
+            if (!has[k] || xsAll == null || xsAll[k] == null) return Double.NaN;
+            double[] y = new double[3], C = new double[9];
+            for (int c = 0; c < 3; c++) {
+                y[c] = z[i][c] - xsAll[k][c];
+                for (int d = 0; d < 3; d++) C[3 * c + d] = M[i][3 * c + d] - PsAll[k][6 * c + d];
+                if (!(C[4 * c] > 0.1 * M[i][4 * c])) return Double.NaN;
+            }
+            double[] Ci = Rot.inverse(C);
+            return Ci == null ? Double.NaN : quad(Ci, y);
+        }
 
         void write(List<Frame> frames, double f, int seg, Result res) {
             if (xsAll == null) return;
@@ -306,14 +606,16 @@ public final class SkyMotion {
 
     /**
      * True if measurements i and j (both set, j later by dt) agree with each other, given the sky's turn
-     * between them at the current rate estimate (state x, covariance P): a jump of the phone rather than two
-     * wrong matches.
+     * between them at the current rate estimate (state x, covariance P) and how far the phone may drift in
+     * that time: a jump of the phone rather than two wrong matches.
      */
-    private static boolean fitEachOther(double[][] z, double[][] M, int i, int j, double[] x, double[] P, double dt) {
+    private static boolean fitEachOther(double[][] z, double[][] M, int i, int j, double[] x, double[] P, double dt, double q) {
         double[] y = new double[3], S = new double[9];
+        double a = Math.abs(dt), drift = q * a * a * a / 3;
         for (int c = 0; c < 3; c++) {
             y[c] = z[j][c] - z[i][c] - dt * x[c + 3];
             for (int d = 0; d < 3; d++) S[3 * c + d] = M[i][3 * c + d] + M[j][3 * c + d] + dt * dt * P[6 * (c + 3) + d + 3];
+            S[4 * c] += drift;
         }
         double[] Si = Rot.inverse(S);
         return Si != null && quad(Si, y) <= GATE;

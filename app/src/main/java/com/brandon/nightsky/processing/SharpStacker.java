@@ -58,6 +58,8 @@ public final class SharpStacker {
          * leaves the frame out wherever it is below {@link #minTransparency}. Null: 1 everywhere.
          */
         public LocalWeights transparency;
+        /** The sensor's own pattern to take out of this frame as it is loaded ({@link SensorPattern}), or null. */
+        public SensorPattern.Frame pattern;
     }
 
     public static final class Result {
@@ -94,6 +96,10 @@ public final class SharpStacker {
     public float minTransparency = 0.5f;
     /** Transparency above which a frame's starlight isn't scaled down any further. */
     static final float MAX_TRANSPARENCY = 1.5f;
+    /** An image of the frame's size to stack into instead of a new one (all of it is overwritten), or null. */
+    public RgbImage into;
+    /** What the progress shows while stacking. */
+    public String label = "Stacking";
 
     /** Keeping every sample needs bands at least this tall, or re-reading the frames' overlapping rows costs too much. */
     static final int MIN_KEEP_ROWS = 24;
@@ -188,14 +194,14 @@ public final class SharpStacker {
         final byte[][] doubt = doubtful(plans, nx, ny);
 
         final Result res = new Result();
-        final RgbImage out = new RgbImage(W, H);
+        final RgbImage out = into != null && into.width == W && into.height == H ? into : new RgbImage(W, H);
         res.image = out;
         res.rejected = new long[nf];
         res.samples = new long[nf];
         res.included = new long[nf];
         res.rowL = new int[H];
         res.rowR = new int[H];
-        out.clip = new byte[W * H];
+        if (out.clip == null || out.clip.length != W * H) out.clip = new byte[W * H];
 
         final boolean keep = keepsSamples(nf);
         long rows = keep ? keepRows(nf) : Math.max(32, memoryBudget / ((long) W * STREAM_BYTES));
@@ -268,7 +274,7 @@ public final class SharpStacker {
                             else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, res);
                         }
                         if (progress.cancelled()) throw new CancelledException();
-                        progress.update("Stacking", ((b * 2 + pass) + (f + 1f) / nf) / (bands * 2f));
+                        progress.update(label, ((b * 2 + pass) + (f + 1f) / nf) / (bands * 2f));
                     }
                     if (pass == 0) {
                         if (keep) reject(nv, grids, iyA, ny, nx, times, nf, y0, y1, vals, cnt, acc[0], tgt, rej, res);
@@ -334,6 +340,7 @@ public final class SharpStacker {
                         d[o + x + 1] = (raw[o + x + 1] & 0xFFFF) * sc - bo;
                     }
                 }
+                if (plan.pattern != null) plan.pattern.subtract(d, rs, re);
                 buf.rs = rs;
                 buf.re = re;
                 buf.valid = true;

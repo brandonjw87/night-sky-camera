@@ -1,5 +1,7 @@
 package com.brandon.nightsky.sim;
 
+import com.brandon.nightsky.processing.Astro;
+import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.Parallel;
 import com.brandon.nightsky.processing.Rot;
@@ -44,6 +46,12 @@ public final class SkySim {
     public double starGain = 1;
     /** A tree branch over the left edge: a dark silhouette with small gaps of sky and a few lit leaves. */
     public boolean branch;
+    /**
+     * The sensor's own pattern (ADU), fixed on the sensor: per photosite (white), in blotches about ten pixels
+     * across, per row and per column. Row banding: different in every frame.
+     */
+    public double fpnSigma, fpnBlotch, rowFixedSigma, colFixedSigma, rowBandSigma;
+    private float[] fpn, rowFixed, colFixed;
     private float[] branchT;
     private int[] glints;
 
@@ -56,7 +64,25 @@ public final class SkySim {
     private double[] cam0, camBump;
     private final double[] A; // camera raw response to linear sRGB (rows R, G, B)
 
+    /**
+     * The real sky: the bright-star catalogue (to magnitude 6.5) at this time and place, plus random fainter
+     * stars; null for a random field.
+     */
+    private final BrightStars catalog;
+    /** UTC (Unix ms) at the start of frame 0, and the observer's east longitude, for the real sky. */
+    public final long startUnixMs;
+    public final double longitudeDeg;
+    /** J2000 to ENU at the start of frame 0 (real sky only). */
+    private double[] m0;
+
     public SkySim(int width, int height, CameraModel truth, long seed) {
+        this(width, height, truth, seed, null, 0L, 0);
+    }
+
+    public SkySim(int width, int height, CameraModel truth, long seed, BrightStars catalog, long startUnixMs, double lonDeg) {
+        this.catalog = catalog;
+        this.startUnixMs = startUnixMs;
+        this.longitudeDeg = lonDeg;
         W = width;
         H = height;
         this.truth = truth;
@@ -97,11 +123,28 @@ public final class SkySim {
         cam0 = new double[]{x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]};
         camBump = Rot.mul(Rot.fromRotVec(Math.toRadians(bumpDeg), Math.toRadians(bumpDeg * 0.4), 0), cam0);
 
-        // stars within 62 deg of the zenith, magnitudes from a power law N(<m) ~ 10^(0.42 m)
+        // stars within 62 deg of the zenith, magnitudes from a power law N(<m) ~ 10^(0.42 m); with the real sky,
+        // the catalogue's stars to magnitude 6.5 where they are and random ones only below that
         double coneCos = Math.cos(Math.toRadians(62));
         double sr = 2 * Math.PI * (1 - coneCos);
-        double nTotal = 0.21 * 330000 * (sr / 2.68) * Math.pow(10, 0.42 * (magLimit - 10));
-        nStars = (int) nTotal;
+        double mMin = 0.5;
+        int[] real = new int[0];
+        double[] enu0 = null;
+        if (catalog != null) {
+            m0 = Astro.j2000ToEnu(Astro.jdUtc(startUnixMs), lat, Math.toRadians(longitudeDeg));
+            double[] zen = new double[3];
+            Rot.apply(Rot.transpose(m0), 0, 0, 1, zen);
+            real = catalog.within(zen, Math.toRadians(62), REAL_SKY_MAG);
+            enu0 = new double[3 * real.length];
+            for (int k = 0; k < real.length; k++) {
+                double[] e = new double[3];
+                Rot.apply(m0, catalog.dir[3 * real[k]], catalog.dir[3 * real[k] + 1], catalog.dir[3 * real[k] + 2], e);
+                System.arraycopy(e, 0, enu0, 3 * k, 3);
+            }
+            mMin = REAL_SKY_MAG;
+        }
+        double nTotal = 0.21 * 330000 * (sr / 2.68) * (Math.pow(10, 0.42 * (magLimit - 10)) - Math.pow(10, 0.42 * (mMin - 10)));
+        nStars = real.length + (int) nTotal;
         sx = new double[nStars];
         sy = new double[nStars];
         sz = new double[nStars];
@@ -109,22 +152,30 @@ public final class SkySim {
         cr = new float[nStars];
         cg = new float[nStars];
         cb = new float[nStars];
-        double mMin = 0.5;
         double a = Math.pow(10, 0.42 * mMin), b = Math.pow(10, 0.42 * magLimit);
         for (int i = 0; i < nStars; i++) {
-            double cz = coneCos + (1 - coneCos) * rnd.nextDouble();
-            double ph = 2 * Math.PI * rnd.nextDouble();
-            double s = Math.sqrt(1 - cz * cz);
-            sx[i] = s * Math.cos(ph);
-            sy[i] = s * Math.sin(ph);
-            sz[i] = cz;
-            double m = Math.log10(a + (b - a) * rnd.nextDouble()) / 0.42;
+            double m, t;
+            if (i < real.length) {
+                sx[i] = enu0[3 * i];
+                sy[i] = enu0[3 * i + 1];
+                sz[i] = enu0[3 * i + 2];
+                m = catalog.vmag[real[i]];
+                t = catalog.kelvin[real[i]] > 0 ? catalog.kelvin[real[i]] : 5600;
+            } else {
+                double cz = coneCos + (1 - coneCos) * rnd.nextDouble();
+                double ph = 2 * Math.PI * rnd.nextDouble();
+                double s = Math.sqrt(1 - cz * cz);
+                sx[i] = s * Math.cos(ph);
+                sy[i] = s * Math.sin(ph);
+                sz[i] = cz;
+                m = Math.log10(a + (b - a) * rnd.nextDouble()) / 0.42;
+                // colour: temperature 3000..12000 K mapped to a linear sRGB tint
+                // mostly F-G-K stars, some hot A/B and cool M stars
+                double u = rnd.nextDouble();
+                t = u < 0.08 ? 8000 + 8000 * rnd.nextDouble()
+                        : (u < 0.13 ? 3000 + 900 * rnd.nextDouble() : 5600 * Math.exp(0.18 * rnd.nextGaussian()));
+            }
             flux[i] = (float) (fluxZero * Math.pow(10, -0.4 * m));
-            // colour: temperature 3000..12000 K mapped to a linear sRGB tint
-            // mostly F-G-K stars, some hot A/B and cool M stars
-            double u = rnd.nextDouble();
-            double t = u < 0.08 ? 8000 + 8000 * rnd.nextDouble()
-                    : (u < 0.13 ? 3000 + 900 * rnd.nextDouble() : 5600 * Math.exp(0.18 * rnd.nextGaussian()));
             double[] rgb = tint(t);
             double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
             double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
@@ -155,6 +206,21 @@ public final class SkySim {
 
     public int starCount() {
         return nStars;
+    }
+
+    /** The catalogue is complete to about this magnitude; fainter real-sky stars are random. */
+    static final double REAL_SKY_MAG = 6.5;
+
+    /** Real sky: camera bearings of frame i (middle of its exposure) to J2000 directions; null for a random field. */
+    public double[] cameraToJ2000(int i) {
+        if (m0 == null) return null;
+        double[] C = Rot.mul(camera(i, 0.5), sky(frameStart(i) + 0.5 * frameExp));
+        return Rot.transpose(Rot.mul(C, m0));
+    }
+
+    /** Real sky: J2000 to ENU at time t seconds after the start of frame 0 (the sim's own turning sky). */
+    public double[] j2000ToEnu(double t) {
+        return m0 == null ? null : Rot.mul(sky(t), m0);
     }
 
     public double frameStart(int i) {
@@ -373,7 +439,13 @@ public final class SkySim {
         }
         // hot pixels
         for (int h = 0; h < hotIdx.length; h++) img[hotIdx[h]] += (float) (hotRate[h] * exp);
-        // noise and quantisation
+        // noise, the sensor's pattern and quantisation
+        if (fpn == null && (fpnSigma > 0 || fpnBlotch > 0 || rowFixedSigma > 0 || colFixedSigma > 0)) buildPattern();
+        final float[] rowBand = new float[H];
+        if (rowBandSigma > 0) {
+            SplittableRandom rb = new SplittableRandom(seed * 7777L + i * 131L + 5);
+            for (int y = 0; y < H; y++) rowBand[y] = (float) (rowBandSigma * gauss(rb));
+        }
         Parallel.forRange(H, 16, new Parallel.Range() {
             @Override
             public void run(int y0, int y1) {
@@ -382,7 +454,8 @@ public final class SkySim {
                     for (int x = 0; x < W; x++) {
                         int k = y * W + x;
                         double lam = Math.max(0, img[k]);
-                        double v = poisson(r, lam) + readNoise * gauss(r) + black;
+                        double v = poisson(r, lam) + readNoise * gauss(r) + black + rowBand[y];
+                        if (fpn != null) v += fpn[k] + rowFixed[y] + colFixed[x];
                         long q = Math.round(v);
                         if (q < 0) q = 0;
                         if (q > white) q = white;
@@ -399,6 +472,43 @@ public final class SkySim {
         info.disturbed = i == bumpFrame;
         info.gyroMax = i == bumpFrame ? 0.4f : 0.002f;
         info.focus = 0;
+    }
+
+    /** The fixed pattern per photosite and the fixed row offsets, for tests ({fpn + columns, rows}); null if none. */
+    public float[][] patternTruth() {
+        if (fpn == null && (fpnSigma > 0 || fpnBlotch > 0 || rowFixedSigma > 0 || colFixedSigma > 0)) buildPattern();
+        if (fpn == null) return null;
+        float[] m = new float[W * H];
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) m[y * W + x] = fpn[y * W + x] + colFixed[x];
+        return new float[][]{m, rowFixed.clone()};
+    }
+
+    /** The fixed part of the sensor's pattern, built once from its own seed. */
+    private void buildPattern() {
+        SplittableRandom r = new SplittableRandom(90210);
+        fpn = new float[W * H];
+        rowFixed = new float[H];
+        colFixed = new float[W];
+        // blotches: white noise on a 10 px lattice, interpolated (bilinear), scaled to fpnBlotch
+        int L = 10, gw = W / L + 2, gh = H / L + 2;
+        float[] lat = new float[gw * gh];
+        for (int k = 0; k < lat.length; k++) lat[k] = (float) gauss(r);
+        double norm = 0;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                double gx = (x + 0.5) / L, gy = (y + 0.5) / L;
+                int ix = (int) gx, iy = (int) gy;
+                double tx = gx - ix, ty = gy - iy;
+                double v = (1 - ty) * ((1 - tx) * lat[iy * gw + ix] + tx * lat[iy * gw + ix + 1])
+                        + ty * ((1 - tx) * lat[(iy + 1) * gw + ix] + tx * lat[(iy + 1) * gw + ix + 1]);
+                fpn[y * W + x] = (float) v;
+                norm += v * v;
+            }
+        }
+        double sb = fpnBlotch / Math.sqrt(Math.max(1e-12, norm / (W * H)));
+        for (int k = 0; k < W * H; k++) fpn[k] = (float) (fpn[k] * sb + fpnSigma * gauss(r));
+        for (int y = 0; y < H; y++) rowFixed[y] = (float) (rowFixedSigma * gauss(r));
+        for (int x = 0; x < W; x++) colFixed[x] = (float) (colFixedSigma * gauss(r));
     }
 
     private void addSpot(float[] img, double px, double py, double sg, double amp, int[] cfa, int k) {

@@ -23,8 +23,10 @@ mkdir -p "$B/gen" "$B/classes" "$(dirname "$OUT")"
 
 echo "== resources"
 aapt2 compile --dir app/src/main/res -o "$B/res.zip"
+ASSETS=()
+[ -d app/src/main/assets ] && ASSETS=(-A app/src/main/assets)
 aapt2 link -o "$B/base.apk" -I "$ANDROID_RES_JAR" --manifest app/src/main/AndroidManifest.xml \
-    --java "$B/gen" --auto-add-overlay "$B/res.zip"
+    --java "$B/gen" --auto-add-overlay "${ASSETS[@]}" "$B/res.zip"
 
 echo "== java"
 find app/src/main/java "$B/gen" -name '*.java' > "$B/sources.txt"

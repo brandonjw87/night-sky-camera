@@ -161,4 +161,10 @@ public final class BackgroundGrid {
         float[] t = level[c].clone();
         return Stats.median(t, t.length);
     }
+
+    /** Median noise of channel c over the cells. */
+    public float medianSigma(int c) {
+        float[] t = sigma[c].clone();
+        return Stats.median(t, t.length);
+    }
 }

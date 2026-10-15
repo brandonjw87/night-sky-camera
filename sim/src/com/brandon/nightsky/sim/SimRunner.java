@@ -1,7 +1,9 @@
 package com.brandon.nightsky.sim;
 
 import com.brandon.nightsky.processing.Aligner;
+import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
+import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.ColorMath;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
@@ -31,6 +33,23 @@ import java.util.Locale;
  * Usage: SimRunner outDir [scale=1|2] [frames=37] [calibrated=true|false] [mode=deep|trails] [events=true|false]
  */
 public final class SimRunner {
+    /** 2026-10-15 04:00 UTC (local midnight on the US east coast), and a longitude there. */
+    static final long DEFAULT_TIME_MS = 1792036800000L;
+    static final double DEFAULT_LON = -75;
+
+    /** The app's bright-star catalogue, from the repository (SIM_CATALOG overrides the path). */
+    static BrightStars loadCatalog() throws java.io.IOException {
+        String path = System.getenv("SIM_CATALOG");
+        File f = path != null ? new File(path) : new File("app/src/main/assets/stars.csv");
+        if (!f.exists()) f = new File("/home/claude/night-sky-camera/app/src/main/assets/stars.csv");
+        java.io.FileInputStream in = new java.io.FileInputStream(f);
+        try {
+            return BrightStars.load(in);
+        } finally {
+            in.close();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         File outDir = new File(args.length > 0 ? args[0] : "sim-out");
         int scale = args.length > 1 ? Integer.parseInt(args[1]) : 1;
@@ -47,7 +66,12 @@ public final class SimRunner {
         truth.k1 = -0.045;
         truth.k2 = 0.018;
         truth.source = "truth";
-        SkySim sim = new SkySim(W, H, truth, 42);
+        // SIM_REALSKY=1: the real sky from the bright-star catalogue at SIM_TIME (Unix ms) and 40 N, SIM_LON (east)
+        BrightStars catalog = null;
+        long startMs = System.getenv("SIM_TIME") != null ? Long.parseLong(System.getenv("SIM_TIME")) : DEFAULT_TIME_MS;
+        double lonDeg = System.getenv("SIM_LON") != null ? Double.parseDouble(System.getenv("SIM_LON")) : DEFAULT_LON;
+        if (System.getenv("SIM_REALSKY") != null) catalog = loadCatalog();
+        SkySim sim = new SkySim(W, H, truth, 42, catalog, startMs, lonDeg);
         if (events) {
             sim.satelliteFrame = frames / 4;
             sim.planeFrame = frames / 2;
@@ -78,6 +102,18 @@ public final class SimRunner {
             sim.cloudFrom = overcast[0];
             sim.cloudTo = overcast[1];
         }
+        // SIM_FPN=white,blotch: fixed pattern (ADU); SIM_ROWBAND=per frame,fixed rows; SIM_COLFIX=fixed columns
+        double[] fpnS = doubles(System.getenv("SIM_FPN"));
+        if (fpnS != null) {
+            sim.fpnSigma = fpnS[0];
+            sim.fpnBlotch = fpnS.length > 1 ? fpnS[1] : 0;
+        }
+        double[] rb = doubles(System.getenv("SIM_ROWBAND"));
+        if (rb != null) {
+            sim.rowBandSigma = rb[0];
+            sim.rowFixedSigma = rb.length > 1 ? rb[1] : 0;
+        }
+        if (System.getenv("SIM_COLFIX") != null) sim.colFixedSigma = Double.parseDouble(System.getenv("SIM_COLFIX"));
         sim.psfSigma = 0.85 / Math.sqrt(scale);
         System.out.printf(Locale.US, "Sim %dx%d, %d stars, %d frames of %.0fs, calibrated=%s, mode=%s%n", W, H, sim.starCount(),
                 frames, sim.frameExp, calibrated, trails ? "trails" : "deep");
@@ -149,6 +185,20 @@ public final class SimRunner {
         // SIM_REJECT=winsorized|percentile|gesd|linear_fit|sigma; SIM_STACKMEM=MB for the stack's sample buffers
         if (System.getenv("SIM_REJECT") != null) pp.rejection = Rejection.Method.parse(System.getenv("SIM_REJECT"));
         if (System.getenv("SIM_STACKMEM") != null) pp.stackMemory = Long.parseLong(System.getenv("SIM_STACKMEM")) << 20;
+        // SIM_F2=0: leave the sensor's pattern in (to compare)
+        if ("0".equals(System.getenv("SIM_F2"))) pp.patternCleanup = false;
+        if (catalog != null) {
+            SessionSky sky = new SessionSky();
+            sky.latDeg = sim.latitudeDeg;
+            sky.lonDeg = lonDeg;
+            sky.locationSource = "simulation";
+            // frame i starts at camera time (frameStart(i) + 1) s, which is startMs + frameStart(i) s in UTC
+            sky.clockWallMs = startMs;
+            sky.clockTimestampNs = 1_000_000_000L;
+            sky.clockValid = true;
+            sky.catalog = catalog;
+            pp.sky = sky;
+        }
         final long[] last = {0};
         PostProcessor.Output o = pp.run(trails, new Progress() {
             @Override
@@ -223,6 +273,17 @@ public final class SimRunner {
             }
         }
         if (System.getenv("SIM_COLORTEST") != null && o.referenceUnit >= 0) colorTest(sim.starTable(o.referenceUnit), o.image);
+        if (System.getenv("SIM_PATDUMP") != null && o.pattern != null) {
+            // the estimated fixed pattern and the truth, float32 big-endian, W x H each, for offline comparison
+            java.io.DataOutputStream ds = new java.io.DataOutputStream(new BufferedOutputStream(
+                    new FileOutputStream(new File(outDir, "pattern_" + W + "x" + H + ".f32")), 1 << 20));
+            for (int i = 0; i < W * H; i++) ds.writeFloat(o.pattern.fixedAt(i));
+            float[][] tr = sim.patternTruth();
+            for (int i = 0; i < W * H; i++) ds.writeFloat(tr != null ? tr[0][i] : 0f);
+            ds.close();
+        }
+        if (catalog != null && o.referenceUnit >= 0) checkSolution(sim, o, truth, startMs, lonDeg);
+        if (System.getenv("SIM_FLUX") != null && o.referenceUnit >= 0) fluxTable(sim.starTable(o.referenceUnit), o.image, new File(System.getenv("SIM_FLUX")));
         if (System.getenv("SIM_DUMP") != null) {
             // raw float32 planes of the whole stacked image (r, g, b) + clip bytes, for offline analysis
             RgbImage im = o.image;
@@ -266,6 +327,93 @@ public final class SimRunner {
         }
         System.out.printf(Locale.US, "dng: %d ms%n", System.currentTimeMillis() - t3);
         System.out.println("session log: " + store.logFile());
+    }
+
+    /** "0.5,1.2" as {0.5, 1.2}; null when unset. */
+    static double[] doubles(String s) {
+        if (s == null || s.trim().isEmpty()) return null;
+        String[] p = s.split(",");
+        double[] v = new double[p.length];
+        for (int i = 0; i < p.length; i++) v[i] = Double.parseDouble(p[i].trim());
+        return v;
+    }
+
+    /**
+     * Aperture photometry of isolated, unclipped stars at their true positions in the reference frame (green
+     * within 4.5 px, local background from the median of an annulus 8-14 px), one line per star:
+     * "x y trueFlux measured", to compare runs.
+     */
+    /** How far the plate solution puts pixels from where the simulated sky has them (pixels at the centre). */
+    static void checkSolution(SkySim sim, PostProcessor.Output o, CameraModel truth, long startMs, double lonDeg) {
+        // the sim's turning sky against the Earth's rotation: the same J2000 -> ENU after five minutes?
+        double[] a = sim.j2000ToEnu(300), b = com.brandon.nightsky.processing.Astro.j2000ToEnu(
+                com.brandon.nightsky.processing.Astro.jdUtc((startMs + 300000) / 1000.0), Math.toRadians(sim.latitudeDeg),
+                Math.toRadians(lonDeg));
+        double worst = 0;
+        for (int k = 0; k < 3; k++) {
+            double[] u = {a[k], a[3 + k], a[6 + k]}, v = {b[k], b[3 + k], b[6 + k]};
+            worst = Math.max(worst, com.brandon.nightsky.processing.Astro.sep(u, v));
+        }
+        System.out.printf(Locale.US, "sky model vs Earth rotation after 5 min: %.2f arcsec%n", worst / com.brandon.nightsky.processing.Astro.ARCSEC);
+        if (o.solution == null) {
+            System.out.println("plate solution: none");
+            return;
+        }
+        double[] R = sim.cameraToJ2000(o.referenceUnit);
+        double[] bb = new double[3], w = new double[3];
+        double max = 0, centre = 0;
+        double[][] pts = {{truth.cx, truth.cy}, {50, 50}, {truth.width - 50, 50}, {50, truth.height - 50},
+                {truth.width - 50, truth.height - 50}, {truth.width / 2.0, 50}, {50, truth.height / 2.0}};
+        for (int k = 0; k < pts.length; k++) {
+            truth.unproject(pts[k][0], pts[k][1], bb);
+            Rot.apply(R, bb[0], bb[1], bb[2], w);
+            double[] p = o.solution.pixel(w);
+            double d = p == null ? Double.NaN : Math.hypot(p[0] - pts[k][0], p[1] - pts[k][1]);
+            if (k == 0) centre = d;
+            max = Math.max(max, d);
+        }
+        System.out.printf(Locale.US, "plate solution: %s; error %.2f px at the centre, %.2f px worst at the edges; zero point %.2f%n",
+                o.solution.describe(), centre, max, o.solution.zeroPoint);
+    }
+
+    static void fluxTable(double[][] stars, RgbImage img, File f) throws Exception {
+        int W = img.width;
+        java.io.PrintWriter pw = new java.io.PrintWriter(f, "UTF-8");
+        int n = 0;
+        for (double[] s : stars) {
+            if (s[2] < 5) continue;
+            int x = (int) s[0], y = (int) s[1];
+            if (x < img.x0 + 16 || y < img.y0 + 16 || x >= img.x1 - 16 || y >= img.y1 - 16) continue;
+            boolean iso = true;
+            for (double[] t : stars) {
+                if (t == s) continue;
+                if (Math.abs(t[0] - s[0]) < 15 && Math.abs(t[1] - s[1]) < 15 && t[2] > 0.02 * s[2]) {
+                    iso = false;
+                    break;
+                }
+            }
+            if (!iso) continue;
+            boolean clipped = false;
+            for (int dy = -4; dy <= 4 && !clipped; dy++) for (int dx = -4; dx <= 4; dx++) {
+                if (img.clip != null && img.clip[(y + dy) * W + x + dx] != 0) { clipped = true; break; }
+            }
+            if (clipped) continue;
+            float[] ann = new float[900];
+            int na = 0, m = 0;
+            double sum = 0;
+            for (int dy = -14; dy <= 14; dy++) for (int dx = -14; dx <= 14; dx++) {
+                double px = Math.floor(s[0]) + dx + 0.5, py = Math.floor(s[1]) + dy + 0.5;
+                double d = Math.hypot(px - s[0], py - s[1]);
+                int i = ((int) Math.floor(s[1]) + dy) * W + (int) Math.floor(s[0]) + dx;
+                if (d < 4.5) { sum += img.g[i]; m++; }
+                else if (d >= 8 && d < 14) ann[na++] = img.g[i];
+            }
+            java.util.Arrays.sort(ann, 0, na);
+            pw.printf(Locale.US, "%.2f %.2f %.1f %.3f%n", s[0], s[1], s[2], sum - m * ann[na / 2]);
+            n++;
+        }
+        pw.close();
+        System.out.printf(Locale.US, "flux table: %d stars -> %s%n", n, f);
     }
 
     /** "12,17" as {12, 17}; null when unset. */

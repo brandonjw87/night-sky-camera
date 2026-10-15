@@ -35,6 +35,12 @@ public final class PostProcessor {
         /** Per stored unit, in capture order. */
         public final List<FrameReport> frames = new ArrayList<FrameReport>();
         public int referenceUnit = -1;
+        /** The sensor's pattern as measured (null if it wasn't), and the walking noise before and after taking it out. */
+        public SensorPattern pattern;
+        public double walkingBefore = Double.NaN, walkingAfter = Double.NaN;
+        /** Where the reference frame pointed (null if unknown), and the time it was solved for (UTC Julian date). */
+        public SkySolver.Solution solution;
+        public double solutionJd = Double.NaN;
     }
 
     /** What happened to one unit, for the review screen and the log. */
@@ -86,6 +92,12 @@ public final class PostProcessor {
     public Rejection.Method rejection = Rejection.Method.AUTO;
     /** Bytes the stack may keep per-sample buffers in; 0 sizes it from free memory (tests set it to force one pass). */
     public long stackMemory = 0;
+    /** Whether to measure the sensor's own pattern and take it out (walking noise, banding); tests switch it off. */
+    public boolean patternCleanup = true;
+    /** Place, time and the star catalogue, to find where the camera pointed; null to skip that. */
+    public SessionSky sky;
+    /** The reference frame's stars as detected for photometry (the deepest list of it). */
+    private StarList refDetections;
 
     public PostProcessor(SessionStore store, SensorSpec spec) {
         this.store = store;
@@ -220,6 +232,7 @@ public final class PostProcessor {
             smoothMotion(units, model, out);
             progress.update("Matching stars", 1f);
             measureFrames(units, ref, al.reference(), model, fs, hot, progress);
+            solveSky(ref, model, al, out);
             grade(units);
             int placed = 0;
             for (Unit u : units) if (u.predicted && u.used) placed++;
@@ -304,8 +317,9 @@ public final class PostProcessor {
             out.rejection = (st.method == Rejection.Method.AUTO ? Rejection.forFrames(plans.size()) : st.method).label;
         }
 
-        // 5) the stack
+        // 5) the stack, and again without the sensor's pattern if it shows
         SharpStacker.Result sr = st.stack(plans, progress);
+        sr = cleanPattern(out, st, sr, plans, target, fixed, model, fs, hot, progress);
         long rej = 0, smp = 0;
         Map<Integer, Integer> planOf = new HashMap<Integer, Integer>();
         for (int i = 0; i < plans.size(); i++) {
@@ -374,6 +388,103 @@ public final class PostProcessor {
         out.summary = sb.toString();
         store.log(out.summary + " " + out.analysis.describe());
         return out;
+    }
+
+    /**
+     * The sensor's own pattern (walking noise, banding; see {@link SensorPattern}), measured from the frames
+     * against the first stack and, where it stands above the noise, taken out of every frame for a second
+     * stack. Needs the sky to have drifted across the sensor; skipped (and said so) when it can't help.
+     */
+    private SharpStacker.Result cleanPattern(Output out, SharpStacker st, SharpStacker.Result sr, List<SharpStacker.Plan> plans,
+                                             BackgroundGrid target, StaticSources fixed, CameraModel model, FrameStore fs,
+                                             HotPixels hot, Progress progress) throws IOException {
+        if (!patternCleanup || !out.aligned) return sr;
+        if (plans.size() < SensorPattern.MIN_FRAMES) {
+            store.log(String.format(Locale.US, "sensor pattern: not measured, %d frames are too few (it needs %d)",
+                    plans.size(), SensorPattern.MIN_FRAMES));
+            return sr;
+        }
+        double[] dr = drift(plans, model);
+        if (dr[0] < SensorPattern.MIN_DRIFT_PX) {
+            decide(out, String.format(Locale.US, "sensor pattern: left alone, the sky moved only %.0f px across the sensor, "
+                    + "too little to tell the sensor's pattern from the sky (and too little for it to streak)", dr[0]));
+            return sr;
+        }
+        double before = SensorPattern.walkingRatio(sr.image, dr[1], dr[2]);
+        store.log(String.format(Locale.US, "sensor pattern: the sky drifted %.0f px across the sensor, at %.0f deg in the stack",
+                dr[0], Math.toDegrees(Math.atan2(dr[2], dr[1]))));
+        // the estimate's full-frame maps, and room for its per-band samples
+        Runtime rt = Runtime.getRuntime();
+        long free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory());
+        long maps = (long) W * H * 11L;
+        long budget = Math.min(64L << 20, (free - maps - (96L << 20)) / 2);
+        if (budget < (8L << 20)) {
+            decide(out, String.format(Locale.US, "sensor pattern: not measured, not enough memory (streaks along the drift %.2f, "
+                    + "1 = none)", before));
+            return sr;
+        }
+        SensorPattern sp;
+        try {
+            sp = SensorPattern.estimate(spec, model, fs, hot, fixed, plans, target, st.minTransparency, sr.image, dr[0],
+                    budget, progress);
+        } catch (OutOfMemoryError e) {
+            decide(out, "sensor pattern: not measured, ran out of memory");
+            return sr;
+        }
+        store.log(sp.describe());
+        out.pattern = sp;
+        out.walkingBefore = before;
+        out.walkingAfter = before;
+        if (!sp.worthRemoving()) {
+            decide(out, String.format(Locale.US, "sensor pattern: nothing above the noise to take out (streaks along the "
+                    + "drift %.2f, 1 = none)", before));
+            return sr;
+        }
+        sp.attach(plans, true);
+        st.into = sr.image;
+        st.label = "Stacking again without the sensor's pattern";
+        SharpStacker.Result again;
+        try {
+            again = st.stack(plans, progress);
+        } catch (OutOfMemoryError e) {
+            // the first stack was being overwritten: make it again as it was
+            sp.attach(plans, false);
+            out.pattern = null;
+            st.label = "Stacking";
+            again = st.stack(plans, progress);
+            decide(out, "sensor pattern: measured but not taken out, ran out of memory");
+            return again;
+        } finally {
+            st.into = null;
+        }
+        double after = SensorPattern.walkingRatio(again.image, dr[1], dr[2]);
+        out.walkingAfter = after;
+        decide(out, String.format(Locale.US, "sensor pattern: taken out of every frame and stacked again (%s); streaks along "
+                + "the drift %.2f before, %.2f after (1 = none)", sp.parts(), before, after));
+        return again;
+    }
+
+    /**
+     * How the sensor moved against the sky over the stacked frames, seen in the stack: {largest distance
+     * between the frames' centres (pixels), direction x, direction y (first to last frame)}.
+     */
+    private double[] drift(List<SharpStacker.Plan> plans, CameraModel model) {
+        double[] b = new double[3], r = new double[3], p = new double[2];
+        model.unproject(W / 2.0, H / 2.0, b);
+        int n = plans.size(), m = 0;
+        double[] xs = new double[n], ys = new double[n];
+        for (SharpStacker.Plan pl : plans) {
+            Rot.apply(Rot.transpose(pl.R), b[0], b[1], b[2], r);
+            if (!model.project(r[0], r[1], r[2], p)) continue;
+            xs[m] = p[0];
+            ys[m] = p[1];
+            m++;
+        }
+        if (m < 2) return new double[]{0, 1, 0};
+        double ext = 0;
+        for (int i = 0; i < m; i++) for (int j = i + 1; j < m; j++) ext = Math.max(ext, Math.hypot(xs[i] - xs[j], ys[i] - ys[j]));
+        double dx = xs[m - 1] - xs[0], dy = ys[m - 1] - ys[0], d = Math.hypot(dx, dy);
+        return d > 0 ? new double[]{ext, dx / d, dy / d} : new double[]{ext, 1, 0};
     }
 
     /** " (0.12-1.03)": the range of a frame's regional transparency, for the log. */
@@ -649,6 +760,7 @@ public final class PostProcessor {
             SkyMotion.Frame f = new SkyMotion.Frame();
             f.t = u.rec.t;
             f.disturbed = u.rec.disturbed;
+            f.reference = u.rec.index == out.referenceUnit;
             if (u.res != null && u.res.ok) {
                 f.R = u.res.R;
                 f.cov = u.res.cov;
@@ -707,6 +819,58 @@ public final class PostProcessor {
     }
 
     /**
+     * Where the reference frame pointed, from its stars and the bright-star catalogue ({@link SkySolver}):
+     * what the photo shows, where satellites cross it, and its photometric zero point.
+     */
+    private void solveSky(Unit ref, CameraModel model, Aligner al, Output out) {
+        if (sky == null || sky.catalog == null || refDetections == null) return;
+        StarList confirmed = confirmedStars(al);
+        SkySolver.Prior pr = new SkySolver.Prior();
+        if (sky.clockValid && ref.rec.sensorTimestampNs != 0) {
+            pr.jdUtc = sky.jdUtc(ref.rec.sensorTimestampNs) + ref.rec.exposure / 2 / 86400.0;
+        }
+        if (sky.located()) {
+            pr.lat = sky.latDeg * Astro.DEG;
+            pr.lon = sky.lonDeg * Astro.DEG;
+        }
+        long t0 = System.currentTimeMillis();
+        SkySolver.Solution s = SkySolver.solve(confirmed != null ? confirmed : refDetections, refDetections, model,
+                sky.catalog, pr);
+        long ms = System.currentTimeMillis() - t0;
+        if (s == null) {
+            decide(out, String.format(Locale.US, "sky: couldn't match the stars to the catalogue (%d stars, %s), so the "
+                    + "photo isn't labelled", refDetections.count, pr.located() ? "searched around the zenith" : "no place or time"));
+            return;
+        }
+        out.solution = s;
+        out.solutionJd = pr.jdUtc;
+        store.log(String.format(Locale.US, "sky: %s (%d ms, %s)", s.describe(), ms, sky.describe()));
+    }
+
+    /**
+     * The reference frame's stars that other frames matched too, brightest first: what's left is starlight, not
+     * a plane, a satellite or a meteor that happened to cross the reference frame. Null with too few frames to tell.
+     */
+    private static StarList confirmedStars(Aligner al) {
+        StarList s = al.reference();
+        if (s == null) return null;
+        int[] seen = new int[s.count];
+        int others = 0;
+        for (Aligner.Result r : al.results()) {
+            if (!r.ok || r.unit == al.referenceUnit() || r.mRef == null) continue;
+            others++;
+            for (int i : r.mRef) if (i >= 0 && i < s.count) seen[i]++;
+        }
+        if (others < 2) return null;
+        int need = Math.max(2, Math.min(4, others / 4));
+        StarList c = new StarList(s.count);
+        for (int i = 0; i < s.count; i++) {
+            if (seen[i] >= need) c.add(s.x[i], s.y[i], s.flux[i], s.hfr[i], s.elong[i], s.saturated[i]);
+        }
+        return c.count >= 8 ? c : null;
+    }
+
+    /**
      * Reads every aligned frame once for two measurements. Its sky background and noise per region
      * ({@link BackgroundGrid}). Its transparency from aperture photometry of up to {@link #PHOT_STARS} stars
      * of the reference frame, as flux-weighted medians of each star's flux ratio to the reference: overall,
@@ -733,6 +897,7 @@ public final class PostProcessor {
             n++;
         }
         store.log("photometry on " + n + " stars of the reference frame");
+        refDetections = ps;
         double[] rb = new double[3 * n];
         double[] b = new double[3], p = new double[2];
         int[] fine = new int[n], coarse = new int[n];

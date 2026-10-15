@@ -172,6 +172,12 @@ public final class StaticSources {
         return out;
     }
 
+    /** Whether (x, y) lies in one of the cells where fixed points crowd. */
+    public boolean inMaskedCell(float x, float y) {
+        int cx = Stats.clamp((int) (x / CELL), 0, cnx - 1), cy = Stats.clamp((int) (y / CELL), 0, cny - 1);
+        return masked[cy * cnx + cx];
+    }
+
     public int maskedCells() {
         return maskedCells;
     }
