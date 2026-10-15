@@ -40,12 +40,16 @@ public final class SkySim {
     public int cloudFrom = -1, cloudTo = -1;
     public double cloudT = 0.25;
     public int partialFrom = -1, partialTo = -1;
+    /** Where the partial cloud's edge is (share of the width from the left) and how soft (share of the width). */
+    public double partialEdge = 0.45, partialWidth = 0.08;
     public int bumpFrame = -1;
     public double bumpDeg = 0.25;
     /** Star brightness factor (below 1 for a sparse field: haze, a bright town, a short exposure). */
     public double starGain = 1;
     /** A tree branch over the left edge: a dark silhouette with small gaps of sky and a few lit leaves. */
     public boolean branch;
+    /** A smudged or fogged lens: this share of every star's light spread into a glow of this size (pixels). */
+    public double haloFrac, haloSigma = 10;
     /**
      * The sensor's own pattern (ADU), fixed on the sensor: per photosite (white), in blotches about ten pixels
      * across, per row and per column. Row banding: different in every frame.
@@ -223,6 +227,18 @@ public final class SkySim {
         return m0 == null ? null : Rot.mul(sky(t), m0);
     }
 
+    /** Straight up in camera axes (x right, y down, z out of the lens), at the start. */
+    public double[] zenithInCamera() {
+        return new double[]{cam0[2], cam0[5], cam0[8]};
+    }
+
+    /** Compass bearing (degrees east of north) of the phone's top edge: camera -x, the phone lying face-down. */
+    public double headingTopDeg() {
+        double e = -cam0[0], n = -cam0[1];
+        double a = Math.toDegrees(Math.atan2(e, n));
+        return a < 0 ? a + 360 : a;
+    }
+
     public double frameStart(int i) {
         return i * (frameExp + gap);
     }
@@ -271,7 +287,7 @@ public final class SkySim {
     private double transparency(int i, double x) {
         if (cloudFrom >= 0 && i >= cloudFrom && i <= cloudTo) return cloudT;
         if (partialFrom >= 0 && i >= partialFrom && i <= partialTo) {
-            double e = (x - W * 0.45) / (W * 0.08);
+            double e = (x - W * partialEdge) / (W * partialWidth);
             double s = 1 / (1 + Math.exp(-e));
             return 0.12 + 0.88 * s;
         }
@@ -409,12 +425,27 @@ public final class SkySim {
                 if (!truth.project(b[0], b[1], b[2], p)) continue;
                 double px = p[0], py = p[1];
                 if (px < -8 || py < -8 || px > W + 8 || py > H + 8) continue;
-                double amp = flux[k] * starGain * exp / substeps * transparency(i, px) * vignetting(px, py);
+                double amp = flux[k] * starGain * exp / substeps * transparency(i, px) * vignetting(px, py) * (1 - haloFrac);
                 if (branchT != null && px >= 0 && py >= 0 && px < W && py < H) amp *= branchT[(int) py * W + (int) px];
                 if (amp < 0.05) continue;
                 double rr = Math.hypot(px - W / 2.0, py - H / 2.0) / (0.5 * Math.hypot(W, H));
                 double sg = psfSigma * (1 + 0.45 * rr * rr);
                 addSpot(img, px, py, sg, amp, cfa, k);
+            }
+        }
+        // a smudged lens: part of each star's light in a wide glow (once, at mid-exposure: the glow doesn't care
+        // about a tenth of a pixel of drift)
+        if (haloFrac > 0) {
+            double[] C = Rot.mul(camera(i, 0.5), sky(frameStart(i) + 0.5 * exp));
+            for (int k = 0; k < nStars; k++) {
+                Rot.apply(C, sx[k], sy[k], sz[k], b);
+                if (b[2] < 0.3 || !truth.project(b[0], b[1], b[2], p)) continue;
+                double px = p[0], py = p[1];
+                if (px < -40 || py < -40 || px > W + 40 || py > H + 40) continue;
+                double amp = flux[k] * starGain * exp * transparency(i, px) * vignetting(px, py) * haloFrac;
+                if (branchT != null && px >= 0 && py >= 0 && px < W && py < H) amp *= branchT[(int) py * W + (int) px];
+                if (amp < 3) continue;
+                addSpot(img, px, py, haloSigma, amp, cfa, k);
             }
         }
         // transients

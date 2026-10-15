@@ -89,13 +89,11 @@ public final class SkySolver {
     public static Solution solve(StarList find, StarList refine, CameraModel model, BrightStars catalog, Prior prior) {
         if (find == null || find.count < 5 || catalog == null) return null;
         StarList stars = refine != null && refine.count >= find.count / 2 ? refine : find;
-        // the brightest point-like stars, as bearings
+        // the brightest point-like stars, as bearings, taken in turns from across the frame so that no one patch
+        // (a plane's lights, a bright cluster) can fill the list
         int nd = 0;
-        int[] di = new int[Math.min(find.count, FIND_STARS)];
-        for (int i = 0; i < find.count && nd < di.length; i++) {
-            if (find.elong[i] > 2f) continue;
-            di[nd++] = i;
-        }
+        int[] di = spread(find, model.width, model.height, FIND_STARS);
+        nd = di.length;
         if (nd < 5) return null;
         double[] db = new double[3 * nd];
         double[] b = new double[3];
@@ -201,6 +199,36 @@ public final class SkySolver {
                 zenith != null ? prior.maxTilt + halfDiag + 2 * Astro.DEG : Math.PI);
         if (sol == null || sol.matched < MIN_MATCHES) return null;
         return sol;
+    }
+
+    /**
+     * Up to max point-like detections, brightest first within each cell of a 4 x 4 grid over the frame, the cells
+     * taking turns: the brightest of every cell, then the second brightest of every cell, and so on (each round
+     * in order of brightness).
+     */
+    static int[] spread(StarList s, int W, int H, int max) {
+        int G = 4;
+        int[][] lists = new int[G * G][];
+        int[] len = new int[G * G];
+        for (int c = 0; c < lists.length; c++) lists[c] = new int[Math.min(s.count, max)];
+        for (int i = 0; i < s.count; i++) {
+            if (s.elong[i] > 2f) continue;
+            int cx = Math.min(G - 1, Math.max(0, (int) (s.x[i] * G / W))), cy = Math.min(G - 1, Math.max(0, (int) (s.y[i] * G / H)));
+            int c = cy * G + cx;
+            if (len[c] < lists[c].length) lists[c][len[c]++] = i;
+        }
+        int[] out = new int[max];
+        int n = 0;
+        int[] round = new int[G * G];
+        for (int r = 0; n < max; r++) {
+            int m = 0;
+            for (int c = 0; c < G * G; c++) if (r < len[c]) round[m++] = lists[c][r];
+            if (m == 0) break;
+            // within a round, brightest first (the list is sorted by flux, so by index)
+            Arrays.sort(round, 0, m);
+            for (int k = 0; k < m && n < max; k++) out[n++] = round[k];
+        }
+        return Arrays.copyOf(out, n);
     }
 
     /** Matches all detections against the catalogue around the frame and fits; then the lens model if it helps. */
