@@ -110,6 +110,8 @@ public final class Preflight {
         public double jdUtc = Double.NaN;
         public double latDeg = Double.NaN, lonDeg = Double.NaN;
         public String placeSource = "";
+        /** The place the stars and "up" give (NaN if they don't), whether or not it was used. */
+        public double starLatDeg = Double.NaN, starLonDeg = Double.NaN;
         public long millis;
 
         public boolean hasWarnings() {
@@ -208,6 +210,7 @@ public final class Preflight {
                         .put("matched", solution.matched).put("rmsPx", solution.rmsPx).end();
             }
             j.put("latDeg", latDeg).put("lonDeg", lonDeg).put("placeSource", placeSource);
+            j.put("starLatDeg", starLatDeg).put("starLonDeg", starLonDeg);
             return j.end().toString();
         }
     }
@@ -223,6 +226,8 @@ public final class Preflight {
     static final double MIN_OBSTRUCTION = 0.008, WARN_OBSTRUCTION = 0.015;
     /** Before this camera's clean halo is known: a clean phone lens is taken to scatter this much. */
     static final double DEFAULT_CLEAN_HALO = 0.15;
+    /** A place older than this (minutes) gives way to the stars' place if that is more than FAR_PLACE_DEG away. */
+    static final double STALE_PLACE_MIN = 24 * 60, FAR_PLACE_DEG = 3;
     /** Battery used per hour of capture when not yet measured (%), and what developing takes (%). */
     static final double DEFAULT_DRAIN = 20, DEVELOP_PCT = 3;
 
@@ -271,7 +276,20 @@ public final class Preflight {
             SkySolver.Solution s = SkySolver.solve(stars, null, model, in.catalog, pr);
             if (s == null && pr.located()) s = SkySolver.solve(stars, null, model, in.catalog, null);
             rep.solution = s;
-            if (s != null && !sky.located() && !Double.isNaN(jd) && in.up != null) placeFromStars(rep, s, in.up, jd);
+            double[] p = s != null && !Double.isNaN(jd) && in.up != null ? placeFromStars(s, in.up, jd) : null;
+            if (p != null) {
+                rep.starLatDeg = p[0];
+                rep.starLonDeg = p[1];
+                // no place, or an old one far from here (the phone's last fix before a trip): the stars' place
+                boolean stale = sky.located() && !(sky.locationAgeMin < STALE_PLACE_MIN)
+                        && Astro.sep(Astro.vec(p[1] * Astro.DEG, p[0] * Astro.DEG),
+                        Astro.vec(sky.lonDeg * Astro.DEG, sky.latDeg * Astro.DEG)) > FAR_PLACE_DEG * Astro.DEG;
+                if (!sky.located() || stale) {
+                    rep.latDeg = p[0];
+                    rep.lonDeg = p[1];
+                    rep.placeSource = stale ? "stars (the saved place was far away)" : "stars";
+                }
+            }
         }
         double lat = rep.latDeg * Astro.DEG, lon = rep.lonDeg * Astro.DEG;
         boolean located = !Double.isNaN(lat) && !Double.isNaN(lon);
@@ -322,9 +340,9 @@ public final class Preflight {
      * this time, which gives latitude and longitude to about a degree (the phone's level and the camera's
      * mounting).
      */
-    static void placeFromStars(Report rep, SkySolver.Solution s, float[] up, double jd) {
+    static double[] placeFromStars(SkySolver.Solution s, float[] up, double jd) {
         double n = Math.sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-        if (!(n > 1)) return;
+        if (!(n > 1)) return null;
         // camera x = phone -y, camera y = phone -x, camera z = phone -z (the back camera, sensor turned 90 degrees)
         double[] zc = {-up[1] / n, -up[0] / n, -up[2] / n};
         double[] zj = new double[3], zd = new double[3];
@@ -333,9 +351,7 @@ public final class Preflight {
         double latR = Math.asin(Math.max(-1, Math.min(1, zd[2])));
         double lonR = Math.atan2(zd[1], zd[0]) - Astro.gast(jd);
         lonR = Math.atan2(Math.sin(lonR), Math.cos(lonR));
-        rep.latDeg = latR / Astro.DEG;
-        rep.lonDeg = lonR / Astro.DEG;
-        rep.placeSource = "stars";
+        return new double[]{latR / Astro.DEG, lonR / Astro.DEG};
     }
 
     /**

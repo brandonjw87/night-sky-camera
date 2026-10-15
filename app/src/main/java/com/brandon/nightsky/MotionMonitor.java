@@ -11,7 +11,8 @@ import android.os.SystemClock;
 
 /**
  * Watches gravity and the gyroscope: is the phone lying screen-down (back camera facing up), how long has
- * it been perfectly still, and how much did it move during a given exposure.
+ * it been perfectly still, and how much did it move during a given exposure. The compass (rotation vector)
+ * says which way the phone's top edge points.
  * <p>
  * Times are on the {@link SystemClock#elapsedRealtimeNanos()} clock, the same one camera timestamps use
  * when the camera reports a realtime timestamp source.
@@ -25,7 +26,7 @@ final class MotionMonitor implements SensorEventListener {
     private static final int RING = 16384;
 
     private final SensorManager sm;
-    private final Sensor gyro, gravity, accel;
+    private final Sensor gyro, gravity, accel, rotation;
     private HandlerThread thread;
 
     private final long[] gt = new long[RING];
@@ -38,12 +39,18 @@ final class MotionMonitor implements SensorEventListener {
     /** Last rotation or knock, whichever way the phone faces. */
     private volatile long lastMotionNs = Long.MAX_VALUE;
     private volatile float lastRate;
+    /** The top edge's magnetic heading, smoothed (sine and cosine), and the sensor's own accuracy (degrees). */
+    private double headSin, headCos;
+    private volatile boolean haveHeading;
+    private volatile float headingAccDeg = Float.NaN;
+    private final float[] rot = new float[9];
 
     MotionMonitor(Context c) {
         sm = (SensorManager) c.getSystemService(Context.SENSOR_SERVICE);
         gyro = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         gravity = sm.getDefaultSensor(Sensor.TYPE_GRAVITY);
         accel = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        rotation = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
     }
 
     boolean hasGyro() {
@@ -61,6 +68,7 @@ final class MotionMonitor implements SensorEventListener {
         if (gravity != null) sm.registerListener(this, gravity, SensorManager.SENSOR_DELAY_GAME, h);
         // the accelerometer also catches knocks the gyroscope can miss
         if (accel != null) sm.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME, h);
+        if (rotation != null) sm.registerListener(this, rotation, SensorManager.SENSOR_DELAY_UI, h);
     }
 
     void stop() {
@@ -95,6 +103,27 @@ final class MotionMonitor implements SensorEventListener {
             g[2] = e.values[2];
             haveGravity = true;
             if (g[2] > FACE_DOWN_Z) lastDisturbNs = t;
+        } else if (type == Sensor.TYPE_ROTATION_VECTOR) {
+            try {
+                SensorManager.getRotationMatrixFromVector(rot, e.values);
+            } catch (IllegalArgumentException ex) {
+                return;
+            }
+            // the phone's y axis (toward its top edge) in east-north-up coordinates
+            double east = rot[1], north = rot[4];
+            if (Math.hypot(east, north) < 0.5) return; // the phone stands on its end: no heading for the top edge
+            double a = Math.atan2(east, north);
+            synchronized (rot) {
+                if (!haveHeading) {
+                    headSin = Math.sin(a);
+                    headCos = Math.cos(a);
+                } else {
+                    headSin += 0.2 * (Math.sin(a) - headSin);
+                    headCos += 0.2 * (Math.cos(a) - headCos);
+                }
+            }
+            haveHeading = true;
+            if (e.values.length > 4 && e.values[4] >= 0) headingAccDeg = (float) Math.toDegrees(e.values[4]);
         } else if (type == Sensor.TYPE_ACCELEROMETER) {
             float x = e.values[0], y = e.values[1], z = e.values[2];
             if (gravity == null) {
@@ -155,6 +184,27 @@ final class MotionMonitor implements SensorEventListener {
         double n = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
         if (n < 1e-3) return Float.NaN;
         return (float) Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, -g[2] / n))));
+    }
+
+    /** "Up" in the phone's axes (m/s^2, Android sensor convention), or null before the first reading. */
+    float[] up() {
+        if (!haveGravity) return null;
+        return new float[]{g[0], g[1], g[2]};
+    }
+
+    /** Magnetic azimuth (degrees east of north) of the phone's top edge, or NaN without a compass. */
+    double headingTopDeg() {
+        if (!haveHeading) return Double.NaN;
+        synchronized (rot) {
+            if (Math.hypot(headSin, headCos) < 0.3) return Double.NaN; // swinging about: no steady heading
+            double d = Math.toDegrees(Math.atan2(headSin, headCos));
+            return d < 0 ? d + 360 : d;
+        }
+    }
+
+    /** The compass's own estimate of its heading error (degrees), NaN if it gives none. */
+    float headingAccuracyDeg() {
+        return headingAccDeg;
     }
 
     /** Largest rotation rate between t0 and t1 (ns, elapsed-realtime clock); -1 if no samples cover it. */

@@ -17,8 +17,8 @@ import java.util.Locale;
  * lens, a branch, half the sky clouded, an overcast sky, the Moon in the frame and twilight must each give
  * their own warning and no other.
  * <p>
- * Usage: PreflightTest [case ...] (clean, smudge, branch, halfcloud, overcast, moon, twilight, compass, noplace;
- * default all)
+ * Usage: PreflightTest [case ...] (clean, smudge, branch, halfcloud, somecloud, overcast, haze, moon, twilight,
+ * compass, noplace, staleplace, pattern, gradient, transients, sparse, city, milkyway; default all)
  */
 public final class PreflightTest {
     static final int W = 4080, H = 3072;
@@ -38,7 +38,7 @@ public final class PreflightTest {
         for (String a : args) cases.add(a);
         if (cases.isEmpty()) {
             String[] all = {"clean", "smudge", "branch", "halfcloud", "somecloud", "overcast", "haze", "moon", "twilight", "compass",
-                    "noplace", "pattern", "gradient", "transients", "sparse", "city", "milkyway"};
+                    "noplace", "staleplace", "pattern", "gradient", "transients", "sparse", "city", "milkyway"};
             for (String a : all) cases.add(a);
         }
         // the clean lens's halo and a clear night's zero point, as the app learns them from a good session
@@ -121,14 +121,21 @@ public final class PreflightTest {
         in.planIso = in.iso;
         in.sessionSeconds = 300;
         in.catalog = catalog;
-        boolean fresh = name.equals("clean") || name.equals("noplace") || name.equals("sparse");
+        boolean fresh = name.equals("clean") || name.equals("noplace") || name.equals("staleplace") || name.equals("sparse");
         in.haloBaseline = fresh ? Double.NaN : haloBaseline;
         in.clearZeroPoint = fresh ? Double.NaN : clearZp;
         SessionSky sky = new SessionSky();
-        if (!name.equals("noplace")) {
+        if (name.equals("staleplace")) {
+            // the phone's last fix is from days ago, far away (before a trip): the stars must win
+            sky.latDeg = sim.latitudeDeg - 15;
+            sky.lonDeg = lon + 40;
+            sky.locationSource = "saved";
+            sky.locationAgeMin = 3 * 24 * 60;
+        } else if (!name.equals("noplace")) {
             sky.latDeg = sim.latitudeDeg;
             sky.lonDeg = lon;
             sky.locationSource = "simulation";
+            sky.locationAgeMin = 5;
         }
         sky.clockWallMs = startMs;
         sky.clockTimestampNs = 1_000_000_000L;
@@ -192,8 +199,8 @@ public final class PreflightTest {
             Preflight.Item c = r.item("clouds");
             ok = c != null && c.level == Preflight.Level.NOTE && c.text.contains("cloud");
         }
-        if (ok && name.equals("noplace")) {
-            ok = Math.abs(r.latDeg - sim.latitudeDeg) < 4 && Math.abs(r.lonDeg - lon) < 5;
+        if (ok && (name.equals("noplace") || name.equals("staleplace"))) {
+            ok = Math.abs(r.latDeg - sim.latitudeDeg) < 4 && Math.abs(r.lonDeg - lon) < 5 && r.placeSource.startsWith("stars");
         }
         System.out.println("  " + (ok ? "PASS" : "FAIL") + ": warnings [" + got + "], expected [" + want + "]");
         if (!ok) failures++;

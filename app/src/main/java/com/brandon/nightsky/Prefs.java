@@ -115,6 +115,118 @@ final class Prefs {
         return sp.getLong("clampDelivered|" + cameraKey(cameraId), 0L);
     }
 
+    /** Run the pre-flight check (a test frame read for smudges, obstructions, clouds, the Moon) before starting. */
+    boolean preflight() {
+        return sp.getBoolean("preflight", true);
+    }
+
+    void setPreflight(boolean v) {
+        sp.edit().putBoolean("preflight", v).apply();
+    }
+
+    /** Whether the app has asked for the (approximate) location once already. */
+    boolean askedLocation() {
+        return sp.getBoolean("askedLocation", false);
+    }
+
+    void setAskedLocation() {
+        sp.edit().putBoolean("askedLocation", true).apply();
+    }
+
+    // ---- what the app learns from good sessions ----
+
+    /** Halo ratios this camera's lens gave in good sessions (newest last), at most this many kept. */
+    private static final int HALO_KEEP = 12, ZP_KEEP = 20;
+
+    /**
+     * This camera's clean-lens halo ratio: the lower quartile of the good sessions' ratios, so the odd session
+     * with a slightly smudged lens doesn't raise it. NaN until there is one.
+     */
+    double haloBaseline(String cameraId) {
+        double[] v = list("halo|" + cameraKey(cameraId));
+        if (v.length == 0) return Double.NaN;
+        java.util.Arrays.sort(v);
+        return v[(v.length - 1) / 4];
+    }
+
+    void learnHalo(String cameraId, double ratio) {
+        if (Double.isNaN(ratio) || ratio < 0) return;
+        append("halo|" + cameraKey(cameraId), ratio, HALO_KEEP);
+    }
+
+    /**
+     * This camera's zero point on a clear night (per second at ISO 100): the clearest of the sessions measured,
+     * the second clearest once there are three, so one odd reading can't make every night look hazy. NaN until
+     * there is one.
+     */
+    double clearZeroPoint(String cameraId) {
+        double[] v = list("zp|" + cameraKey(cameraId));
+        if (v.length == 0) return Double.NaN;
+        java.util.Arrays.sort(v);
+        return v[v.length >= 3 ? v.length - 2 : v.length - 1];
+    }
+
+    void learnZeroPoint(String cameraId, double zp) {
+        if (Double.isNaN(zp)) return;
+        append("zp|" + cameraKey(cameraId), zp, ZP_KEEP);
+    }
+
+    /** Battery used per hour of capture (%), learned from sessions; NaN until measured. */
+    double drainPctPerHour() {
+        float v = sp.getFloat("drainPctPerHour", Float.NaN);
+        return v;
+    }
+
+    void learnDrain(double pctPerHour, double weight) {
+        if (Double.isNaN(pctPerHour) || pctPerHour <= 0 || pctPerHour > 200) return;
+        double old = drainPctPerHour();
+        double w = Math.max(0.05, Math.min(1, weight));
+        double v = Double.isNaN(old) ? pctPerHour : old + w * (pctPerHour - old);
+        sp.edit().putFloat("drainPctPerHour", (float) v).apply();
+    }
+
+    private double[] list(String key) {
+        String s = sp.getString(key, "");
+        if (s.isEmpty()) return new double[0];
+        String[] p = s.split(",");
+        double[] v = new double[p.length];
+        int n = 0;
+        for (String x : p) {
+            try {
+                v[n++] = Double.parseDouble(x);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return java.util.Arrays.copyOf(v, n);
+    }
+
+    private void append(String key, double value, int keep) {
+        double[] v = list(key);
+        StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, v.length - keep + 1); i < v.length; i++) sb.append(v[i]).append(',');
+        sb.append(String.format(java.util.Locale.US, "%.5f", value));
+        sp.edit().putString(key, sb.toString()).apply();
+    }
+
+    // ---- the last place known (for nights without a signal) ----
+
+    Locator.Place savedPlace() {
+        if (!sp.contains("placeLat")) return null;
+        Locator.Place p = new Locator.Place();
+        p.latDeg = sp.getFloat("placeLat", 0f);
+        p.lonDeg = sp.getFloat("placeLon", 0f);
+        p.altM = sp.getFloat("placeAlt", Float.NaN);
+        p.timeMs = sp.getLong("placeTime", 0L);
+        p.source = "saved";
+        return p;
+    }
+
+    void savePlace(Locator.Place p) {
+        if (p == null) return;
+        sp.edit().putFloat("placeLat", (float) p.latDeg).putFloat("placeLon", (float) p.lonDeg)
+                .putFloat("placeAlt", (float) p.altM).putLong("placeTime", p.timeMs).apply();
+    }
+
     /** Last session that was developed, for the home screen. */
     String lastResultUri() {
         return sp.getString("lastResult", null);

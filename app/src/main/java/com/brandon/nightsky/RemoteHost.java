@@ -2,8 +2,6 @@ package com.brandon.nightsky;
 
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
@@ -12,12 +10,12 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.net.wifi.WifiInfo;
-import android.os.BatteryManager;
 import android.os.PowerManager;
 import android.os.StatFs;
 import android.provider.OpenableColumns;
 
 import com.brandon.nightsky.processing.LiveStats;
+import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.SensorSpec;
@@ -278,6 +276,15 @@ final class RemoteHost implements RemoteServer.Backend {
         if (s.result != null) {
             j.obj("result").put("summary", s.result.summary).put("name", s.result.name).end();
         }
+        Preflight.Report pf = s.preflight;
+        if (pf != null) {
+            j.obj("preflight").put("summary", pf.spoken()).put("warnings", pf.hasWarnings());
+            j.arr("items");
+            for (Preflight.Item it : pf.items) {
+                j.obj().put("check", it.key).put("level", it.level.name().toLowerCase(Locale.US)).put("text", it.text).end();
+            }
+            j.end().end();
+        }
         return j.end().toString();
     }
 
@@ -287,6 +294,8 @@ final class RemoteHost implements RemoteServer.Backend {
             case PLACE:
             case STEADY:
                 return "arming";
+            case PREFLIGHT:
+                return "checking";
             case COUNTDOWN:
                 return "countdown";
             case CAPTURING:
@@ -486,14 +495,10 @@ final class RemoteHost implements RemoteServer.Backend {
         long now = System.currentTimeMillis();
         if (now - batteryReadMs < 10_000) return;
         batteryReadMs = now;
-        Intent b = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (b == null) return;
-        int level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1), scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-        batteryLevel = level >= 0 && scale > 0 ? Math.round(100f * level / scale) : -1;
-        int t = b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-        batteryTempC = t == Integer.MIN_VALUE ? Float.NaN : t / 10f;
-        int st = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-        charging = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL;
+        BatteryInfo b = BatteryInfo.read(ctx);
+        batteryLevel = b.pct;
+        batteryTempC = b.tempC;
+        charging = b.charging;
     }
 
     private String thermal() {

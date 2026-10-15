@@ -256,6 +256,40 @@ public final class SessionStore {
         }
     }
 
+    // ---- other records (pre-flight report, ...) ----
+
+    /** Writes a small text file in the session folder, replacing it whole. */
+    public synchronized void writeText(String name, String text) throws IOException {
+        File tmp = new File(dir, name + ".part");
+        OutputStreamWriter w = new OutputStreamWriter(new FileOutputStream(tmp), UTF8);
+        try {
+            w.write(text);
+        } finally {
+            w.close();
+        }
+        if (!tmp.renameTo(new File(dir, name))) throw new IOException("rename failed");
+    }
+
+    /** A text file of the session folder, or null if there is none. */
+    public synchronized String readText(String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return null;
+        try {
+            InputStreamReader r = new InputStreamReader(new FileInputStream(f), UTF8);
+            try {
+                StringBuilder sb = new StringBuilder();
+                char[] buf = new char[8192];
+                int n;
+                while ((n = r.read(buf)) > 0) sb.append(buf, 0, n);
+                return sb.toString();
+            } finally {
+                r.close();
+            }
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     // ---- log ----
 
     public File logFile() {

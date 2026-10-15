@@ -22,6 +22,21 @@ public final class SessionSky {
     /** The bright-star catalogue (not stored). */
     public BrightStars catalog;
 
+    public SessionSky copy() {
+        SessionSky s = new SessionSky();
+        s.latDeg = latDeg;
+        s.lonDeg = lonDeg;
+        s.altM = altM;
+        s.locationSource = locationSource;
+        s.locationAgeMin = locationAgeMin;
+        s.clockWallMs = clockWallMs;
+        s.clockTimestampNs = clockTimestampNs;
+        s.clockValid = clockValid;
+        s.headingTopDeg = headingTopDeg;
+        s.catalog = catalog;
+        return s;
+    }
+
     public boolean located() {
         return !Double.isNaN(latDeg) && !Double.isNaN(lonDeg);
     }

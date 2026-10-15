@@ -232,7 +232,12 @@ public final class PostProcessor {
             smoothMotion(units, model, out);
             progress.update("Matching stars", 1f);
             measureFrames(units, ref, al.reference(), model, fs, hot, progress);
-            solveSky(ref, model, al, out);
+            try {
+                solveSky(ref, model, al, out);
+            } catch (RuntimeException e) {
+                // naming the sky is a bonus: never let it cost the photo
+                store.log("sky: matching the stars to the catalogue failed: " + e);
+            }
             grade(units);
             int placed = 0;
             for (Unit u : units) if (u.predicted && u.used) placed++;

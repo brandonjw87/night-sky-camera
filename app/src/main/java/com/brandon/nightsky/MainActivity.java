@@ -37,10 +37,14 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
@@ -69,6 +73,9 @@ public final class MainActivity extends Activity {
 
     // views of the current screen (whichever exist)
     private TextView headline, detail, stage;
+    /** The pre-flight check's findings, on the arming screen. */
+    private TextView checks;
+    private Preflight.Report shownChecks;
     private ProgressBar bar;
     private ImageView live;
     private ZoomImageView zoom;
@@ -176,6 +183,11 @@ public final class MainActivity extends Activity {
         shownPhase = p;
         if (headline != null) headline.setText(s.headline);
         if (detail != null) detail.setText(s.detail);
+        if (checks != null && s.preflight != shownChecks) {
+            shownChecks = s.preflight;
+            checks.setText(s.preflight != null ? s.preflight.describe() : "");
+            checks.setVisibility(s.preflight != null ? View.VISIBLE : View.GONE);
+        }
         if (bar != null) {
             if (s.progress >= 0) {
                 bar.setIndeterminate(false);
@@ -204,6 +216,7 @@ public final class MainActivity extends Activity {
             case STARTING:
             case PLACE:
             case STEADY:
+            case PREFLIGHT:
             case COUNTDOWN: return 1;
             case CAPTURING:
             case PAUSED: return 2;
@@ -230,6 +243,8 @@ public final class MainActivity extends Activity {
 
     private void clearRefs() {
         headline = detail = stage = null;
+        checks = null;
+        shownChecks = null;
         bar = null;
         live = null;
         zoom = null;
@@ -290,6 +305,24 @@ public final class MainActivity extends Activity {
             row.addView(dev, weight());
             row.addView(del, weight());
             card.addView(row, gap(10));
+            col.addView(card, gap(16));
+        }
+
+        // storage running out: offer to delete old sessions' frames (listing them, asking first)
+        long free = freeBytes();
+        long need = roughNeedBytes(prefs.durationMin() * 60);
+        if (free >= 0 && free < 2 * need) {
+            LinearLayout card = card();
+            card.addView(text(String.format(Locale.US, "Storage is low: %.1f GB free. A %d-minute session needs about %.1f GB.",
+                    free / 1e9, prefs.durationMin(), need / 1e9), 15, RED, true));
+            Button clean = button("Free up space", false);
+            clean.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    offerCleanup();
+                }
+            });
+            card.addView(clean, gap(8));
             col.addView(card, gap(16));
         }
 
@@ -381,7 +414,15 @@ public final class MainActivity extends Activity {
                 prefs.setRemoteViewer(on);
             }
         });
+        CheckBox pre = check("Check the sky first: smudged lens, trees, clouds, the Moon (about 15 seconds)", prefs.preflight());
+        pre.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setPreflight(on);
+            }
+        });
         col.addView(snd, gap(18));
+        col.addView(pre);
         col.addView(dng);
         col.addView(viewer);
         addAdvanced(col);
@@ -397,7 +438,8 @@ public final class MainActivity extends Activity {
         });
         col.addView(start, gap(24));
         col.addView(text("Tap Start, then lay the phone screen-down on the ground or a table with the back camera "
-                + "facing the sky. It starts by itself once the phone is still, and beeps when it's done.", 14, RED_DIM, false), gap(10));
+                + "facing the sky. Once it's still, it checks the sky and says what it found, then starts by itself. "
+                + "It beeps when it's done.", 14, RED_DIM, false), gap(10));
 
         final String last = prefs.lastResultUri();
         if (last != null) {
@@ -499,7 +541,16 @@ public final class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = true;
             askedNotifications = true; // asked together with the camera: don't ask again if it is refused
-            requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS}, 1);
+            prefs.setAskedLocation();
+            requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS,
+                    Manifest.permission.ACCESS_COARSE_LOCATION}, 1);
+            return;
+        }
+        if (!prefs.askedLocation() && !Locator.allowed(this)) {
+            // optional: the approximate place, for the Sun, the Moon and the compass (asked once)
+            prefs.setAskedLocation();
+            pendingStart = true;
+            requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION}, 4);
             return;
         }
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -516,6 +567,7 @@ public final class MainActivity extends Activity {
                 .putExtra(CaptureService.EXTRA_BRIGHTNESS, prefs.brightness())
                 .putExtra(CaptureService.EXTRA_SOUNDS, prefs.sounds())
                 .putExtra(CaptureService.EXTRA_DNG, prefs.saveDng())
+                .putExtra(CaptureService.EXTRA_PREFLIGHT, prefs.preflight())
                 .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer());
         startForegroundService(i);
     }
@@ -559,9 +611,13 @@ public final class MainActivity extends Activity {
         headline.setGravity(Gravity.CENTER);
         detail = text("", 16, RED_DIM, false);
         detail.setGravity(Gravity.CENTER);
+        checks = text("", 15, RED, false);
+        checks.setVisibility(View.GONE);
+        checks.setLineSpacing(dp(3), 1f);
         col.addView(spacer(), new LinearLayout.LayoutParams(1, 0, 1f));
         col.addView(headline);
         col.addView(detail, gap(14));
+        col.addView(checks, gap(16));
         col.addView(spacer(), new LinearLayout.LayoutParams(1, 0, 1f));
         viewerBox = new LinearLayout(this);
         viewerBox.setOrientation(LinearLayout.VERTICAL);
@@ -937,6 +993,16 @@ public final class MainActivity extends Activity {
         detail = text("", 16, RED_DIM, false);
         col.addView(headline);
         col.addView(detail, gap(12));
+        if (s.storageShort) {
+            Button clean = button("Free up space", false);
+            clean.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    offerCleanup();
+                }
+            });
+            col.addView(clean, gap(18));
+        }
         Button ok = button("OK", true);
         ok.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -951,6 +1017,69 @@ public final class MainActivity extends Activity {
     // ------------------------------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------------------------------
+
+    /**
+     * Lists the sessions whose frames are still on the phone (never developed) with their size, and deletes
+     * those frames only if the person says yes.
+     */
+    private void offerCleanup() {
+        SessionController.Phase ph = service != null ? service.controller().status().phase : null;
+        if (ph != null && ph != SessionController.Phase.IDLE && ph != SessionController.Phase.DONE && ph != SessionController.Phase.FAILED) {
+            toastish("Wait until the session is finished");
+            return;
+        }
+        final List<File> dirs = SessionController.unfinished(this);
+        if (dirs.isEmpty()) {
+            new AlertDialog.Builder(this).setMessage("No old session frames are left on the phone. To free space, "
+                    + "delete photos or videos you no longer need, or use Files > Clean.").setPositiveButton("OK", null).show();
+            return;
+        }
+        StringBuilder sb = new StringBuilder("These sessions were never developed, so their frames are still on the phone:\n\n");
+        long total = 0;
+        for (File d : dirs) {
+            long b = SessionController.sizeOf(d);
+            total += b;
+            sb.append("• ").append(sessionName(d)).append(": ").append(SessionController.unitCount(d)).append(" frames, ")
+                    .append(String.format(Locale.US, "%.1f GB", b / 1e9)).append('\n');
+        }
+        sb.append(String.format(Locale.US, "\nDelete their frames to free %.1f GB? They can't be developed afterwards.", total / 1e9));
+        new AlertDialog.Builder(this).setTitle("Free up space").setMessage(sb.toString())
+                .setPositiveButton("Delete the frames", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface di, int w) {
+                        for (File d : dirs) SessionController.delete(d);
+                        toastish(String.format(Locale.US, "%.1f GB free now", freeBytes() / 1e9));
+                        SessionController.Phase p = service != null ? service.controller().status().phase : null;
+                        if (p == null || p == SessionController.Phase.IDLE) showHome();
+                    }
+                }).setNegativeButton("Keep them", null).show();
+    }
+
+    /** "15 Oct, 21:30" from a session folder's name. */
+    private static String sessionName(File dir) {
+        String n = dir.getName();
+        String id = n.startsWith("session_") ? n.substring(8) : n;
+        if (id.length() > 15) id = id.substring(0, 15);
+        try {
+            Date d = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(id);
+            return new SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()).format(d);
+        } catch (ParseException e) {
+            return n;
+        }
+    }
+
+    private long freeBytes() {
+        try {
+            return new android.os.StatFs(SessionController.sessionsRoot(this).getAbsolutePath()).getAvailableBytes();
+        } catch (IllegalArgumentException e) {
+            return -1;
+        }
+    }
+
+    /** About what a session of this length needs before the camera is known: 25 MB frames of 6 s, and room to develop. */
+    private static long roughNeedBytes(int durationSec) {
+        return 25_000_000L * (durationSec / 6 + 2) + (400L << 20);
+    }
 
     private void view(Uri uri) {
         try {

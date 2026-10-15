@@ -9,6 +9,7 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.net.Uri;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.StatFs;
@@ -21,11 +22,13 @@ import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.PostProcessor;
+import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.SensorSpec;
+import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
@@ -54,8 +57,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * One night-sky session from start to finish:
  * <ol>
  * <li>open the camera and wait until the phone lies screen-down and perfectly still,</li>
- * <li>count down with beeps while a short test frame measures the sky brightness and reads the lens
- * shading map, then settle,</li>
+ * <li>check the sky ({@link Preflight}): a short probe measures the sky brightness and reads the lens shading
+ * map, a test frame at the session's settings is read for a smudged lens, obstructions, clouds, the Sun and
+ * the Moon, and one spoken sentence says what it found; after a warning there is time to pick the phone up
+ * and fix it (putting it back down checks again),</li>
+ * <li>count down with beeps, then settle,</li>
  * <li>capture RAW exposures back to back (two queued), each handed to the {@link UnitProcessor} which stores
  * it on disk at once; pause if the phone is picked up, restart the camera if it stalls,</li>
  * <li>develop: align and stack ({@link PostProcessor}), render, save JPEG, DNG and log.</li>
@@ -63,7 +69,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Everything except developing runs on one thread, the camera's callbacks included.
  */
 final class SessionController {
-    enum Phase { IDLE, STARTING, PLACE, STEADY, COUNTDOWN, CAPTURING, PAUSED, FINISHING, DEVELOPING, DONE, FAILED }
+    enum Phase { IDLE, STARTING, PLACE, STEADY, PREFLIGHT, COUNTDOWN, CAPTURING, PAUSED, FINISHING, DEVELOPING, DONE, FAILED }
 
     static final class Settings {
         boolean trails;
@@ -72,6 +78,8 @@ final class SessionController {
         boolean sounds = true;
         boolean saveDng = true;
         int countdownSec = 5;
+        /** Check the sky with a test frame before the countdown. */
+        boolean preflight = true;
         /** Started from the remote viewer: keep the viewer's mute setting. */
         boolean fromViewer;
     }
@@ -95,6 +103,10 @@ final class SessionController {
         boolean muted, soundsOn;
         /** Live-frame picture for the viewer: bumped with each processed unit. */
         int latestVersion = -1;
+        /** The pre-flight check's findings for this session (null before it has run). */
+        Preflight.Report preflight;
+        /** Failed for want of storage: the screen offers to free some. */
+        boolean storageShort;
     }
 
     static final class Result {
@@ -114,7 +126,7 @@ final class SessionController {
         void onIdle();
     }
 
-    private static final int PROBE = 1, FRAME = 2;
+    private static final int PROBE = 1, FRAME = 2, TEST = 3;
     private static final long STILL_NS = 3_000_000_000L;
     /** Stillness needed after "Start now" from the viewer (the phone need not be face-down). */
     private static final long FORCED_STILL_NS = 1_000_000_000L;
@@ -125,6 +137,12 @@ final class SessionController {
     private static final long MAX_PAUSE_MS = 5 * 60_000L;
     /** A rotation rate above this during an exposure spoils the frame (rad/s). */
     private static final float DISTURBED_RAD_S = 0.05f;
+    /** The pre-flight test frame is the session's frame length, at most this long. */
+    private static final long TEST_MAX_NS = 8_000_000_000L;
+    /** After a pre-flight warning: time to pick the phone up before the countdown starts. */
+    private static final long GRACE_MS = 10_000L;
+    /** Pre-flight steps: waiting for the probe, the test frame, reading it, speaking, waiting after a warning. */
+    private static final int PF_PROBE = 1, PF_TEST = 2, PF_READ = 3, PF_SPEAK = 4, PF_GRACE = 5;
 
     private static final class Req {
         final int seq, kind;
@@ -184,6 +202,21 @@ final class SessionController {
     private long probeSentMs;
     private Req probe;
     private double probeBg = Double.NaN;
+
+    // pre-flight check
+    private int pfStep, preflightToken, testRetries;
+    private Req testReq;
+    private short[] testBuf;
+    private long testSentMs, graceUntilMs;
+    private Preflight.Report preflightReport;
+    private boolean startedAfterWarnings, storageShort;
+    /** Place, clock and compass of this session. */
+    private SessionSky sky = new SessionSky();
+    private Locator.Place place;
+    private CancellationSignal locating;
+    /** Battery at the start of capture (-1: unknown or charging), for learning how fast a session drains it. */
+    private int batteryAtStart = -1;
+    private long batteryAtStartMs;
 
     // capture loop
     private int seqCounter;
@@ -426,6 +459,7 @@ final class SessionController {
                     case STARTING:
                     case PLACE:
                     case STEADY:
+                    case PREFLIGHT:
                     case COUNTDOWN:
                         forced = true;
                         log("start now: asked from the viewer");
@@ -583,13 +617,30 @@ final class SessionController {
             Range<Long> expRange = cc.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
             long advMax = expRange != null ? expRange.getUpper() : 0;
             advMaxNs = advMax;
-            plan = ExposurePlan.make(spec.model.fx, ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
+            // where we are: the frame length depends on the latitude (the zenith's declination)
+            place = Locator.best(ctx, prefs);
+            sky = new SessionSky();
+            setPlace(place);
+            if (realtimeClock) setClock(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos());
+            plan = ExposurePlan.make(spec.model.fx, place != null ? place.latDeg : ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
                     prefs.verifiedExposureNs(cameraId), prefs.clampDeliveredNs(cameraId), isoStart, isoMin, spec.white);
             String space = checkSpace();
             if (space != null) {
+                storageShort = true;
                 fail(space);
                 return;
             }
+            // a fresh fix while the phone is put down (it is only for this session's records and checks)
+            final int tk = token;
+            locating = Locator.refresh(ctx, prefs, h, 30_000L, new Locator.Listener() {
+                @Override
+                public void onPlace(Locator.Place p) {
+                    locating = null;
+                    if (tk != token || p == null || phase.ordinal() >= Phase.CAPTURING.ordinal()) return;
+                    place = p;
+                    setPlace(p);
+                }
+            });
             cleanupOldSessions();
             motion = new MotionMonitor(ctx);
             motion.start();
@@ -607,17 +658,26 @@ final class SessionController {
         scheduleTick();
     }
 
-    /** Null if there is room for the session's frames, else a message. */
-    private String checkSpace() {
+    /** Storage the session's frames need (bytes): its units, two spare, and room to develop. */
+    private long needBytes() {
         long unitBytes = 2L * spec.width * spec.height;
         int units = (plan.frames + plan.framesPerUnit - 1) / plan.framesPerUnit;
-        long need = unitBytes * (units + 2) + (400L << 20);
-        long free;
+        return unitBytes * (units + 2) + (400L << 20);
+    }
+
+    private long freeBytes() {
         try {
-            free = new StatFs(root.getAbsolutePath()).getAvailableBytes();
+            return new StatFs(root.getAbsolutePath()).getAvailableBytes();
         } catch (IllegalArgumentException e) {
-            return null;
+            return -1;
         }
+    }
+
+    /** Null if there is room for the session's frames, else a message. */
+    private String checkSpace() {
+        long need = needBytes();
+        long free = freeBytes();
+        if (free < 0) return null;
         if (free >= need) return null;
         return String.format(Locale.US, "Not enough free storage: this session needs about %.1f GB, %.1f GB is free. "
                 + "Choose a shorter time or free some space.", need / 1e9, free / 1e9);
@@ -653,6 +713,15 @@ final class SessionController {
         probeRetries = 0;
         probe = null;
         probeBg = Double.NaN;
+        pfStep = 0;
+        preflightToken++;
+        testReq = null;
+        testBuf = null;
+        testRetries = 0;
+        preflightReport = null;
+        startedAfterWarnings = false;
+        storageShort = false;
+        batteryAtStart = -1;
         pausedTotalMs = 0;
         liveStars = 0;
         liveAligned = false;
@@ -696,6 +765,37 @@ final class SessionController {
                     phase = Phase.PLACE;
                     publishPlace();
                 } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
+                    if (settings.preflight && !forced) startPreflight(now);
+                    else startCountdown(now);
+                }
+                break;
+            case PREFLIGHT:
+                if (forced) {
+                    // "Start now" from the viewer: no more checking
+                    skipPreflight(now, "skipped the rest of the check: start now from the viewer");
+                    break;
+                }
+                if (!motion.faceDown() || motion.rate() > 0.15f) {
+                    // picked up (to wipe the lens, or move away from a branch): check again once it is back down
+                    abandonPreflight();
+                    phase = motion.faceDown() ? Phase.STEADY : Phase.PLACE;
+                    if (phase == Phase.PLACE) publishPlace();
+                    else publish("Hold still", "Checking the sky once the phone is still", -1);
+                    return;
+                }
+                if (!probeDone && probeSent && now - probeSentMs > 12000) {
+                    log("test frame timed out");
+                    forgetProbe();
+                    probeDone = true;
+                }
+                if (pfStep == PF_PROBE && probeDone) {
+                    sendTest(now);
+                } else if (pfStep == PF_TEST && testReq != null && now - testSentMs > testReq.expNs / 1_000_000L + 15000) {
+                    forgetTest();
+                    skipPreflight(now, "the test frame never came back, so the sky wasn't checked");
+                } else if (pfStep == PF_GRACE && now >= graceUntilMs) {
+                    startedAfterWarnings = true;
+                    log("decision: started after the pre-flight warnings (the phone was left down)");
                     startCountdown(now);
                 }
                 break;
@@ -762,7 +862,9 @@ final class SessionController {
     }
 
     private void publishPlace() {
-        publish("Lay the phone screen-down", "The back camera must face the sky. It starts by itself once the phone is still.", -1);
+        publish("Lay the phone screen-down", settings.preflight && !forced
+                ? "The back camera must face the sky. Once the phone is still it checks the sky, then starts by itself."
+                : "The back camera must face the sky. It starts by itself once the phone is still.", -1);
     }
 
     private void startCountdown(long now) {
@@ -770,6 +872,220 @@ final class SessionController {
         countdownLeft = forced ? 0 : Math.max(1, settings.countdownSec);
         nextBeepMs = now;
         if (!probeSent) sendProbe();
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Pre-flight check
+    // ------------------------------------------------------------------------------------------------
+
+    private void startPreflight(long now) {
+        phase = Phase.PREFLIGHT;
+        preflightToken++;
+        preflightReport = null;
+        testRetries = 0;
+        testReq = null;
+        pfStep = PF_PROBE;
+        sounds.tick();
+        publish("Checking the sky", "A test frame looks for a smudged lens, obstructions, clouds and the Moon", -1);
+        if (!probeSent) sendProbe();
+        if (probeDone) sendTest(now);
+    }
+
+    /** The phone was picked up or the check was cut short: whatever is still coming is ignored. */
+    private void abandonPreflight() {
+        preflightToken++;
+        forgetTest();
+        pfStep = 0;
+    }
+
+    private void skipPreflight(long now, String why) {
+        log("pre-flight: " + why);
+        abandonPreflight();
+        startCountdown(now);
+    }
+
+    private void forgetTest() {
+        Req r = testReq;
+        if (r == null) return;
+        reqs.remove(r.seq);
+        if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+        testReq = null;
+    }
+
+    /** The test frame: the session's ISO and frame length (at most 8 s), so it sees what the session will. */
+    private void sendTest(long now) {
+        long exp = Math.min(plan.frameExpNs, TEST_MAX_NS);
+        if (testBuf == null) {
+            try {
+                testBuf = new short[spec.width * spec.height];
+            } catch (OutOfMemoryError e) {
+                skipPreflight(now, "not enough memory for the test frame, so the sky wasn't checked");
+                return;
+            }
+        }
+        int seq = ++seqCounter;
+        Req r = new Req(seq, TEST, exp);
+        if (!rig.capture(seq, exp, plan.iso)) {
+            skipPreflight(now, "the test frame could not be taken, so the sky wasn't checked");
+            return;
+        }
+        reqs.put(seq, r);
+        testReq = r;
+        testSentMs = now;
+        pfStep = PF_TEST;
+        publish("Checking the sky", String.format(Locale.US, "Test frame: %.0f seconds at ISO %d", exp / 1e9, plan.iso), -1);
+    }
+
+    private void testArrived(Req r) {
+        if (r != testReq || r.result == null || (r.buf == null && !r.lost)) return;
+        forgetTest();
+        if (phase != Phase.PREFLIGHT || pfStep != PF_TEST) return;
+        long now = SystemClock.elapsedRealtime();
+        if (r.lost || r.buf == null) {
+            if (++testRetries <= 1) sendTest(now);
+            else skipPreflight(now, "the test frame was lost, so the sky wasn't checked");
+            return;
+        }
+        TotalCaptureResult res = r.result;
+        SensorSpecFactory.applyResult(spec, res, geo);
+        Long e = res.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        long exp = e != null ? e : r.expNs;
+        Integer isoR = res.get(CaptureResult.SENSOR_SENSITIVITY);
+        int iso = isoR != null ? isoR : plan.iso;
+        if (exp < r.expNs * 0.93) {
+            // the camera cut it short: the session's frames will be cut too, so plan with what it delivers
+            prefs.noteExposureClamped(cameraId, r.expNs, exp);
+            plan.limitTo(exp, settings.durationSec, spec.white);
+            log(String.format(Locale.US, "decision: the camera cut the test frame to %.2f s; new plan: %s", exp / 1e9, plan.describe()));
+        } else {
+            prefs.noteExposureDelivered(cameraId, r.expNs);
+        }
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        long tsn = ts != null ? ts : r.startNs;
+        long t0 = realtimeClock && tsn > 0 ? tsn : r.arrivalNs - exp;
+        float rate = motion.maxRate(t0, t0 + exp);
+        if (rate > DISTURBED_RAD_S && ++testRetries <= 1) {
+            log(String.format(Locale.US, "pre-flight: the phone moved during the test frame (%.2f rad/s); taking another", rate));
+            sendTest(now);
+            return;
+        }
+        // the compass, now that the phone lies where it will stay
+        double head = motion.headingTopDeg();
+        if (!Double.isNaN(head)) {
+            double d = place != null ? Locator.declination(place) : 0;
+            sky.headingTopDeg = ((head + d) % 360 + 360) % 360;
+        }
+        final Preflight.Input in = new Preflight.Input();
+        in.raw = r.buf;
+        in.invScale = 1f;
+        float[] black = SensorSpecFactory.dynamicBlack(res, geo);
+        in.black = black != null ? black : spec.black.clone();
+        in.spec = spec;
+        in.exposureS = exp / 1e9;
+        in.iso = iso;
+        in.planExposureS = plan.frameExpNs / 1e9;
+        in.planIso = plan.iso;
+        in.sessionSeconds = settings.durationSec;
+        in.trails = settings.trails;
+        in.sky = sky.copy();
+        in.timestampNs = tsn;
+        in.up = motion.up();
+        in.haloBaseline = prefs.haloBaseline(cameraId);
+        in.clearZeroPoint = prefs.clearZeroPoint(cameraId);
+        in.freeBytes = freeBytes();
+        in.needBytes = needBytes();
+        BatteryInfo b = BatteryInfo.read(ctx);
+        in.batteryPct = b.pct;
+        in.batteryTempC = b.tempC;
+        in.charging = b.charging;
+        in.drainPctPerHour = prefs.drainPctPerHour();
+        pfStep = PF_READ;
+        publish("Checking the sky", "Reading the test frame", -1);
+        final int tk = preflightToken;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Preflight.Report rep = null;
+                Throwable err = null;
+                try {
+                    in.catalog = SkyCatalog.get(ctx);
+                    rep = Preflight.run(in);
+                } catch (Throwable t) {
+                    err = t;
+                }
+                final Preflight.Report fr = rep;
+                final Throwable fe = err;
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        preflightRead(tk, fr, fe);
+                    }
+                });
+            }
+        }, "preflight").start();
+    }
+
+    private void preflightRead(final int tk, final Preflight.Report rep, Throwable err) {
+        if (tk != preflightToken || phase != Phase.PREFLIGHT || pfStep != PF_READ) return;
+        long now = SystemClock.elapsedRealtime();
+        if (rep == null) {
+            skipPreflight(now, "the check failed (" + err + "), so the sky wasn't checked");
+            return;
+        }
+        preflightReport = rep;
+        android.util.Log.i("NightSky", "pre-flight (" + rep.millis + " ms): " + rep.spoken() + "\n" + rep.describe());
+        final Preflight.Item stop = rep.stop();
+        final boolean warn = rep.hasWarnings();
+        pfStep = PF_SPEAK;
+        String say = rep.spoken();
+        if (stop != null) {
+            publish("Can't start", stop.text, -1);
+        } else if (warn) {
+            say += " Pick up the phone to fix it, or it starts by itself in ten seconds.";
+            publish("Check before starting", "Pick up the phone to fix it, or it starts by itself", -1);
+        } else {
+            publish("Ready", "Starting soon", -1);
+        }
+        sounds.say(say, new Runnable() {
+            @Override
+            public void run() {
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (tk != preflightToken || phase != Phase.PREFLIGHT || pfStep != PF_SPEAK) return;
+                        long t = SystemClock.elapsedRealtime();
+                        if (stop != null) {
+                            storageShort = "storage".equals(stop.key);
+                            fail(stop.text);
+                        } else if (warn) {
+                            pfStep = PF_GRACE;
+                            graceUntilMs = t + GRACE_MS;
+                            publish("Check before starting", "Pick up the phone to fix it, or it starts by itself in a few seconds", -1);
+                        } else {
+                            startCountdown(t);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /** Records the place in this session's sky. */
+    private void setPlace(Locator.Place p) {
+        if (p == null) return;
+        sky.latDeg = p.latDeg;
+        sky.lonDeg = p.lonDeg;
+        sky.altM = p.altM;
+        sky.locationSource = p.source;
+        sky.locationAgeMin = p.ageMinutes();
+    }
+
+    /** A wall-clock time and the camera timestamp of the same instant (the first one given is kept). */
+    private void setClock(long wallMs, long timestampNs) {
+        if (sky.clockValid) return;
+        sky.clockWallMs = wallMs;
+        sky.clockTimestampNs = timestampNs;
+        sky.clockValid = true;
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -863,12 +1179,20 @@ final class SessionController {
     // ------------------------------------------------------------------------------------------------
 
     private void startCapture() {
+        testBuf = null; // the test frame has been read: its memory goes to the capture
+        if (locating != null) {
+            locating.cancel();
+            locating = null;
+        }
         try {
             openStore();
         } catch (IOException e) {
             fail("Could not create the session folder: " + e.getMessage());
             return;
         }
+        BatteryInfo b = BatteryInfo.read(ctx);
+        batteryAtStart = b.charging ? -1 : b.pct;
+        batteryAtStartMs = SystemClock.elapsedRealtime();
         phase = Phase.CAPTURING;
         captureStartMs = SystemClock.elapsedRealtime();
         lastProgressMs = captureStartMs;
@@ -889,6 +1213,23 @@ final class SessionController {
         p.setProperty("plan", plan.describe());
         p.setProperty("rejection", Rejection.Method.parse(prefs.rejection()).name());
         p.setProperty("state", "capturing");
+        sky.toProperties(p);
+        Preflight.Report pf = preflightReport;
+        if (pf != null) {
+            p.setProperty("preflight.summary", pf.spoken());
+            if (!Double.isNaN(pf.haloRatio)) p.setProperty("preflight.haloRatio", Double.toString(pf.haloRatio));
+            if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
+            Preflight.Item lens = pf.item("lens");
+            p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
+            StringBuilder w = new StringBuilder();
+            for (Preflight.Item it : pf.items) {
+                if (it.level != Preflight.Level.WARN && it.level != Preflight.Level.STOP) continue;
+                if (w.length() > 0) w.append(',');
+                w.append(it.key);
+            }
+            p.setProperty("preflight.warnings", w.toString());
+            p.setProperty("preflight.startedAfterWarnings", Boolean.toString(startedAfterWarnings));
+        }
         store.writeSettings(p);
         store.log("Night Sky Camera " + BuildInfo.VERSION + " on " + spec.deviceMake + " " + spec.deviceModel
                 + " (" + android.os.Build.FINGERPRINT + ")");
@@ -896,6 +1237,22 @@ final class SessionController {
         store.log("plan: " + plan.describe());
         float tilt = motion.tiltDeg();
         if (!Float.isNaN(tilt)) store.log(String.format(Locale.US, "tilt from vertical %.1f deg", tilt));
+        store.log("sky: " + sky.describe() + (place != null ? "; place " + place.describe() : "; no place known"));
+        if (pf != null) {
+            store.log(String.format(Locale.US, "pre-flight (%d ms): %s", pf.millis, pf.spoken()));
+            for (Preflight.Item it : pf.items) store.log("  " + it.level.name().toLowerCase(Locale.US) + " " + it.key + ": " + it.text);
+            if (pf.placeSource.startsWith("stars")) {
+                store.log(String.format(Locale.US, "decision: place from the stars and the phone's level: %.1f, %.1f (%s)",
+                        pf.latDeg, pf.lonDeg, pf.placeSource));
+            }
+            try {
+                store.writeText("preflight.json", pf.toJson());
+            } catch (IOException e) {
+                store.log("could not save the pre-flight report: " + e.getMessage());
+            }
+        } else if (!settings.preflight) {
+            store.log("pre-flight: off in the settings");
+        }
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
         liveSpec = spec;
@@ -1062,6 +1419,9 @@ final class SessionController {
             if (r == null) return;
             r.startNs = timestampNs;
             tsToSeq.put(timestampNs, seq);
+            // a camera clock of its own: pair it with the wall clock at the start of an exposure (to within the
+            // callback's few milliseconds)
+            if (!realtimeClock) setClock(System.currentTimeMillis(), timestampNs);
         }
 
         @Override
@@ -1075,6 +1435,13 @@ final class SessionController {
                 if (!Double.isNaN(probeBg)) return;
                 probeBg = sampleGreen(img);
                 probeArrived();
+                return;
+            }
+            if (r.kind == TEST) {
+                if (r != testReq || testBuf == null) return;
+                copyRaw(img, testBuf);
+                r.buf = testBuf;
+                testArrived(r);
                 return;
             }
             if (up == null) return;
@@ -1096,6 +1463,7 @@ final class SessionController {
             r.result = result;
             r.arrivalNs = SystemClock.elapsedRealtimeNanos();
             if (r.kind == PROBE) probeArrived();
+            else if (r.kind == TEST) testArrived(r);
             else frameArrived(r);
         }
 
@@ -1103,10 +1471,20 @@ final class SessionController {
         public void onFailed(int seq, boolean imageCaptured) {
             Req r = reqs.get(seq);
             if (r == null) return;
+            if (r.kind == TEST) {
+                boolean current = r == testReq;
+                forgetTest();
+                reqs.remove(seq);
+                if (!current || phase != Phase.PREFLIGHT || pfStep != PF_TEST) return;
+                long now = SystemClock.elapsedRealtime();
+                if (++testRetries <= 1) sendTest(now);
+                else skipPreflight(now, "the test frame failed, so the sky wasn't checked");
+                return;
+            }
             if (r.kind == PROBE) {
                 reqs.remove(seq);
                 probe = null;
-                if (++probeRetries <= 1 && phase == Phase.COUNTDOWN) {
+                if (++probeRetries <= 1 && (phase == Phase.COUNTDOWN || phase == Phase.PREFLIGHT)) {
                     probeSent = false;
                     sendProbe();
                 } else {
@@ -1145,6 +1523,7 @@ final class SessionController {
             if (r == null) return;
             r.lost = true;
             if (r.kind == PROBE) probeArrived();
+            else if (r.kind == TEST) testArrived(r);
             else frameArrived(r);
         }
 
@@ -1236,6 +1615,7 @@ final class SessionController {
         final int frames = framesDone;
         releaseCamera();
         host.onCaptureEnded();
+        noteBatteryUse();
         if (frames == 0 || up == null || store == null) {
             if (up != null) up.abort();
             if (store != null) store.deleteAll();
@@ -1267,6 +1647,21 @@ final class SessionController {
                 develop(st, sp, se.trails, se.brightness, se.saveDng, snd);
             }
         }, "develop").start();
+    }
+
+    /** How fast this session used the battery, for the next pre-flight's estimate (only when not charging). */
+    private void noteBatteryUse() {
+        if (batteryAtStart < 0) return;
+        BatteryInfo b = BatteryInfo.read(ctx);
+        double hours = (SystemClock.elapsedRealtime() - batteryAtStartMs) / 3.6e6;
+        int drop = batteryAtStart - b.pct;
+        batteryAtStart = -1;
+        if (b.charging || b.pct < 0 || hours < 0.05) return;
+        if (drop >= 2) {
+            double rate = drop / hours;
+            prefs.learnDrain(rate, hours);
+            log(String.format(Locale.US, "battery: %d%% used in %.0f min (%.0f%% an hour)", drop, hours * 60, rate));
+        }
     }
 
     private void doRecover(final File dir) {
@@ -1338,13 +1733,20 @@ final class SessionController {
         };
         try {
             PostProcessor pp = new PostProcessor(st, sp);
+            Properties props = new Properties();
             try {
+                props = st.readSettings();
                 // the rejection chosen when the session started, so redeveloping a session gives the same result
-                pp.rejection = Rejection.Method.parse(st.readSettings().getProperty("rejection"));
+                pp.rejection = Rejection.Method.parse(props.getProperty("rejection"));
             } catch (IOException e) {
                 st.log("could not read the session settings: " + e.getMessage());
             }
+            // where and when: lets the stars be named and the frames placed on the sky
+            SessionSky sk = SessionSky.fromProperties(props);
+            sk.catalog = SkyCatalog.get(ctx);
+            pp.sky = sk;
             PostProcessor.Output o = pp.run(trails, progress);
+            learnFromSession(props, o, sp, st);
             String name = "NightSky_" + st.id() + (trails ? "_trails" : "");
             post(Phase.DEVELOPING, "Saving", "Full-size photo", -1f);
             Uri jpeg = saveJpeg(o, sp, brightness, name);
@@ -1429,6 +1831,31 @@ final class SessionController {
         }
     }
 
+    /**
+     * A good session (most frames kept) teaches the next pre-flight check what this camera's clean lens and a
+     * clear night look like.
+     */
+    private void learnFromSession(Properties props, PostProcessor.Output o, SensorSpec sp, SessionStore st) {
+        if (o.unitsTotal <= 0 || o.unitsUsed < 0.6 * o.unitsTotal || sp.cameraId.isEmpty()) return;
+        double halo = parseDouble(props.getProperty("preflight.haloRatio"));
+        boolean lensWarned = "true".equals(props.getProperty("preflight.lensWarned"));
+        if (!Double.isNaN(halo) && !lensWarned) prefs.learnHalo(sp.cameraId, halo);
+        double zp = parseDouble(props.getProperty("preflight.zeroPointNorm"));
+        if (!Double.isNaN(zp)) prefs.learnZeroPoint(sp.cameraId, zp);
+        if (!Double.isNaN(halo) || !Double.isNaN(zp)) {
+            st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f, clear night zero point %.2f",
+                    prefs.haloBaseline(sp.cameraId), prefs.clearZeroPoint(sp.cameraId)));
+        }
+    }
+
+    private static double parseDouble(String s) {
+        try {
+            return s == null ? Double.NaN : Double.parseDouble(s);
+        } catch (NumberFormatException e) {
+            return Double.NaN;
+        }
+    }
+
     private static String spoken(PostProcessor.Output o) {
         if (o.unitsTotal > 0 && o.unitsUsed < o.unitsTotal) {
             return String.format(Locale.US, "Done. %d of %d frames kept.", o.unitsUsed, o.unitsTotal);
@@ -1487,6 +1914,7 @@ final class SessionController {
     private void cancelAll() {
         token++;
         startToken++;
+        stopLocating();
         abortInFlight();
         releaseCapture();
         if (up != null) up.abort();
@@ -1502,6 +1930,7 @@ final class SessionController {
     private void fail(String msg) {
         token++;
         startToken++;
+        stopLocating();
         if (store != null) store.log("failed: " + msg);
         releaseCapture();
         if (up != null) {
@@ -1513,6 +1942,14 @@ final class SessionController {
         publish("Something went wrong", msg, -1);
         host.onCaptureEnded();
         host.onIdle();
+    }
+
+    private void stopLocating() {
+        if (locating != null) {
+            locating.cancel();
+            locating = null;
+        }
+        testBuf = null;
     }
 
     private void releaseCamera() {
@@ -1615,6 +2052,8 @@ final class SessionController {
         s.muted = muted;
         s.soundsOn = settings != null && settings.sounds;
         s.latestVersion = latestVersion;
+        s.preflight = preflightReport;
+        s.storageShort = storageShort;
         return s;
     }
 
@@ -1648,5 +2087,9 @@ final class SessionController {
 
     static void delete(File dir) {
         new SessionStore(dir).deleteAll();
+    }
+
+    static long sizeOf(File dir) {
+        return new SessionStore(dir).sizeBytes();
     }
 }
