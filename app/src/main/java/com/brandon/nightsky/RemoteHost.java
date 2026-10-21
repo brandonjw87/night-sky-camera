@@ -274,7 +274,9 @@ final class RemoteHost implements RemoteServer.Backend {
         j.end();
 
         if (s.result != null) {
-            j.obj("result").put("summary", s.result.summary).put("name", s.result.name).end();
+            j.obj("result").put("summary", s.result.summary).put("name", s.result.name);
+            if (s.result.reportJson != null) j.raw("report", s.result.reportJson);
+            j.end();
         }
         Preflight.Report pf = s.preflight;
         if (pf != null) {

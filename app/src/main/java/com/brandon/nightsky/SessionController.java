@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
 import android.util.Range;
@@ -25,6 +26,7 @@ import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Rejection;
+import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.SensorSpec;
@@ -48,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -114,6 +117,9 @@ final class SessionController {
         Uri jpeg, dng, log;
         boolean canAdjust;
         float brightness;
+        /** The session's report card (null if it couldn't be made), and the same as JSON for the viewer. */
+        ReportCard report;
+        String reportJson;
     }
 
     interface Host {
@@ -225,6 +231,10 @@ final class SessionController {
     private int inFlight, framesDone, framesDropped, consecutiveFailures, restarts, awayTicks;
     private boolean firstFrameChecked;
     private long captureStartMs, lastProgressMs, pausedAtMs, pausedTotalMs;
+    /** The hottest the phone said it got during the capture (PowerManager thermal status), and when it first
+     *  got severely hot (Unix ms, 0 if never). */
+    private int thermalMax;
+    private long thermalSevereAtMs, thermalCheckedMs;
     private volatile int liveStars;
     private volatile boolean liveAligned;
 
@@ -704,6 +714,9 @@ final class SessionController {
         inFlight = 0;
         framesDone = 0;
         framesDropped = 0;
+        thermalMax = 0;
+        thermalSevereAtMs = 0;
+        thermalCheckedMs = 0;
         consecutiveFailures = 0;
         restarts = 0;
         awayTicks = 0;
@@ -850,6 +863,7 @@ final class SessionController {
                     finishCapture("it was taking far longer than planned");
                 }
                 if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
+                noteThermal(now);
                 break;
             case PAUSED:
                 if (forced ? motion.quietNs() >= STILL_NS : motion.stillNs() >= STILL_NS) resume();
@@ -1218,6 +1232,7 @@ final class SessionController {
         if (pf != null) {
             p.setProperty("preflight.summary", pf.spoken());
             if (!Double.isNaN(pf.haloRatio)) p.setProperty("preflight.haloRatio", Double.toString(pf.haloRatio));
+            if (!Double.isNaN(pf.haloLimit)) p.setProperty("preflight.haloLimit", Double.toString(pf.haloLimit));
             if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
             Preflight.Item lens = pf.item("lens");
             p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
@@ -1616,6 +1631,7 @@ final class SessionController {
         releaseCamera();
         host.onCaptureEnded();
         noteBatteryUse();
+        if (frames > 0 && store != null) recordCapture(store);
         if (frames == 0 || up == null || store == null) {
             if (up != null) up.abort();
             if (store != null) store.deleteAll();
@@ -1647,6 +1663,34 @@ final class SessionController {
                 develop(st, sp, se.trails, se.brightness, se.saveDng, snd);
             }
         }, "develop").start();
+    }
+
+    /** Every two seconds while capturing: how hot the phone says it is (for the report). */
+    private void noteThermal(long now) {
+        if (now - thermalCheckedMs < 2000) return;
+        thermalCheckedMs = now;
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm == null) return;
+        int st = pm.getCurrentThermalStatus();
+        if (st > thermalMax) {
+            thermalMax = st;
+            log("thermal status " + st);
+        }
+        if (st >= PowerManager.THERMAL_STATUS_SEVERE && thermalSevereAtMs == 0) thermalSevereAtMs = System.currentTimeMillis();
+    }
+
+    /** What the capture saw that the frames don't show, into the session's settings for the report. */
+    private void recordCapture(SessionStore st) {
+        try {
+            Properties p = st.readSettings();
+            p.setProperty("capture.framesDone", Integer.toString(framesDone));
+            p.setProperty("capture.framesDropped", Integer.toString(framesDropped));
+            p.setProperty("capture.thermalMax", Integer.toString(thermalMax));
+            if (thermalSevereAtMs > 0) p.setProperty("capture.thermalSevereAtMs", Long.toString(thermalSevereAtMs));
+            st.writeSettings(p);
+        } catch (IOException e) {
+            st.log("could not note the capture's details: " + e.getMessage());
+        }
     }
 
     /** How fast this session used the battery, for the next pre-flight's estimate (only when not charging). */
@@ -1747,6 +1791,7 @@ final class SessionController {
             pp.sky = sk;
             PostProcessor.Output o = pp.run(trails, progress);
             learnFromSession(props, o, sp, st);
+            ReportCard card = report(o, sk, props, st);
             String name = "NightSky_" + st.id() + (trails ? "_trails" : "");
             post(Phase.DEVELOPING, "Saving", "Full-size photo", -1f);
             Uri jpeg = saveJpeg(o, sp, brightness, name);
@@ -1779,6 +1824,8 @@ final class SessionController {
             r.log = log;
             r.canAdjust = true;
             r.brightness = brightness;
+            r.report = card;
+            r.reportJson = card != null ? card.toJson() : null;
             prefs.setLastResultUri(jpeg.toString());
             final PostProcessor.Output out = o;
             final RgbImage smf = sm;
@@ -1796,7 +1843,7 @@ final class SessionController {
                     phase = Phase.DONE;
                     publish(trails ? "Your star trails are ready" : "Your photo is ready", r.summary, -1);
                     if (snd != null) {
-                        snd.say(spoken(out), new Runnable() {
+                        snd.say(r.report != null ? r.report.spoken : spoken(out), new Runnable() {
                             @Override
                             public void run() {
                                 snd.release();
@@ -1828,6 +1875,30 @@ final class SessionController {
                             + ". The frames are kept; try again from the start screen.");
                 }
             });
+        }
+    }
+
+    /** The session's report card, saved with the session and in its log; null if it couldn't be made. */
+    private ReportCard report(PostProcessor.Output o, SessionSky sk, Properties props, SessionStore st) {
+        try {
+            ReportCard.Input in = new ReportCard.Input();
+            in.out = o;
+            in.sky = sk;
+            in.props = props;
+            in.zone = TimeZone.getDefault();
+            in.catalog = sk.catalog;
+            ReportCard card = ReportCard.build(in);
+            st.log("report:\n" + card.describe());
+            try {
+                st.writeText("report.json", card.toJson());
+            } catch (IOException e) {
+                st.log("could not save the report: " + e.getMessage());
+            }
+            return card;
+        } catch (RuntimeException e) {
+            st.log("report failed: " + e);
+            for (StackTraceElement el : e.getStackTrace()) st.log("  at " + el);
+            return null;
         }
     }
 

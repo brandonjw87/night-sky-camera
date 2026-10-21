@@ -115,6 +115,24 @@ public final class SimRunner {
         }
         if (System.getenv("SIM_COLFIX") != null) sim.colFixedSigma = Double.parseDouble(System.getenv("SIM_COLFIX"));
         sim.psfSigma = 0.85 / Math.sqrt(scale);
+        // SIM_FOG=from[,per frame[,max]]: dew forming; SIM_FOCUS=from[,px per frame[,max px]]: focus drifting;
+        // SIM_BUMP=frame: a knock; SIM_HALO=share: a smudged lens all session
+        double[] fog = doubles(System.getenv("SIM_FOG"));
+        if (fog != null) {
+            sim.fogFrom = (int) fog[0];
+            if (fog.length > 1) sim.fogPerFrame = fog[1];
+            if (fog.length > 2) sim.fogMax = fog[2];
+        }
+        double[] foc = doubles(System.getenv("SIM_FOCUS"));
+        if (foc != null) {
+            sim.focusFrom = (int) foc[0];
+            sim.focusPerFrame = (foc.length > 1 ? foc[1] : 0.08) / Math.sqrt(scale);
+            sim.focusMax = (foc.length > 2 ? foc[2] : 1.5) / Math.sqrt(scale);
+        }
+        if (System.getenv("SIM_BUMP") != null) sim.bumpFrame = Integer.parseInt(System.getenv("SIM_BUMP"));
+        if (System.getenv("SIM_HALO") != null) sim.haloFrac = Double.parseDouble(System.getenv("SIM_HALO"));
+        // SIM_SEED: the noise's seed (the sky stays the same), to measure the noise of two runs directly
+        long noiseSeed = System.getenv("SIM_SEED") != null ? Long.parseLong(System.getenv("SIM_SEED")) : 7;
         System.out.printf(Locale.US, "Sim %dx%d, %d stars, %d frames of %.0fs, calibrated=%s, mode=%s%n", W, H, sim.starCount(),
                 frames, sim.frameExp, calibrated, trails ? "trails" : "deep");
 
@@ -147,7 +165,7 @@ public final class SimRunner {
             short[] buf = up.obtainBuffer(60000);
             UnitProcessor.FrameInfo info = new UnitProcessor.FrameInfo();
             long a = System.currentTimeMillis();
-            sim.render(i, buf, info, 7);
+            sim.render(i, buf, info, noiseSeed);
             simMs += System.currentTimeMillis() - a;
             up.submit(buf, info);
         }
@@ -187,6 +205,7 @@ public final class SimRunner {
         if (System.getenv("SIM_STACKMEM") != null) pp.stackMemory = Long.parseLong(System.getenv("SIM_STACKMEM")) << 20;
         // SIM_F2=0: leave the sensor's pattern in (to compare)
         if ("0".equals(System.getenv("SIM_F2"))) pp.patternCleanup = false;
+        if (System.getenv("SIM_REF") != null) pp.forceReference = Integer.parseInt(System.getenv("SIM_REF"));
         if (catalog != null) {
             SessionSky sky = new SessionSky();
             sky.latDeg = sim.latitudeDeg;

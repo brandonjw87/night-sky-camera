@@ -50,6 +50,12 @@ public final class SkySim {
     public boolean branch;
     /** A smudged or fogged lens: this share of every star's light spread into a glow of this size (pixels). */
     public double haloFrac, haloSigma = 10;
+    /** Dew forming on the lens: from frame fogFrom on, the glow's share grows by fogPerFrame a frame, up to fogMax more. */
+    public int fogFrom = -1;
+    public double fogPerFrame = 0.04, fogMax = 0.5;
+    /** The focus drifting: from frame focusFrom on, a blur (pixels, added in quadrature) growing by focusPerFrame a frame, up to focusMax. */
+    public int focusFrom = -1;
+    public double focusPerFrame = 0.08, focusMax = 1.5;
     /**
      * The sensor's own pattern (ADU), fixed on the sensor: per photosite (white), in blotches about ten pixels
      * across, per row and per column. Row banding: different in every frame.
@@ -391,9 +397,24 @@ public final class SkySim {
         }
     }
 
+    /** Share of every star's light in the glow in frame i (a smudge, and dew forming). */
+    public double haloAt(int i) {
+        double h = haloFrac;
+        if (fogFrom >= 0 && i >= fogFrom) h += Math.min(fogMax, (i - fogFrom + 1) * fogPerFrame);
+        return Math.min(0.95, h);
+    }
+
+    /** Star blur (Gaussian sigma at the centre, pixels) in frame i. */
+    public double psfAt(int i) {
+        if (focusFrom < 0 || i < focusFrom) return psfSigma;
+        double b = Math.min(focusMax, (i - focusFrom + 1) * focusPerFrame);
+        return Math.sqrt(psfSigma * psfSigma + b * b);
+    }
+
     /** Renders frame i into raw (unsigned 16-bit in a short[]), filling info. */
     public void render(final int i, final short[] raw, UnitProcessor.FrameInfo info, final long seed) {
         if (branch && branchT == null) buildBranch();
+        final double haloFrac = haloAt(i), psfSigma = psfAt(i);
         final float[] img = new float[W * H];
         final double exp = frameExp;
         final int[] cfa = {0, 1, 1, 2};

@@ -16,6 +16,7 @@ import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -36,9 +37,12 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Rejection;
+import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -64,6 +68,9 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private Prefs prefs;
     private FrameLayout root;
+    /** The session report, shown over the result screen; and its back-gesture handler (API 33+). */
+    private FrameLayout reportOverlay;
+    private Object reportBack;
     private CaptureService service;
     private SessionController.Phase shownPhase;
     private long shownVersion = -1;
@@ -242,6 +249,7 @@ public final class MainActivity extends Activity {
     }
 
     private void clearRefs() {
+        closeReport();
         headline = detail = stage = null;
         checks = null;
         shownChecks = null;
@@ -728,6 +736,21 @@ public final class MainActivity extends Activity {
         col.addView(headline, gap(8));
         col.addView(detail, gap(2));
         final SessionController.Result r = s.result;
+        if (r != null && r.report != null) {
+            final ReportCard rc = r.report;
+            LinearLayout link = card();
+            link.setPadding(dp(12), dp(8), dp(12), dp(8));
+            link.addView(text(rc.headline, 14, RED, false));
+            link.addView(text(rc.problems.isEmpty() ? "Session report \u203a" : "Session report: " + rc.problems.get(0).title.toLowerCase(Locale.US)
+                    + (rc.problems.size() > 1 ? " and more" : "") + " \u203a", 13, RED_DIM, true));
+            link.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showReport(rc);
+                }
+            });
+            col.addView(link, gap(6));
+        }
         shownBrightness = r != null ? r.brightness : prefs.brightness();
         final TextView bl = text("Brightness " + Math.round(shownBrightness * 100) + "%  ·  pinch to zoom", 13, RED_DIM, false);
         resultBrightness = seek(Math.round(shownBrightness * 100));
@@ -804,6 +827,108 @@ public final class MainActivity extends Activity {
         viewerStoppable = true;
         col.addView(viewerBox, gap(2));
         refreshViewer(true);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Session report
+    // ------------------------------------------------------------------------------------------------
+
+    /** The report card over the result screen, until Close or Back. */
+    private void showReport(ReportCard rc) {
+        if (rc == null || reportOverlay != null) return;
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(BG);
+        ov.setClickable(true);
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        ov.addView(sv, match());
+        col.addView(label("Session report"));
+        col.addView(text(rc.headline, 18, RED, true), gap(6));
+        if (!rc.gain.isEmpty()) col.addView(text(rc.gain, 15, RED, false), gap(6));
+
+        col.addView(label(rc.problems.isEmpty() ? "No problems found" : "What cost light, biggest first"), gap(18));
+        if (rc.problems.isEmpty()) col.addView(text("A clear, steady session.", 14, RED_DIM, false), gap(4));
+        for (ReportCard.Problem p : rc.problems) {
+            LinearLayout c = card();
+            c.addView(text(p.title, 16, RED, true));
+            c.addView(text(String.format(Locale.US, "Cost about %.0f%% of the light", 100 * p.impact), 12, RED_DIM, false), gap(2));
+            c.addView(text(p.evidence, 14, RED, false), gap(6));
+            c.addView(text("Fix: " + p.fix, 14, RED_DIM, false), gap(6));
+            col.addView(c, gap(8));
+        }
+        for (String note : rc.notes) col.addView(text(note, 13, RED_DIM, false), gap(6));
+
+        col.addView(label("Frames"), gap(18));
+        final TextView fcap = text(rc.goodFrames + " of " + rc.frames.length + " frames scored 50 or more. Touch a bar to see "
+                + "a frame's score.", 13, RED_DIM, false);
+        FrameStrip strip = new FrameStrip(this);
+        strip.setFrames(rc.frames, new FrameStrip.Listener() {
+            @Override
+            public void onFrame(ReportCard.Frame f) {
+                String what = !f.used ? "left out: " + f.reason
+                        : "score " + f.score + (f.partly ? ", used partly" : "") + (f.reason.isEmpty() ? "" : ": " + f.reason);
+                fcap.setText(String.format(Locale.US, "Frame %d (%s), %s", f.index, f.time, what));
+            }
+        });
+        LinearLayout.LayoutParams slp = gap(8);
+        slp.height = dp(64);
+        col.addView(strip, slp);
+        col.addView(fcap, gap(4));
+
+        if (!rc.registration.isEmpty()) {
+            col.addView(label("Lining up"), gap(18));
+            col.addView(text(rc.registration + " Confidence: " + rc.confidence + ".", 14, RED, false), gap(4));
+        }
+        if (rc.sky != null && !rc.sky.lines.isEmpty()) {
+            col.addView(label("What you're looking at"), gap(18));
+            for (String l : rc.sky.lines) col.addView(text(l, 14, RED, false), gap(4));
+        }
+        if (!rc.conditions.isEmpty()) col.addView(text(rc.conditions, 13, RED_DIM, false), gap(6));
+        col.addView(label("Next time"), gap(18));
+        col.addView(text(rc.tip, 14, RED, false), gap(4));
+        Button close = button("Close", true);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeReport();
+            }
+        });
+        col.addView(close, gap(20));
+        root.addView(ov, match());
+        reportOverlay = ov;
+        if (Build.VERSION.SDK_INT >= 33) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    closeReport();
+                }
+            };
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, cb);
+            reportBack = cb;
+        }
+    }
+
+    private void closeReport() {
+        if (reportOverlay != null) {
+            root.removeView(reportOverlay);
+            reportOverlay = null;
+        }
+        if (reportBack != null && Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) reportBack);
+        }
+        reportBack = null;
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        // before Android 13 (from 13 on, the callback above takes Back)
+        if (reportOverlay != null) {
+            closeReport();
+            return;
+        }
+        super.onBackPressed();
     }
 
     // ------------------------------------------------------------------------------------------------
