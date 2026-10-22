@@ -23,6 +23,22 @@
   --font-ui: "Barlow Semi Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
   --font-data: "DM Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
 }
+/* the night look: Night Sky's red-on-black night-vision palette, so nothing on screen spoils dark eyes */
+:root[data-look="night"] {
+  --night: #000000;
+  --scrim: rgba(0, 0, 0, 0.93);
+  --scrim-clear: rgba(0, 0, 0, 0);
+  --glass: rgba(42, 8, 7, 0.72);
+  --line: rgba(154, 42, 37, 0.55);
+  --ink: #e53935;
+  --muted: #b03a33;
+  --gold: #e53935;
+  --gold-hi: #f0584d;
+  --gold-lo: #9a2a25;
+  --gold-ink: #2a0807;
+  --focus: #e53935;
+  --warn: #e53935;
+}
 html, body { height: 100%; }
 body {
   margin: 0; overflow: hidden; background: var(--night); color: var(--ink);
@@ -56,6 +72,15 @@ body {
 #scrub::-moz-range-thumb { width: 0.875rem; height: 0.875rem; border-radius: 50%; border: 2px solid var(--night); background: var(--gold); }
 
 .controls { display: flex; align-items: flex-start; justify-content: center; gap: 2.25rem; }
+
+.looks { display: flex; gap: 0.25rem; padding: 0.1875rem; border: 1px solid var(--line); border-radius: 999px; background: var(--glass); }
+.look {
+  min-height: 2rem; padding: 0 1rem; border: 0; border-radius: 999px; background: transparent; color: var(--muted);
+  font: 600 0.75rem/1 var(--font-ui); letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.look[aria-checked="true"] { background: var(--gold); color: var(--gold-ink); }
+.hint, .scrubrow, #time, .ctl-label, .round, .shutter, .shutter-label { transition: color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease; }
 .ctl { display: grid; justify-items: center; gap: 0.4rem; }
 .ctl-label { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 .round {
@@ -94,19 +119,20 @@ body {
 /* phone on its side: one compact row so the bar stays clear of the one-line name */
 @media (orientation: landscape) and (max-height: 34rem) {
   .bar {
-    grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "hint hint" "scrub controls";
+    grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "hint hint hint" "looks scrub controls";
     align-items: center; column-gap: 1.5rem; row-gap: 0.25rem; padding-top: 1.75rem;
     padding-left: calc(16px + env(safe-area-inset-left, 0px)); padding-right: calc(16px + env(safe-area-inset-right, 0px));
   }
   .hint { grid-area: hint; justify-self: center; font-size: 0.8125rem; }
-  .scrubrow { grid-area: scrub; justify-self: end; }
+  .scrubrow { grid-area: scrub; justify-self: center; }
+  .looks { grid-area: looks; }
   .controls { grid-area: controls; gap: 1.25rem; align-items: center; }
   .ctl-label { display: none; }
   .round { margin-top: 0; width: 2.75rem; height: 2.75rem; }
   .shutter { width: 3.75rem; height: 3.75rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .bar, .shutter .disc { transition: none; }
+  .bar, .shutter .disc, .look, .hint, .scrubrow, #time, .ctl-label, .round, .shutter, .shutter-label { transition: none; }
   .shutter[disabled] .disc { animation: none; }
 }
 </style>
@@ -118,6 +144,10 @@ body {
     <span class="when-portrait">Turn your phone sideways to see the one-line layout.</span>
     <span class="when-landscape">Turn your phone upright to see the two-line layout.</span>
   </p>
+  <div class="looks" role="radiogroup" aria-label="Look">
+    <button class="look" id="look-standard" type="button" role="radio" aria-checked="true">Standard</button>
+    <button class="look" id="look-night" type="button" role="radio" aria-checked="false">Night</button>
+  </div>
   <div class="scrubrow">
     <output id="time" for="scrub">2.20 s</output>
     <input id="scrub" type="range" min="0" max="2200" step="1" value="2200" aria-label="Frame time">
@@ -176,6 +206,7 @@ class FlashIntro {
     this.programs = {};
     this.targets = null;
     this.w = 0; this.h = 0;
+    this.night = 0;        // 0 the standard look, 1 the red night look
     this.px = new Uint8Array(4);
     this.fmt = this._pickFormat();
     this._buildPrograms();
@@ -305,6 +336,7 @@ class FlashIntro {
     set2("uHudSize", L.items.hud.sizeEm[0], L.items.hud.sizeEm[1]);
     set1("uLabelSpread", L.spreadEm);
     set1("uLandscape", land ? 1 : 0);
+    set1("uNight", this.night);
     P.land = land;
     return P;
   }
@@ -437,6 +469,7 @@ let scale = 1;               // render scale on top of the (capped) device pixel
 let mode = "loading";        // loading | idle | playing | error
 let shownT = POSTER_T;
 let slow = false, soundOn = true, playedOnce = false;
+let night = false, nightMix = 0, lookRaf = 0;   // the look, and how far the picture has faded to it
 let raf = 0, clock = null, stats = null;
 let actx = null, gainNode = null, soundBuf = null, soundFailed = false, srcNode = null;
 let timers = [];
@@ -472,6 +505,38 @@ function syncUi() {
 }
 
 function setBarAway(away) { bar.classList.toggle("away", away); }
+
+// Standard or Night. The picture crossfades to the new look; the bar switches with it.
+function setLook(n, animate) {
+  night = n;
+  document.documentElement.dataset.look = n ? "night" : "standard";
+  $("look-standard").setAttribute("aria-checked", String(!n));
+  $("look-night").setAttribute("aria-checked", String(n));
+  try { localStorage.setItem("flash-intro-look", n ? "night" : "standard"); } catch (e) { /* storage blocked: the look just isn't remembered */ }
+  cancelAnimationFrame(lookRaf);
+  const from = nightMix, to = n ? 1 : 0;
+  const still = () => intro && mode !== "playing" && mode !== "error";
+  if (!animate || !intro || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    nightMix = to;
+    if (intro) { intro.night = to; if (still()) draw(shownT); }
+    return;
+  }
+  const t0 = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / 260), e = k * k * (3 - 2 * k);
+    nightMix = from + (to - from) * e;
+    if (!intro) return;
+    intro.night = nightMix;
+    if (still()) draw(shownT);
+    if (k < 1) lookRaf = requestAnimationFrame(step);
+  };
+  lookRaf = requestAnimationFrame(step);
+}
+function savedLook() {
+  if (location.hash === "#night") return true;
+  if (location.hash === "#standard") return false;
+  try { return localStorage.getItem("flash-intro-look") === "night"; } catch (e) { return false; }
+}
 
 // frame cost decides the render scale; the intro should run at full frame rate on the phone
 function timeFrame(t) { const t0 = performance.now(); intro.render(t); intro.sync(); return performance.now() - t0; }
@@ -585,6 +650,9 @@ function pauseHere() {
 shutter.addEventListener("click", play);
 canvas.addEventListener("click", () => { if (mode === "playing") pauseHere(); else play(); });
 slowBtn.addEventListener("click", () => { slow = !slow; syncUi(); });
+$("look-standard").addEventListener("click", () => { if (night) setLook(false, true); });
+$("look-night").addEventListener("click", () => { if (!night) setLook(true, true); });
+window.addEventListener("hashchange", () => { const n = savedLook(); if (n !== night) setLook(n, true); });
 soundBtn.addEventListener("click", () => { soundOn = !soundOn; syncUi(); });
 scrub.addEventListener("input", () => {
   if (!intro) return;
@@ -605,11 +673,12 @@ canvas.addEventListener("webglcontextlost", (e) => {
   showNotice("<strong>The graphics driver reset.</strong> It comes back by itself in a moment.");
 });
 canvas.addEventListener("webglcontextrestored", () => {
-  try { intro = new FlashIntro(canvas, assets); mode = "idle"; notice.hidden = true; applySize(); draw(shownT); syncUi(); }
+  try { intro = new FlashIntro(canvas, assets); intro.night = nightMix; mode = "idle"; notice.hidden = true; applySize(); draw(shownT); syncUi(); }
   catch (e) { showNotice("<strong>The intro couldn't restart.</strong> Reopen this page to try again."); }
 });
 
 async function boot() {
+  setLook(savedLook(), false);
   syncUi();
   if (!window.WebGL2RenderingContext || !("DecompressionStream" in window)) {
     mode = "error";
@@ -620,12 +689,14 @@ async function boot() {
   try {
     assets = await loadAssets();
     intro = new FlashIntro(canvas, assets);
+    intro.night = nightMix;
     benchmark();
     mode = "idle";
     draw(POSTER_T);
     shutter.disabled = false;
     syncUi();
-    window.__intro = { renderAt: (t) => { draw(t); intro.sync(); syncUi(); return true; }, get scale() { return scale; }, get hdr() { return intro.fmt.hdr; }, play };
+    window.__intro = { renderAt: (t) => { draw(t); intro.sync(); syncUi(); return true; }, get scale() { return scale; }, get hdr() { return intro.fmt.hdr; }, play,
+      setLook: (n) => { setLook(!!n, false); return true; } };
     window.__ready = true;
   } catch (e) {
     mode = "error";

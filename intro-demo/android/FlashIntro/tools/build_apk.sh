@@ -21,8 +21,8 @@ KS_PASS=${KS_PASS:-android}
 PACKAGE=com.brandon.flashintro
 MIN_SDK=31
 TARGET_SDK=36
-VERSION_CODE=1
-VERSION_NAME=1.0
+VERSION_CODE=2
+VERSION_NAME=1.1
 B=$ROOT/build/apk
 rm -rf "$B"
 mkdir -p "$B/gen" "$B/classes" "$(dirname "$OUT")"

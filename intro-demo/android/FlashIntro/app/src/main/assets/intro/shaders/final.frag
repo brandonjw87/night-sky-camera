@@ -1,5 +1,6 @@
 // Final composite: lens (chromatic aberration, bloom, anamorphic streak, light shafts, flash veil),
 // filmic tone map, vignette, then the viewfinder HUD, grain and dither. Writes display sRGB.
+// The night look (uNight) turns the picture into Night Sky's red night-vision palette and softens the flash.
 uniform sampler2D uScene;
 uniform sampler2D uBloom;
 uniform sampler2D uStreak;
@@ -30,6 +31,18 @@ float brackets(vec2 p, vec2 c, vec2 hs, float arm, float th) {
     return max(onV, onH) * inside;
 }
 
+// Night Sky's screen colours (RED_DARK, RED_DIM, RED), display sRGB
+const vec3 NIGHT_DARK = vec3(0.165, 0.031, 0.027);
+const vec3 NIGHT_DIM  = vec3(0.604, 0.165, 0.145);
+const vec3 NIGHT_RED  = vec3(0.898, 0.224, 0.208);
+
+// display lightness (0..1) -> the red palette; every channel rises with v
+vec3 nightRamp(float v) {
+    vec3 c = NIGHT_DARK * sat(v / 0.16);
+    c = mix(c, NIGHT_DIM, smoothstep(0.16, 0.60, v));
+    return mix(c, NIGHT_RED, smoothstep(0.60, 1.0, v));
+}
+
 float hudText(vec2 p, vec2 centre, float pxPerEm) {
     vec2 size = uHudSize * pxPerEm;
     vec2 local = (p - centre) / size + 0.5;
@@ -47,18 +60,24 @@ void main() {
 
     vec2 dc = uv - vec2(0.5, 0.5 + 0.5 * lensShift());
     float ca = 0.0010 + 0.0065 * hero + 0.0015 * pap;
+    float soft = mix(1.0, 0.55, uNight);              // the night look keeps the flash glow lower
     vec3 c;
     c.r = texture(uScene, uv - dc * ca).r;
     c.g = texture(uScene, uv).g;
     c.b = texture(uScene, uv + dc * ca).b;
-    c += texture(uBloom, uv).rgb * (0.080 + 0.06 * hero);
-    c += texture(uStreak, uv).rgb * vec3(0.32, 0.52, 1.00) * (0.55 - 0.25 * sat(hero));
-    c += texture(uRays, uv).rgb * vec3(0.50, 0.66, 1.00) * 0.9;
-    c += vec3(0.93, 0.96, 1.00) * (0.10 * pulse(t, HERO_T, 0.010, 0.030) + 0.020 * pap);
-    c = aces(c * 1.05);
+    c += texture(uBloom, uv).rgb * (0.080 + 0.06 * hero) * soft;
+    c += texture(uStreak, uv).rgb * vec3(0.32, 0.52, 1.00) * (0.55 - 0.25 * sat(hero)) * soft;
+    c += texture(uRays, uv).rgb * vec3(0.50, 0.66, 1.00) * 0.9 * soft;
+    c += vec3(0.93, 0.96, 1.00) * (0.10 * pulse(t, HERO_T, 0.010, 0.030) + 0.020 * pap) * mix(1.0, 0.35, uNight);
+    c = aces(c * 1.05 * mix(1.0, 0.85, uNight));
     vec2 vq = (uv - 0.5) * vec2(uScreen.x / uScreen.y, 1.0);
     c *= mix(1.0, smoothstep(1.15, 0.15, length(vq) * 1.25), 0.50);
     vec3 s = toSRGB(c);
+    if (uNight > 0.0) {
+        // like black-and-white film through a red filter: the blue sky drops away, the gold edges lift
+        float v = toSRGB(vec3(dot(c, vec3(0.58, 0.36, 0.06)))).x;
+        s = mix(s, nightRamp(v), uNight);
+    }
 
     // ---- viewfinder HUD ----
     float u = uScreen.y * 0.001;                       // 1/1000 of the screen height in px
@@ -71,7 +90,8 @@ void main() {
     hs *= mix(1.22, 1.0, k);
     float bA = smoothstep(0.04, 0.09, t) * (1.0 - smoothstep(0.95, 1.25, t));
     float lockFlash = smoothstep(0.235, 0.245, t) * (1.0 - smoothstep(0.36, 0.52, t));
-    vec3 bCol = mix(vec3(0.92, 0.95, 1.00), vec3(0.42, 1.00, 0.58), lockFlash);
+    vec3 bCol = mix(mix(vec3(0.92, 0.95, 1.00), vec3(0.42, 1.00, 0.58), lockFlash),
+                    mix(NIGHT_DIM, NIGHT_RED, lockFlash), uNight);
     float br = brackets(frag, blk, hs, 22.0 * u, max(2.2 * u, 1.5));
     s = mix(s, bCol, br * bA * 0.85);
 
@@ -80,7 +100,7 @@ void main() {
     vec2 hc = vec2(0.5 * uScreen.x, mix(0.085, 0.10, uLandscape) * uScreen.y);
     float hA = smoothstep(0.24, 0.26, t) * (0.75 + 0.25 * step(0.30, t)) * (1.0 - smoothstep(2.02, 2.16, t));
     float txt = hudText(frag, hc, pxPerEm);
-    vec3 hudCol = vec3(0.82, 1.00, 0.87);
+    vec3 hudCol = mix(vec3(0.82, 1.00, 0.87), NIGHT_DIM, uNight);
     s = mix(s, hudCol, txt * hA * 0.80);
     float barW = uHudSize.x * pxPerEm * 0.46;
     vec2 bp = frag - (hc - vec2(0.0, 13.0 * u));
@@ -90,7 +110,7 @@ void main() {
 
     // grain and dither
     float g = hash12(frag + fract(t * 37.0) * vec2(113.0, 71.0)) - 0.5;
-    s += g * 0.030 * (1.0 - 0.6 * s);
+    s += g * 0.030 * (1.0 - 0.6 * s) * mix(vec3(1.0), NIGHT_RED / NIGHT_RED.r, uNight);
     s += (hash12(frag * 1.37 + 5.0) - 0.5) / 255.0;
     s *= mix(0.55, 1.0, smoothstep(0.0, 0.06, t));
     oColor = vec4(s, 1.0);

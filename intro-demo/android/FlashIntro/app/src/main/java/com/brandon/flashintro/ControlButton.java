@@ -11,7 +11,7 @@ import android.graphics.Typeface;
 import android.util.TypedValue;
 import android.view.View;
 
-/** The round buttons of the shooting bar, drawn in code: the gold shutter, slow motion and sound. */
+/** The round buttons of the shooting bar, drawn in code in the bar's colours: the shutter, slow motion and sound. */
 final class ControlButton extends View {
     static final int SHUTTER = 0, SLOW = 1, SOUND = 2;
 
@@ -21,6 +21,7 @@ final class ControlButton extends View {
     private final Path path = new Path();
     private final RectF oval = new RectF();
     private RadialGradient gold;
+    private Colors colors = Colors.STANDARD;
     private boolean on;
     private boolean replay;
 
@@ -46,6 +47,12 @@ final class ControlButton extends View {
         invalidate();
     }
 
+    void setColors(Colors c) {
+        colors = c;
+        makeGold(getWidth(), getHeight());
+        invalidate();
+    }
+
     @Override
     protected void drawableStateChanged() {
         super.drawableStateChanged();
@@ -54,10 +61,14 @@ final class ControlButton extends View {
 
     @Override
     protected void onSizeChanged(int w, int h, int ow, int oh) {
+        makeGold(w, h);
+    }
+
+    private void makeGold(int w, int h) {
         float r = Math.min(w, h) / 2f;
         if (r <= 0) return;
         gold = new RadialGradient(w / 2f - r * 0.32f, h / 2f - r * 0.44f, r * 1.25f,
-                new int[]{Colors.GOLD_HI, Colors.GOLD, Colors.GOLD_LO}, new float[]{0f, 0.46f, 1f}, Shader.TileMode.CLAMP);
+                new int[]{colors.goldHi, colors.gold, colors.goldLo}, new float[]{0f, 0.46f, 1f}, Shader.TileMode.CLAMP);
     }
 
     @Override
@@ -68,13 +79,13 @@ final class ControlButton extends View {
         if (kind == SHUTTER) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(3 * dp);
-            paint.setColor(Colors.GOLD);
+            paint.setColor(colors.gold);
             c.drawCircle(cx, cy, r - 1.5f * dp, paint);
             paint.setStyle(Paint.Style.FILL);
             paint.setShader(gold);
             c.drawCircle(cx, cy, r - 7 * dp, paint);
             paint.setShader(null);
-            paint.setColor(Colors.GOLD_INK);
+            paint.setColor(colors.goldInk);
             float s = r * 0.36f;
             if (!replay) {
                 path.reset();
@@ -102,13 +113,13 @@ final class ControlButton extends View {
             return;
         }
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(Colors.GLASS);
+        paint.setColor(colors.glass);
         c.drawCircle(cx, cy, r - dp, paint);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(dp);
-        paint.setColor(on ? Colors.GOLD : Colors.LINE);
+        paint.setColor(on ? colors.gold : colors.line);
         c.drawCircle(cx, cy, r - dp, paint);
-        int fg = on ? Colors.GOLD : Colors.INK;
+        int fg = on ? colors.gold : colors.ink;
         if (kind == SLOW) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(fg);
@@ -117,31 +128,35 @@ final class ControlButton extends View {
             c.drawText("0.25×", cx, cy - (fm.ascent + fm.descent) / 2f, paint);
             return;
         }
-        // speaker
-        float u = r / 12f;
+        // speaker: the preview page's icon, a 24-unit box drawn 22 dp wide on the 48 dp button
+        float u = r * (22f / 48f) / 12f, ox = cx - 12f * u, oy = cy - 12f * u;
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(fg);
         path.reset();
-        path.moveTo(cx - 6.5f * u, cy - 2.6f * u);
-        path.lineTo(cx - 3.2f * u, cy - 2.6f * u);
-        path.lineTo(cx + 1.2f * u, cy - 6.6f * u);
-        path.lineTo(cx + 1.2f * u, cy + 6.6f * u);
-        path.lineTo(cx - 3.2f * u, cy + 2.6f * u);
-        path.lineTo(cx - 6.5f * u, cy + 2.6f * u);
+        path.moveTo(ox + 4f * u, oy + 9.2f * u);
+        path.lineTo(ox + 7.6f * u, oy + 9.2f * u);
+        path.lineTo(ox + 12.4f * u, oy + 5f * u);
+        path.lineTo(ox + 12.4f * u, oy + 19f * u);
+        path.lineTo(ox + 7.6f * u, oy + 14.8f * u);
+        path.lineTo(ox + 4f * u, oy + 14.8f * u);
         path.close();
         c.drawPath(path, paint);
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(1.6f * u);
+        paint.setStrokeWidth(1.8f * u);
         paint.setStrokeCap(Paint.Cap.ROUND);
         if (on) {
-            oval.set(cx - 1.5f * u, cy - 4.2f * u, cx + 6.9f * u, cy + 4.2f * u);
-            c.drawArc(oval, -50f, 100f, false, paint);
-            oval.set(cx - 3.5f * u, cy - 7.6f * u, cx + 11.7f * u, cy + 7.6f * u);
-            c.drawArc(oval, -48f, 96f, false, paint);
+            wave(c, ox + 11.934f * u, oy + 12f * u, 5f * u, 42.85f);
+            wave(c, ox + 12.039f * u, oy + 12f * u, 8.6f * u, 44.24f);
         } else {
-            c.drawLine(cx + 4.4f * u, cy - 3f * u, cx + 9.6f * u, cy + 3f * u, paint);
-            c.drawLine(cx + 9.6f * u, cy - 3f * u, cx + 4.4f * u, cy + 3f * u, paint);
+            c.drawLine(ox + 15.8f * u, oy + 9.4f * u, ox + 20.8f * u, oy + 14.6f * u, paint);
+            c.drawLine(ox + 20.8f * u, oy + 9.4f * u, ox + 15.8f * u, oy + 14.6f * u, paint);
         }
         paint.setStrokeCap(Paint.Cap.BUTT);
+    }
+
+    /** A sound wave: an arc of radius {@code rad} round (x, y), {@code half} degrees either side of straight right. */
+    private void wave(Canvas c, float x, float y, float rad, float half) {
+        oval.set(x - rad, y - rad, x + rad, y + rad);
+        c.drawArc(oval, -half, 2f * half, false, paint);
     }
 }

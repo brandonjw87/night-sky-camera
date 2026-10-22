@@ -4,13 +4,26 @@ A 2.2-second intro: a camera shutter opens on a night sky, a burst of camera fla
 **MADE BY: BRANDON J. WALLACE** lights up in 3D lettering with gold edges while the stars trail behind it.
 The name is readable the whole time, from the first frame to the last.
 
+It comes in two looks. **Standard** is the full-colour intro with its big white flash. **Night** is a dim red
+version for use under a dark sky: red on black like Night Sky's screen, with a softer flash and a darker sky
+behind the name, so it won't spoil night vision.
+
 This folder is the stand-alone demo, kept apart from Night Sky Camera so it can be judged first. The camera app
 doesn't use it yet.
 
+## What's new in version 1.1
+
+- A **STANDARD / NIGHT** switch, in the app and on the preview page.
+- The night look itself: Night Sky's reds, a softer flash, and a darker sky behind the name.
+- Sideways, the app's switch sits beside the buttons, so the space under the name stays clear.
+- The speaker on the app's sound button now fits inside its circle.
+
+The standard look hasn't changed at all: its frames are the same as version 1.0's, pixel for pixel.
+
 ## Watch it
 
-- **On the phone, quickest:** open https://claude.ai/artifact/GEeN9Yt4WoLbSJnYv972Fn and tap the gold play
-  button. Turn the sound up.
+- **On the phone, quickest:** open https://claude.ai/artifact/GEeN9Yt4WoLbSJnYv972Fn and tap the big play
+  button. Turn the sound up. Tap **NIGHT** to see the red version.
 - **As a phone app:** install [`dist/FlashIntro.apk`](dist/FlashIntro.apk) (steps below). It plays by itself
   when it opens.
 - **On a PC:** download [`dist/camera-flash-intro.html`](dist/camera-flash-intro.html) (the download button on
@@ -20,7 +33,9 @@ All three show the same frames.
 
 ### What the buttons do
 
-- **PLAY / REPLAY** (the big gold button) plays it again.
+- **STANDARD / NIGHT** switches the look. The picture fades to the other look, and the buttons turn red or gold
+  with it. The app and the page remember the choice.
+- **PLAY / REPLAY** (the big round button) plays it again.
 - **SLOW-MO** plays it at quarter speed, without sound, so you can see every flash.
 - **SOUND ON / SOUND OFF** turns the sound on or off. In the app the sound follows the ringer, like a camera
   shutter: on silent there's no sound, and on vibrate you feel the flashes as taps instead.
@@ -29,6 +44,8 @@ All three show the same frames.
 - **Turn the phone sideways** to see the name on one line.
 
 ### Install the app on the phone
+
+Version 1.0 already on the phone? Install this one over it the same way; there's no need to uninstall first.
 
 1. Open https://github.com/brandonjw87/night-sky-camera/blob/main/intro-demo/dist/FlashIntro.apk in the
    phone's browser (signed in to GitHub) and tap the download button.
@@ -44,10 +61,10 @@ work for this app too: use `FlashIntro.apk` in place of `NightSky.apk`.
 ### Things to know
 
 - The app's drawing code was checked on a computer standing in for a phone's graphics chip, and its frames match
-  the preview page exactly. It hasn't run on a real phone yet, so the sound timing, the vibration taps and the
-  buttons are still to be tried.
-- The big white flash is bright on purpose. Under a real night sky it would dazzle, so when it goes into Night
-  Sky it can get a dim red night version to match the camera's screen.
+  the preview page exactly, in both looks. Its buttons were drawn on a computer too, upright and sideways. It
+  hasn't run on a real phone yet, so the sound timing, the vibration taps and the feel of the buttons are still
+  to be tried.
+- When the intro goes into Night Sky, it can start in the night look, so it matches the camera's red screen.
 - The app has no internet permission and no tracking. It asks for nothing.
 - The app's signing key is not in this repository. It's kept in the Claude project files
   (`intro-demo/.signing/flashintro.keystore`); builds signed with it install over this version.
@@ -73,11 +90,13 @@ dist/FlashIntro.apk                         the signed test app
 dist/camera-flash-intro.html                the preview page in one file
 android/FlashIntro/                         Android Studio project of the demo app (com.brandon.flashintro)
     app/src/main/java/com/brandon/intro/        the intro itself, ready to copy into another app
-        FlashIntroView        the view: play, pause, show one frame, and a listener (ready, stopped, error)
+        FlashIntroView        the view: play, pause, show one frame, the night look, and a listener (ready,
+                              stopped, error)
         FlashIntroRenderer    runs the passes and keeps the clock (it follows the sound while that plays)
         IntroAssets           loads the shaders and lettering data from assets/intro/
         IntroSound            the sound and the vibration taps
-    app/src/main/java/com/brandon/flashintro/   the demo screen: replay, slow motion, sound, scrubber
+    app/src/main/java/com/brandon/flashintro/   the demo screen: the look switch, replay, slow motion, sound,
+                                                scrubber
     app/src/main/assets/intro/                  copies of shaders/ and the app's files from assets/
     tools/build_apk.sh                          builds the APK without Gradle
 shaders/            scene (sky, iris, 3D name, labels), flash discs, bloom, streak, light shafts, final
@@ -126,6 +145,7 @@ intro.setListener(new FlashIntroView.Listener() {
         root.removeView(intro);    // the phone can't draw it: carry on without it
     }
 });
+intro.setNight(true, false);       // only for a red night-vision screen like Night Sky's
 root.addView(intro, new FrameLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 ```
@@ -134,6 +154,10 @@ While it is on screen, call `intro.onResume()` and `intro.onPause()` from the ac
 `onPause()`. A tap that should skip it can call `intro.pause()`, which ends in `onIntroStopped`.
 
 The sound follows the phone's ringer: it plays in normal mode only, and vibrate mode keeps just the taps.
+
+`setNight(night, fade)` picks the look. Called before `play` it sets the look of the very first frame; called
+later with `fade` true, the picture crossfades to the other look in a quarter of a second, even while it plays.
+The shaders take the look as `uNight` (0 standard, 1 night, values between crossfade).
 
 ## Change the look or the sound
 
@@ -150,3 +174,7 @@ python3 web/build_artifact.py dist/camera-flash-intro.html --standalone         
 
 To look at single frames from the loose files, run `python3 -m http.server 8000` in this folder, open
 `http://localhost:8000/web/dev.html`, and type `renderAt(0.64)` in the browser console (any time from 0 to 2.2).
+Add `?night=1` to the address, or type `setNight(1)`, for the night look.
+
+The preview page remembers the look it was last switched to. A link ending in `#night` or `#standard` opens it in
+that look.

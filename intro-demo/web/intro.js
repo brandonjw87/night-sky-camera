@@ -18,6 +18,7 @@ class FlashIntro {
     this.programs = {};
     this.targets = null;
     this.w = 0; this.h = 0;
+    this.night = 0;       // 0 the standard look, 1 the red night look
     this._init();
   }
 
@@ -144,6 +145,7 @@ class FlashIntro {
     set2("uHudSize", L.items.hud.sizeEm[0], L.items.hud.sizeEm[1]);
     set1("uLabelSpread", L.spreadEm);
     set1("uLandscape", land ? 1 : 0);
+    set1("uNight", this.night);
     P.land = land;
     return P;
   }

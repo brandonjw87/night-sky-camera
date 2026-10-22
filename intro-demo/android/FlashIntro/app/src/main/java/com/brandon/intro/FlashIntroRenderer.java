@@ -19,6 +19,7 @@ import javax.microedition.khronos.opengles.GL10;
  * Passes: scene (sky, shutter iris, 3D name, label, flash heads) -> flash backscatter discs -> bloom chain
  * -> anamorphic streak -> light shafts -> final composite with the viewfinder overlay.
  * The scene and the effects run at {@link #scale} of the screen; the final pass runs at full resolution.
+ * The look (standard, or the red night look) crossfades over {@link #NIGHT_FADE_NS}.
  */
 final class FlashIntroRenderer implements GLSurfaceView.Renderer {
     static final float T_END = 2.2f;
@@ -30,11 +31,14 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
         void onStopped(float t, boolean finished);
         /** GL thread: something failed; the intro should be skipped. */
         void onError(String message);
+        /** GL thread: the still frame on screen is changing (the look is fading), so draw again. */
+        void onFrameNeeded();
     }
 
     private static final String HEADER = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n";
     private static final double BUDGET_MS = 13.0;      // keeps 60 frames a second with room to spare
     private static final double TARGET_PIXELS = 1.6e6; // starting size of the scene pass
+    private static final long NIGHT_FADE_NS = 260000000L;
 
     private final AssetManager assetManager;
     private final Callbacks callbacks;
@@ -60,6 +64,10 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
     private volatile float shownT;
     private long lastFrameNs;
     private int frames, lateFrames;
+
+    // the look: 0 standard, 1 night, fading from one to the other (written by setNight() on the GL thread)
+    private float nightFrom, nightTo, night;
+    private long nightStartNs;
 
     FlashIntroRenderer(AssetManager am, Callbacks cb) {
         assetManager = am;
@@ -97,6 +105,20 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
 
     boolean isPlaying() {
         return playing;
+    }
+
+    void setNight(boolean on, boolean fade) {
+        long now = System.nanoTime();
+        nightFrom = fade ? nightAt(now) : on ? 1f : 0f;
+        nightTo = on ? 1f : 0f;
+        nightStartNs = now;
+    }
+
+    private float nightAt(long now) {
+        float k = (now - nightStartNs) / (float) NIGHT_FADE_NS;
+        if (k >= 1f) return nightTo;
+        k = Math.max(0f, k);
+        return nightFrom + (nightTo - nightFrom) * k * k * (3f - 2f * k);
     }
 
     // ---------------------------------------------------------------- GLSurfaceView.Renderer
@@ -149,6 +171,7 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
             render(holdT);
             shownT = holdT;
             callbacks.onReady();
+            if (night != nightTo) callbacks.onFrameNeeded();
             return;
         }
         float t = holdT;
@@ -174,6 +197,7 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
             adaptScale();
             callbacks.onStopped(T_END, true);
         }
+        if (!playing && night != nightTo) callbacks.onFrameNeeded();
     }
 
     private double clock(long now) {
@@ -398,6 +422,7 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
         GLES20.glUniform2f(p.loc("uHudSize"), assets.hudSize[0], assets.hudSize[1]);
         GLES20.glUniform1f(p.loc("uLabelSpread"), assets.labelSpreadEm);
         GLES20.glUniform1f(p.loc("uLandscape"), land ? 1f : 0f);
+        GLES20.glUniform1f(p.loc("uNight"), night);
         return p;
     }
 
@@ -415,6 +440,7 @@ final class FlashIntroRenderer implements GLSurfaceView.Renderer {
 
     private void render(float t) {
         t = Math.max(0f, Math.min(T_END, t));
+        night = nightAt(System.nanoTime());
         GLES30.glBindVertexArray(vao);
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glDisable(GLES20.GL_DEPTH_TEST);

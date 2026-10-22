@@ -20,7 +20,9 @@ async function boot(){
   cv.style.width = w+"px"; cv.style.height = h+"px";
   const intro = new FlashIntro(cv, assets);
   intro.resize(w, h);
+  intro.night = +(q.get("night") || 0);
   window.intro = intro;
+  window.setNight = (v) => { intro.night = +v; return true; };
   window.renderAt = (t) => { intro.render(t); intro.gl.finish(); return true; };
   window.__ready = true;
   window.__hdr = intro.hdr;

@@ -15,6 +15,7 @@ uniform vec4  uHudUV;       // label atlas uv rect of the viewfinder readout
 uniform vec2  uHudSize;     // its rect size (label em)
 uniform float uLabelSpread; // label em per unit of (stored - 0.5) * 2
 uniform float uLandscape;   // 0 portrait (two lines), 1 landscape (one line)
+uniform float uNight;       // 0 the standard look, 1 the red night look (values between crossfade)
 
 #define T_END      2.2
 #define PI         3.14159265

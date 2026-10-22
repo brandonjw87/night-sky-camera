@@ -381,7 +381,7 @@ void main() {
     vec3 col = vec3(0.0);
     if (nm.a < 0.999) {
         vec3 bg = background(frag, t, blockPx);
-        bg *= 1.0 - 0.65 * mbShadow;
+        bg *= (1.0 - 0.65 * mbShadow) * mix(1.0, 0.6, uNight);   // at night the sky steps back from the name
         bg = bg * (1.0 - mb.a) + mb.rgb;
         col = bg * (1.0 - nm.a);
     }

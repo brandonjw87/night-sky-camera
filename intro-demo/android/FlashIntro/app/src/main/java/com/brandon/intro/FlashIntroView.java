@@ -12,6 +12,7 @@ import android.os.Looper;
  * Use: add it over the app's first screen, call {@link #play} once {@link Listener#onIntroReady} arrives,
  * and remove it in {@link Listener#onIntroStopped} (finished = true). Forward the activity's onPause and
  * onResume. If {@link Listener#onIntroError} arrives instead, just remove it: the app works without it.
+ * Under a dark sky, {@link #setNight} gives it Night Sky's dim red look.
  *
  * It needs the files in {@code assets/intro/} and OpenGL ES 3.0.
  */
@@ -75,6 +76,11 @@ public final class FlashIntroView extends GLSurfaceView {
                     }
                 });
             }
+
+            @Override
+            public void onFrameNeeded() {
+                requestRender();
+            }
         });
         setRenderer(renderer);
         setRenderMode(RENDERMODE_WHEN_DIRTY);
@@ -117,6 +123,21 @@ public final class FlashIntroView extends GLSurfaceView {
                 renderer.freeze();
             }
         });
+    }
+
+    /**
+     * The standard look (false) or the night look (true): Night Sky's red on black with a softer flash, so it
+     * doesn't dazzle eyes used to the dark. With {@code fade} the picture crossfades over a quarter of a second.
+     * Call it before {@link #play} to start in that look; the first frame already has it.
+     */
+    public void setNight(final boolean night, final boolean fade) {
+        queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                renderer.setNight(night, fade);
+            }
+        });
+        requestRender();
     }
 
     /** Shows the frame at {@code t} seconds (0 to {@link #LENGTH}) and stays there. */
