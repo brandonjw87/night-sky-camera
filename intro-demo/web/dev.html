@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>dev</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script src="intro.js"></script>
+<script>
+const SH = ["common.glsl","fullscreen.vert","scene.frag","particles.vert","particles.frag","bright.frag","down.frag","up.frag","streak.frag","rays.frag","final.frag"];
+async function boot(){
+  const q = new URLSearchParams(location.search);
+  const w = +(q.get("w")||672), h = +(q.get("h")||1496);
+  const shaders = {};
+  for (const s of SH) shaders[s] = await (await fetch("../shaders/"+s)).text();
+  const manifest = await (await fetch("../assets/sdf_manifest.json")).json();
+  const bin = async f => await (await fetch("../assets/"+f)).arrayBuffer();
+  const assets = { shaders, manifest,
+    namePortrait: new Uint16Array(await bin("name_portrait.r16f")),
+    nameLandscape: new Uint16Array(await bin("name_landscape.r16f")),
+    labels: new Uint8Array(await bin("labels.r8")) };
+  const cv = document.getElementById("c");
+  cv.style.width = w+"px"; cv.style.height = h+"px";
+  const intro = new FlashIntro(cv, assets);
+  intro.resize(w, h);
+  window.intro = intro;
+  window.renderAt = (t) => { intro.render(t); intro.gl.finish(); return true; };
+  window.__ready = true;
+  window.__hdr = intro.hdr;
+}
+boot().catch(e => { window.__error = String(e && e.stack || e); console.error(e); });
+</script></body></html>

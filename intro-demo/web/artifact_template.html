@@ -1,0 +1,646 @@
+<title>Camera Flash Intro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=DM+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the intro fills the frame edge to edge like a viewfinder; a camera-style shooting bar
+   (slow-mo, shutter, sound) floats over its bottom edge and steps aside while the intro plays. */
+:root {
+  color-scheme: dark;
+  --night: #04060c;                 /* the sky's darkest navy, page ground */
+  --scrim: rgba(3, 5, 10, 0.93);    /* behind the shooting bar */
+  --scrim-clear: rgba(3, 5, 10, 0);
+  --glass: rgba(16, 21, 35, 0.70);  /* small round buttons */
+  --line: rgba(190, 204, 232, 0.24);
+  --ink: #eaeef7;                   /* moonlit white */
+  --muted: #a4aec4;
+  --gold: #e6c58a;                  /* champagne gold of the letter bevels */
+  --gold-hi: #f8e6bd;
+  --gold-lo: #a7814a;
+  --gold-ink: #1a1205;
+  --focus: #a6efbc;                 /* autofocus-lock green, focus rings only */
+  --warn: #ffc2b3;
+  --font-ui: "Barlow Semi Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-data: "DM Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
+}
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--night); color: var(--ink);
+  font: 500 1rem/1.35 var(--font-ui); -webkit-tap-highlight-color: transparent;
+}
+#intro { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: manipulation; cursor: pointer; }
+
+.bar {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  padding: 2.75rem 16px calc(1rem + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, var(--scrim) 0%, var(--scrim) 45%, var(--scrim-clear) 100%);
+  display: grid; justify-items: center; gap: 0.7rem;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.bar.away { opacity: 0; transform: translateY(0.75rem); pointer-events: none; }
+
+.hint { margin: 0; font-size: 0.875rem; letter-spacing: 0.02em; color: var(--muted); text-align: center; text-wrap: balance; }
+.when-landscape { display: none; }
+@media (orientation: landscape) { .when-portrait { display: none; } .when-landscape { display: inline; } }
+
+.scrubrow {
+  width: min(100%, 30rem); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.75rem;
+  font: 400 0.8125rem/1 var(--font-data); font-variant-numeric: tabular-nums; color: var(--muted);
+}
+#time { color: var(--ink); min-width: 6ch; }
+#scrub { -webkit-appearance: none; appearance: none; width: 100%; height: 2rem; margin: 0; background: transparent; cursor: pointer; --fill: 0%; }
+#scrub::-webkit-slider-runnable-track { height: 2px; border-radius: 1px; background: linear-gradient(to right, var(--gold) var(--fill), var(--line) var(--fill)); }
+#scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 1.125rem; height: 1.125rem; margin-top: calc(1px - 0.5625rem); border-radius: 50%; border: 2px solid var(--night); background: var(--gold); }
+#scrub::-moz-range-track { height: 2px; background: var(--line); }
+#scrub::-moz-range-progress { height: 2px; background: var(--gold); }
+#scrub::-moz-range-thumb { width: 0.875rem; height: 0.875rem; border-radius: 50%; border: 2px solid var(--night); background: var(--gold); }
+
+.controls { display: flex; align-items: flex-start; justify-content: center; gap: 2.25rem; }
+.ctl { display: grid; justify-items: center; gap: 0.4rem; }
+.ctl-label { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.round {
+  width: 3rem; height: 3rem; margin-top: 0.875rem; padding: 0; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--glass); color: var(--ink); display: grid; place-items: center; cursor: pointer;
+  font: 500 0.75rem/1 var(--font-data);
+}
+.round[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+.round[disabled] { opacity: 0.45; cursor: default; }
+.shutter {
+  width: 4.75rem; height: 4.75rem; padding: 4px; border-radius: 50%; border: 3px solid var(--gold);
+  background: transparent; cursor: pointer; display: grid;
+}
+.shutter .disc {
+  border-radius: 50%; display: grid; place-items: center; color: var(--gold-ink);
+  background: radial-gradient(circle at 34% 28%, var(--gold-hi), var(--gold) 46%, var(--gold-lo) 100%);
+  transition: transform 0.12s ease;
+}
+.shutter:active .disc { transform: scale(0.93); }
+.shutter[disabled] { cursor: progress; }
+.shutter[disabled] .disc { background: transparent; border: 2px solid var(--line); border-top-color: var(--gold); animation: spin 0.9s linear infinite; }
+.shutter[disabled] svg { display: none; }
+.shutter-label { color: var(--gold); }
+@keyframes spin { to { transform: rotate(1turn); } }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+.notice {
+  position: fixed; left: 16px; right: 16px; top: calc(1.25rem + env(safe-area-inset-top, 0px)); margin: 0 auto; max-width: 28rem;
+  padding: 0.875rem 1rem; border: 1px solid var(--line); border-radius: 0.75rem; background: var(--glass);
+  color: var(--ink); font-size: 0.9375rem; line-height: 1.4;
+}
+.notice strong { color: var(--warn); font-weight: 600; }
+.notice details { margin-top: 0.5rem; color: var(--muted); font: 400 0.75rem/1.4 var(--font-data); }
+.notice pre { margin: 0.4rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9rem; overflow: auto; }
+
+/* phone on its side: one compact row so the bar stays clear of the one-line name */
+@media (orientation: landscape) and (max-height: 34rem) {
+  .bar {
+    grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "hint hint" "scrub controls";
+    align-items: center; column-gap: 1.5rem; row-gap: 0.25rem; padding-top: 1.75rem;
+    padding-left: calc(16px + env(safe-area-inset-left, 0px)); padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  }
+  .hint { grid-area: hint; justify-self: center; font-size: 0.8125rem; }
+  .scrubrow { grid-area: scrub; justify-self: end; }
+  .controls { grid-area: controls; gap: 1.25rem; align-items: center; }
+  .ctl-label { display: none; }
+  .round { margin-top: 0; width: 2.75rem; height: 2.75rem; }
+  .shutter { width: 3.75rem; height: 3.75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar, .shutter .disc { transition: none; }
+  .shutter[disabled] .disc { animation: none; }
+}
+</style>
+
+<canvas id="intro" role="img" aria-label="Camera flash intro that reads: Made by: Brandon J. Wallace"></canvas>
+
+<div class="bar" id="bar">
+  <p class="hint" id="hint">
+    <span class="when-portrait">Turn your phone sideways to see the one-line layout.</span>
+    <span class="when-landscape">Turn your phone upright to see the two-line layout.</span>
+  </p>
+  <div class="scrubrow">
+    <output id="time" for="scrub">2.20 s</output>
+    <input id="scrub" type="range" min="0" max="2200" step="1" value="2200" aria-label="Frame time">
+    <span>2.20 s</span>
+  </div>
+  <div class="controls">
+    <div class="ctl">
+      <button class="round" id="slow" type="button" aria-pressed="false" aria-label="Slow motion, quarter speed">0.25×</button>
+      <span class="ctl-label">Slow-mo</span>
+    </div>
+    <div class="ctl">
+      <button class="shutter" id="shutter" type="button" aria-label="Play intro" disabled>
+        <span class="disc">
+          <svg id="icon-play" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M8.5 5.6v12.8L18.6 12z" fill="currentColor"/></svg>
+          <svg id="icon-replay" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" hidden><path d="M12.2 5.2a6.9 6.9 0 1 1-6.5 4.6" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/><path d="M4.6 4.4v5.6h5.6" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+      </button>
+      <span class="ctl-label shutter-label" id="shutter-label">Loading</span>
+    </div>
+    <div class="ctl">
+      <button class="round" id="sound" type="button" aria-pressed="true" aria-label="Sound">
+        <svg id="icon-sound-on" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 9.2h3.6L12.4 5v14l-4.8-4.2H4z" fill="currentColor"/><path d="M15.6 8.6a5 5 0 0 1 0 6.8M18.2 6a8.6 8.6 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg id="icon-sound-off" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" hidden><path d="M4 9.2h3.6L12.4 5v14l-4.8-4.2H4z" fill="currentColor"/><path d="M15.8 9.4l5 5.2M20.8 9.4l-5 5.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <span class="ctl-label" id="sound-label">Sound on</span>
+    </div>
+  </div>
+</div>
+
+<div class="notice" id="notice" hidden></div>
+
+<script>
+(() => {
+"use strict";
+const SHADERS = /*__SHADERS__*/null;
+const MANIFEST = /*__MANIFEST__*/null;
+const DATA = /*__DATA__*/null;
+
+const INTRO_LEN = 2.2;           // seconds, matches T_END in the shaders
+const POSTER_T = 2.2;            // still shown before the first play: the finished frame
+const HERO_T = 0.64;
+const FLASH_TIMES = [0.34, 0.43, 0.505, 0.565];
+
+// ------------------------------------------------------------------------------------------------
+// Renderer. Mirrors the Android GLES 3.0 renderer pass for pass; every bit of animation lives in
+// the shared GLSL, so the host only runs passes and feeds uTime.
+// ------------------------------------------------------------------------------------------------
+class FlashIntro {
+  constructor(canvas, assets) {
+    const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, depth: false, stencil: false,
+      premultipliedAlpha: false, preserveDrawingBuffer: !!window.__PRESERVE, powerPreference: "high-performance" });
+    if (!gl) throw new Error("no-webgl2");
+    this.gl = gl;
+    this.assets = assets;
+    this.vao = gl.createVertexArray();
+    this.programs = {};
+    this.targets = null;
+    this.w = 0; this.h = 0;
+    this.px = new Uint8Array(4);
+    this.fmt = this._pickFormat();
+    this._buildPrograms();
+    const M = MANIFEST;
+    this.texPortrait = this._tex(M.portrait.w, M.portrait.h, gl.R16F, gl.RED, gl.FLOAT, assets.portrait, false);
+    this.texLandscape = this._tex(M.landscape.w, M.landscape.h, gl.R16F, gl.RED, gl.FLOAT, assets.landscape, false);
+    this.texLabels = this._tex(M.labels.w, M.labels.h, gl.R8, gl.RED, gl.UNSIGNED_BYTE, assets.labels, true);
+  }
+
+  _pickFormat() {
+    const gl = this.gl;
+    const f = gl.getExtension("EXT_color_buffer_float");
+    const h = gl.getExtension("EXT_color_buffer_half_float");
+    if (f || h) {
+      const tex = this._tex(4, 4, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, null, false);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fb); gl.deleteTexture(tex);
+      if (ok) return { internal: gl.RGBA16F, type: gl.HALF_FLOAT, hdr: true };
+    }
+    return { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE, hdr: false };
+  }
+
+  _buildPrograms() {
+    const gl = this.gl;
+    const head = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;\n" + SHADERS["common.glsl"] + "\n";
+    const list = [["scene", "fullscreen.vert", "scene.frag"], ["particles", "particles.vert", "particles.frag"],
+      ["bright", "fullscreen.vert", "bright.frag"], ["down", "fullscreen.vert", "down.frag"], ["up", "fullscreen.vert", "up.frag"],
+      ["streak", "fullscreen.vert", "streak.frag"], ["rays", "fullscreen.vert", "rays.frag"], ["final", "fullscreen.vert", "final.frag"]];
+    const pending = [];
+    for (const [name, vs, fs] of list) {   // compile everything first so the driver can work in parallel
+      const p = gl.createProgram();
+      const v = gl.createShader(gl.VERTEX_SHADER), f = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(v, head + SHADERS[vs]); gl.compileShader(v);
+      gl.shaderSource(f, head + SHADERS[fs]); gl.compileShader(f);
+      gl.attachShader(p, v); gl.attachShader(p, f);
+      gl.linkProgram(p);
+      pending.push({ name, p, v, f, vs, fs });
+    }
+    for (const { name, p, v, f, vs, fs } of pending) {
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        const log = (!gl.getShaderParameter(f, gl.COMPILE_STATUS) ? fs + ": " + gl.getShaderInfoLog(f)
+          : !gl.getShaderParameter(v, gl.COMPILE_STATUS) ? vs + ": " + gl.getShaderInfoLog(v) : name + ": " + gl.getProgramInfoLog(p));
+        throw new Error("shader-failed\n" + log);
+      }
+      const u = {};
+      const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+      for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+      this.programs[name] = { p, u };
+    }
+  }
+
+  _tex(w, h, internal, format, type, data, mips) {
+    const gl = this.gl;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mips ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (mips) gl.generateMipmap(gl.TEXTURE_2D);
+    return t;
+  }
+
+  _rt(w, h) {
+    const gl = this.gl;
+    const tex = this._tex(w, h, this.fmt.internal, gl.RGBA, this.fmt.type, null, false);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fb, w, h };
+  }
+
+  _freeTargets() {
+    if (!this.targets) return;
+    const gl = this.gl, T = this.targets;
+    for (const r of [T.scene, ...T.down, ...T.up, T.stA, T.stB, T.rays]) { gl.deleteTexture(r.tex); gl.deleteFramebuffer(r.fb); }
+    this.targets = null;
+  }
+
+  resize(w, h) {
+    if (w === this.w && h === this.h && this.targets) return;
+    const gl = this.gl;
+    this.w = w; this.h = h;
+    gl.canvas.width = w; gl.canvas.height = h;
+    this._freeTargets();
+    const T = { scene: this._rt(w, h), down: [], up: [] };
+    let dw = w, dh = h;
+    for (let i = 0; i < 6; i++) {
+      dw = Math.max(1, Math.round(dw / 2)); dh = Math.max(1, Math.round(dh / 2));
+      T.down.push(this._rt(dw, dh));
+    }
+    for (let i = 0; i < 5; i++) T.up.push(this._rt(T.down[i].w, T.down[i].h));
+    const q = T.down[1];
+    T.stA = this._rt(q.w, q.h); T.stB = this._rt(q.w, q.h); T.rays = this._rt(q.w, q.h);
+    this.targets = T;
+  }
+
+  _use(name, target, t) {
+    const gl = this.gl, P = this.programs[name], M = MANIFEST;
+    gl.useProgram(P.p);
+    if (target) { gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb); gl.viewport(0, 0, target.w, target.h); }
+    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.w, this.h); }
+    const u = P.u;
+    const land = this.w > this.h * 1.15;
+    const N = land ? M.landscape : M.portrait;
+    const L = M.labels;
+    const set1 = (k, v) => { if (u[k]) gl.uniform1f(u[k], v); };
+    const set2 = (k, a, b) => { if (u[k]) gl.uniform2f(u[k], a, b); };
+    const set4 = (k, a) => { if (u[k]) gl.uniform4f(u[k], a[0], a[1], a[2], a[3]); };
+    set1("uTime", t);
+    set2("uRes", target ? target.w : this.w, target ? target.h : this.h);
+    set2("uScreen", this.w, this.h);
+    set4("uNameRect", N.rect);
+    set2("uNameInk", N.ink[0], N.ink[1]);
+    set1("uNameSpread", N.spreadEm);
+    set1("uNameEps", 0.7 / N.emTex);
+    set4("uMadeUV", L.items.madeBy.uv);
+    set2("uMadeSize", L.items.madeBy.sizeEm[0], L.items.madeBy.sizeEm[1]);
+    set4("uHudUV", L.items.hud.uv);
+    set2("uHudSize", L.items.hud.sizeEm[0], L.items.hud.sizeEm[1]);
+    set1("uLabelSpread", L.spreadEm);
+    set1("uLandscape", land ? 1 : 0);
+    P.land = land;
+    return P;
+  }
+
+  _bindTex(P, name, unit, tex) {
+    const gl = this.gl;
+    if (!P.u[name]) return;
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(P.u[name], unit);
+  }
+
+  _fs() { this.gl.drawArrays(this.gl.TRIANGLES, 0, 3); }
+
+  render(t) {
+    const gl = this.gl, T = this.targets;
+    t = Math.max(0, Math.min(INTRO_LEN, t));
+    gl.bindVertexArray(this.vao);
+    gl.disable(gl.BLEND);
+
+    // 1. scene: sky, iris, 3D name, label, flash heads
+    let P = this._use("scene", T.scene, t);
+    this._bindTex(P, "uNameSdf", 0, P.land ? this.texLandscape : this.texPortrait);
+    this._bindTex(P, "uLabels", 1, this.texLabels);
+    this._fs();
+
+    // 2. flash backscatter discs (additive)
+    if (t > 0.6 && t < 1.6) {
+      this._use("particles", T.scene, t);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.colorMask(true, true, true, false);
+      gl.drawArrays(gl.TRIANGLES, 0, 56 * 6);
+      gl.colorMask(true, true, true, true);
+      gl.disable(gl.BLEND);
+    }
+
+    // 3. bloom chain
+    P = this._use("bright", T.down[0], t);
+    this._bindTex(P, "uSrc", 0, T.scene.tex);
+    gl.uniform2f(P.u.uSrcTexel, 1 / T.scene.w, 1 / T.scene.h);
+    gl.uniform1f(P.u.uThreshold, 1.0);
+    this._fs();
+    for (let i = 1; i < 6; i++) {
+      P = this._use("down", T.down[i], t);
+      this._bindTex(P, "uSrc", 0, T.down[i - 1].tex);
+      gl.uniform2f(P.u.uSrcTexel, 1 / T.down[i - 1].w, 1 / T.down[i - 1].h);
+      this._fs();
+    }
+    for (let i = 4; i >= 0; i--) {
+      const low = i === 4 ? T.down[5] : T.up[i + 1];
+      P = this._use("up", T.up[i], t);
+      this._bindTex(P, "uLow", 0, low.tex);
+      this._bindTex(P, "uCur", 1, T.down[i].tex);
+      gl.uniform2f(P.u.uLowTexel, 1 / low.w, 1 / low.h);
+      this._fs();
+    }
+
+    // 4. anamorphic streak from the quarter-res bright level
+    const q = T.down[1];
+    for (const [step, src, dst, gain] of [[1.0, T.down[1], T.stA, 1.0], [5.0, T.stA, T.stB, 1.0], [25.0, T.stB, T.stA, 2.2]]) {
+      P = this._use("streak", dst, t);
+      this._bindTex(P, "uSrc", 0, src.tex);
+      gl.uniform2f(P.u.uStep, step / q.w, 0);
+      gl.uniform1f(P.u.uGain, gain);
+      this._fs();
+    }
+
+    // 5. light shafts
+    P = this._use("rays", T.rays, t);
+    this._bindTex(P, "uScene", 0, T.scene.tex);
+    gl.uniform2f(P.u.uLight, 0.5, P.land ? 0.5 + 0.5 * 0.03 : 0.5 + 0.5 * 0.075 + 0.01);
+    this._fs();
+
+    // 6. final composite to the screen
+    P = this._use("final", null, t);
+    this._bindTex(P, "uScene", 0, T.scene.tex);
+    this._bindTex(P, "uBloom", 1, T.up[0].tex);
+    this._bindTex(P, "uStreak", 2, T.stA.tex);
+    this._bindTex(P, "uRays", 3, T.rays.tex);
+    this._bindTex(P, "uLabels", 4, this.texLabels);
+    this._fs();
+  }
+
+  // wait for the GPU (used only to time frames)
+  sync() { const gl = this.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.px); }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Embedded data
+// ------------------------------------------------------------------------------------------------
+function b64Bytes(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function gunzip(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+// 16-bit fixed point, delta coded along rows, low bytes then high bytes
+function decodeField(bytes, w, h) {
+  const n = w * h, out = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    let acc = 0;
+    for (let x = 0, i = y * w; x < w; x++, i++) {
+      acc = (acc + (bytes[i] | (bytes[n + i] << 8))) & 0xffff;
+      out[i] = ((acc << 16) >> 16) / 32767;
+    }
+  }
+  return out;
+}
+async function loadAssets() {
+  const M = MANIFEST;
+  const [p, l, lab] = await Promise.all([gunzip(b64Bytes(DATA.portrait)), gunzip(b64Bytes(DATA.landscape)), gunzip(b64Bytes(DATA.labels))]);
+  return { portrait: decodeField(p, M.portrait.w, M.portrait.h), landscape: decodeField(l, M.landscape.w, M.landscape.h), labels: lab };
+}
+
+// ------------------------------------------------------------------------------------------------
+// Player
+// ------------------------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const canvas = $("intro"), bar = $("bar"), shutter = $("shutter"), shutterLabel = $("shutter-label");
+const slowBtn = $("slow"), soundBtn = $("sound"), soundLabel = $("sound-label"), scrub = $("scrub"), timeOut = $("time");
+const notice = $("notice");
+
+let intro = null, assets = null;
+let scale = 1;               // render scale on top of the (capped) device pixel ratio
+let mode = "loading";        // loading | idle | playing | error
+let shownT = POSTER_T;
+let slow = false, soundOn = true, playedOnce = false;
+let raf = 0, clock = null, stats = null;
+let actx = null, gainNode = null, soundBuf = null, soundFailed = false, srcNode = null;
+let timers = [];
+
+function showNotice(html) { notice.innerHTML = html; notice.hidden = false; }
+
+function applySize() {
+  const r = canvas.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(2, Math.round(Math.max(1, r.width) * dpr * scale));
+  const h = Math.max(2, Math.round(Math.max(1, r.height) * dpr * scale));
+  intro.resize(w, h);
+}
+
+function draw(t) {
+  shownT = t;
+  intro.render(t);
+}
+
+function syncUi() {
+  timeOut.textContent = shownT.toFixed(2) + " s";
+  scrub.value = String(Math.round(shownT * 1000));
+  scrub.style.setProperty("--fill", (shownT / INTRO_LEN * 100).toFixed(2) + "%");
+  const replay = playedOnce;
+  $("icon-play").toggleAttribute("hidden", replay); $("icon-replay").toggleAttribute("hidden", !replay);
+  shutter.setAttribute("aria-label", replay ? "Replay intro" : "Play intro");
+  shutterLabel.textContent = mode === "loading" ? "Loading" : replay ? "Replay" : "Play";
+  slowBtn.setAttribute("aria-pressed", String(slow));
+  soundBtn.setAttribute("aria-pressed", String(soundOn && !soundFailed));
+  soundBtn.disabled = soundFailed;
+  $("icon-sound-on").toggleAttribute("hidden", !(soundOn && !soundFailed)); $("icon-sound-off").toggleAttribute("hidden", soundOn && !soundFailed);
+  soundLabel.textContent = soundFailed ? "No sound" : soundOn ? (slow ? "Off in slow-mo" : "Sound on") : "Sound off";
+}
+
+function setBarAway(away) { bar.classList.toggle("away", away); }
+
+// frame cost decides the render scale; the intro should run at full frame rate on the phone
+function timeFrame(t) { const t0 = performance.now(); intro.render(t); intro.sync(); return performance.now() - t0; }
+function benchmark() {
+  if (window.__FIXED_SCALE) { scale = window.__FIXED_SCALE; applySize(); return; }
+  scale = 1; applySize();
+  timeFrame(POSTER_T);                                    // first draw includes one-time driver work
+  const a = Math.min(timeFrame(POSTER_T), timeFrame(POSTER_T));
+  const b = Math.min(timeFrame(0.70), timeFrame(0.70));
+  const ms = Math.max(a, b), budget = 12;
+  scale = ms <= budget ? 1 : Math.max(0.5, Math.round(Math.sqrt(budget / ms) * 20) / 20);
+  applySize();
+}
+// after each play: frames that ran late lower the scale for the next one, smooth runs raise it back
+function adaptScale() {
+  if (!stats || stats.n < 20 || window.__FIXED_SCALE) return;
+  const late = stats.late / stats.n, before = scale;
+  if (late > 0.15) scale = Math.max(0.5, Math.round(scale * 0.85 * 20) / 20);
+  else if (late < 0.02 && scale < 1) scale = Math.min(1, Math.round(scale * 1.1 * 20) / 20);
+  if (scale !== before) applySize();
+}
+
+// ---- sound ----
+function setupAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { soundFailed = true; return; }
+  try {
+    actx = new AC({ latencyHint: "interactive" });
+    gainNode = actx.createGain();
+    gainNode.connect(actx.destination);
+    const bytes = b64Bytes(DATA.sound);
+    actx.decodeAudioData(bytes.buffer, (b) => { soundBuf = b; }, () => { soundFailed = true; syncUi(); });
+  } catch (e) { soundFailed = true; }
+}
+function audioNow() {
+  if (actx.getOutputTimestamp) {
+    const ts = actx.getOutputTimestamp();
+    if (ts && ts.contextTime > 0 && ts.performanceTime > 0) return ts.contextTime + (performance.now() - ts.performanceTime) / 1000;
+  }
+  return actx.currentTime - (actx.outputLatency || actx.baseLatency || 0);
+}
+function scheduleHaptics(speed) {
+  if (!("vibrate" in navigator)) return;
+  const at = (t, ms) => timers.push(setTimeout(() => { try { navigator.vibrate(ms); } catch (e) { /* not allowed here */ } }, t / speed * 1000 + 40));
+  for (const t of FLASH_TIMES) at(t, 8);
+  at(HERO_T, 38);
+}
+
+// ---- playback ----
+function stopPlayback() {
+  cancelAnimationFrame(raf);
+  raf = 0;
+  if (srcNode) { try { srcNode.stop(); } catch (e) { /* already stopped */ } srcNode = null; }
+  for (const id of timers) clearTimeout(id);
+  timers = [];
+}
+
+function play() {
+  if (!intro || mode === "loading" || mode === "error") return;
+  stopPlayback();
+  if (actx && actx.state !== "running") actx.resume().catch(() => {});
+  mode = "playing";
+  setBarAway(true);
+  const speed = slow ? 0.25 : 1;
+  if (soundOn && !slow && actx && soundBuf) {
+    const startAt = actx.currentTime + 0.05;
+    srcNode = actx.createBufferSource();
+    srcNode.buffer = soundBuf;
+    srcNode.connect(gainNode);
+    srcNode.start(startAt);
+    clock = () => audioNow() - startAt;
+  } else {
+    const t0 = performance.now() + 30;
+    clock = () => (performance.now() - t0) / 1000 * speed;
+  }
+  if (soundOn) scheduleHaptics(speed);
+  stats = { n: 0, late: 0, last: 0 };
+  draw(0);
+  raf = requestAnimationFrame(tick);
+}
+
+function tick(now) {
+  if (mode !== "playing") return;
+  if (stats.last) { stats.n++; if (now - stats.last > 26) stats.late++; }
+  stats.last = now;
+  const t = clock();
+  if (t >= INTRO_LEN) { draw(INTRO_LEN); end(); return; }
+  draw(Math.max(0, t));
+  raf = requestAnimationFrame(tick);
+}
+
+function end() {
+  mode = "idle";
+  playedOnce = true;
+  raf = 0;
+  adaptScale();
+  draw(shownT);
+  syncUi();
+  timers.push(setTimeout(() => { if (mode === "idle") setBarAway(false); }, 450));
+}
+
+function pauseHere() {
+  stopPlayback();
+  mode = "idle";
+  playedOnce = true;
+  syncUi();
+  setBarAway(false);
+}
+
+// ---- wiring ----
+shutter.addEventListener("click", play);
+canvas.addEventListener("click", () => { if (mode === "playing") pauseHere(); else play(); });
+slowBtn.addEventListener("click", () => { slow = !slow; syncUi(); });
+soundBtn.addEventListener("click", () => { soundOn = !soundOn; syncUi(); });
+scrub.addEventListener("input", () => {
+  if (!intro) return;
+  if (mode === "playing") { stopPlayback(); mode = "idle"; playedOnce = true; }
+  draw(Number(scrub.value) / 1000);
+  syncUi();
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden && mode === "playing") pauseHere(); });
+new ResizeObserver(() => {
+  if (!intro || mode === "error") return;
+  applySize();
+  if (mode !== "playing") draw(shownT);
+}).observe(canvas);
+canvas.addEventListener("webglcontextlost", (e) => {
+  e.preventDefault();
+  stopPlayback();
+  intro = null; mode = "error";
+  showNotice("<strong>The graphics driver reset.</strong> It comes back by itself in a moment.");
+});
+canvas.addEventListener("webglcontextrestored", () => {
+  try { intro = new FlashIntro(canvas, assets); mode = "idle"; notice.hidden = true; applySize(); draw(shownT); syncUi(); }
+  catch (e) { showNotice("<strong>The intro couldn't restart.</strong> Reopen this page to try again."); }
+});
+
+async function boot() {
+  syncUi();
+  if (!window.WebGL2RenderingContext || !("DecompressionStream" in window)) {
+    mode = "error";
+    showNotice("<strong>This browser can't run the intro.</strong> It needs WebGL 2. Chrome on your Pixel has it, so open this page there.");
+    return;
+  }
+  setupAudio();
+  try {
+    assets = await loadAssets();
+    intro = new FlashIntro(canvas, assets);
+    benchmark();
+    mode = "idle";
+    draw(POSTER_T);
+    shutter.disabled = false;
+    syncUi();
+    window.__intro = { renderAt: (t) => { draw(t); intro.sync(); syncUi(); return true; }, get scale() { return scale; }, get hdr() { return intro.fmt.hdr; }, play };
+    window.__ready = true;
+  } catch (e) {
+    mode = "error";
+    const msg = String(e && e.message || e);
+    if (msg === "no-webgl2") showNotice("<strong>This browser can't run the intro.</strong> It needs WebGL 2. Chrome on your Pixel has it, so open this page there.");
+    else {
+      const pre = document.createElement("pre");
+      pre.textContent = msg.replace(/^shader-failed\n/, "");
+      showNotice("<strong>The intro didn't start on this device.</strong> A screenshot of the details below helps fix it.<details><summary>Details</summary></details>");
+      notice.querySelector("details").appendChild(pre);
+    }
+    window.__error = msg;
+    syncUi();
+  }
+}
+boot();
+})();
+</script>
