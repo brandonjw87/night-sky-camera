@@ -108,6 +108,11 @@ final class ExposurePlan {
         frames = (int) Math.max(1, Math.round(durationSec * 1e9 / frameExpNs));
     }
 
+    /** A new length for the session (its end time came nearer while it waited to start, or it runs longer). */
+    void setDuration(int durationSec) {
+        frames = (int) Math.max(1, Math.round(durationSec * 1e9 / frameExpNs));
+    }
+
     long unitExpNs() {
         return frameExpNs * framesPerUnit;
     }

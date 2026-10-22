@@ -21,6 +21,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -40,12 +42,14 @@ import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
 import com.brandon.nightsky.processing.SatPlanner;
 import com.brandon.nightsky.processing.SatSky;
+import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -68,6 +72,8 @@ public final class MainActivity extends Activity {
     static final int RED_SEL = 0xFF6E1512;
     /** Light modules of the QR codes: pale enough for any phone camera to read, still reddish. */
     static final int QR_LIGHT = 0xFFFFCDD2;
+    /** The screen is in front (the capture service keeps a scheduled session's result on screen while it is). */
+    static volatile boolean visible;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private Prefs prefs;
@@ -89,6 +95,21 @@ public final class MainActivity extends Activity {
     private static String lastOutlookKey = "";
     private static long lastOutlookMs;
     private Boolean windowActive;
+
+    // the idle screen's pages: home, tonight's plan, a session being added, last night's summary
+    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3;
+    private int page = PAGE_HOME;
+    /** The plan being edited (not armed), the session being added, and the night being summarised. */
+    private NightPlan editPlan, summaryPlan;
+    private NightPlan.Item editItem;
+    /** The home screen's card about tonight. */
+    private LinearLayout nightBox;
+    private int shownPlanVersion = -1, forecastToken;
+    private long shownForecastMs, shownPlanErrorMs;
+    /** Arm once the permissions asked for are answered; re-arm once the app is on screen. */
+    private boolean pendingArm, pendingRearm;
+    /** The pages' back-gesture handler (API 33+). */
+    private Object pageBackCb;
 
     // views of the current screen (whichever exist)
     private TextView headline, detail, stage;
@@ -150,20 +171,58 @@ public final class MainActivity extends Activity {
             }
         });
         setContentView(root);
+        Plans.channel(this);
+        handleIntent(getIntent());
         showHome();
         bindService(new Intent(this, CaptureService.class), conn, Context.BIND_AUTO_CREATE);
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
+        if (shownPhase == null || shownPhase == SessionController.Phase.IDLE) showHome();
+    }
+
+    /** From a notification or the alarm: open the plan or last night's summary, or re-arm the plan. */
+    private void handleIntent(Intent i) {
+        if (i == null) return;
+        String screen = i.getStringExtra(Plans.EXTRA_SCREEN);
+        if ("plan".equals(screen)) {
+            page = PAGE_PLAN;
+            editPlan = null;
+        } else if ("summary".equals(screen)) {
+            page = PAGE_SUMMARY;
+            summaryPlan = null;
+        }
+        if (i.getBooleanExtra(Plans.EXTRA_REARM, false)) pendingRearm = true;
+        i.removeExtra(Plans.EXTRA_SCREEN);
+        i.removeExtra(Plans.EXTRA_REARM);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        visible = true;
         main.post(poll);
         if (shownPhase == null || shownPhase == SessionController.Phase.IDLE) showHome();
+        if (pendingRearm) {
+            pendingRearm = false;
+            // the app is on screen now, so the camera service may start
+            main.post(new Runnable() {
+                @Override
+                public void run() {
+                    armPlan();
+                }
+            });
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        visible = false;
         main.removeCallbacks(poll);
     }
 
@@ -184,6 +243,17 @@ public final class MainActivity extends Activity {
     private void refresh() {
         if (service == null) return;
         SessionController.Status s = service.controller().status();
+        String pe = service.planError();
+        if (pe != null && service.planErrorMs() != shownPlanErrorMs) {
+            shownPlanErrorMs = service.planErrorMs();
+            new AlertDialog.Builder(this).setMessage(pe).setPositiveButton("OK", null).show();
+        }
+        if (screenOf(shownPhase) == 0 && service.plans().version() != shownPlanVersion) {
+            // the plan moved on (a start, a result, a retry): show it as it is now
+            if (page == PAGE_PLAN) showPlan();
+            else if (page == PAGE_HOME) fillNightBox();
+            shownPlanVersion = service.plans().version();
+        }
         if (s.version == shownVersion) return;
         shownVersion = s.version;
         SessionController.Phase p = s.phase;
@@ -262,6 +332,8 @@ public final class MainActivity extends Activity {
 
     private void clearRefs() {
         closeReport();
+        setPageBack(false);
+        nightBox = null;
         headline = detail = stage = null;
         checks = null;
         shownChecks = null;
@@ -281,7 +353,26 @@ public final class MainActivity extends Activity {
     // Home
     // ------------------------------------------------------------------------------------------------
 
+    /** The idle screen: the home page, or the plan, editor or summary page Brandon is on. */
     private void showHome() {
+        switch (page) {
+            case PAGE_PLAN:
+                showPlan();
+                break;
+            case PAGE_EDIT:
+                showEditor();
+                break;
+            case PAGE_SUMMARY:
+                showSummary();
+                break;
+            default:
+                showHomePage();
+                break;
+        }
+    }
+
+    private void showHomePage() {
+        page = PAGE_HOME;
         clearRefs();
         root.removeAllViews();
         ScrollView sv = new ScrollView(this);
@@ -292,6 +383,12 @@ public final class MainActivity extends Activity {
         TextView title = text("Night Sky", 30, RED, true);
         col.addView(title);
         col.addView(text("Long exposures of the stars from your Pixel's main camera", 14, RED_DIM, false), gap(4));
+
+        // tonight: the armed plan, a plan to re-arm, last night's summary, or the sky and a way to plan it
+        nightBox = new LinearLayout(this);
+        nightBox.setOrientation(LinearLayout.VERTICAL);
+        col.addView(nightBox, gap(16));
+        fillNightBox();
 
         // unfinished session from a crash or a flat battery
         List<File> unfinished = SessionController.unfinished(this);
@@ -790,6 +887,21 @@ public final class MainActivity extends Activity {
             }
             return;
         }
+        if (code == 5) {
+            // location for tonight's sky
+            if (screenOf(shownPhase) == 0 || shownPhase == null) showHome();
+            return;
+        }
+        if (pendingArm) {
+            pendingArm = false;
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                armPlan();
+            } else {
+                new AlertDialog.Builder(this).setMessage("A night plan needs the camera to take its photos. You can allow it in "
+                        + "Settings > Apps > Night Sky > Permissions.").setPositiveButton("OK", null).show();
+            }
+            return;
+        }
         if (!pendingStart) return;
         pendingStart = false;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -798,6 +910,927 @@ public final class MainActivity extends Activity {
             new AlertDialog.Builder(this).setMessage("The app needs the camera to take the photo. You can allow it in "
                     + "Settings > Apps > Night Sky > Permissions.").setPositiveButton("OK", null).show();
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Tonight and the night plan (E2)
+    // ------------------------------------------------------------------------------------------------
+
+    /** Tonight at a place: darkness, the Moon, the forecast's clouds, and the best window. Null without a place. */
+    private Tonight tonight(Locator.Place place) {
+        if (place == null) return null;
+        Tonight.Forecast fc = Forecasts.cached(this, place.latDeg, place.lonDeg);
+        return Tonight.compute(place.latDeg, place.lonDeg, System.currentTimeMillis(), TimeZone.getDefault(), fc, Double.NaN);
+    }
+
+    /** Asks for a new forecast if one is due, and redraws what shows tonight when it comes. */
+    private void refreshForecast(Locator.Place place) {
+        if (place == null || !prefs.forecast()) return;
+        final int tk = ++forecastToken;
+        Forecasts.refresh(this, place.latDeg, place.lonDeg, false, new Forecasts.Callback() {
+            @Override
+            public void done(Tonight.Forecast f, String error) {
+                if (tk != forecastToken || f == null || f.fetchedMs == shownForecastMs) return;
+                if (screenOf(shownPhase) != 0 && shownPhase != null) return;
+                if (page == PAGE_HOME && nightBox != null) fillNightBox();
+                else if (page == PAGE_PLAN) showPlan();
+            }
+        });
+    }
+
+    /** Last night's plan if its summary hasn't been looked at (the plan just run, or the newest past one). */
+    private NightPlan nightToSummarise(NightPlan saved) {
+        NightPlan p = saved != null && !saved.armed && saved.finished() ? saved : Plans.lastArchived(this);
+        if (p == null || p.summaryDone || p.armed) return null;
+        long ended = 0;
+        for (NightPlan.Item it : p.items) ended = Math.max(ended, it.endedMs);
+        if (ended == 0 || System.currentTimeMillis() - ended > 36 * 3600_000L) return null;
+        return p;
+    }
+
+    /** The home screen's card about tonight: the armed plan, a plan to re-arm, last night's summary, the sky. */
+    private void fillNightBox() {
+        LinearLayout box = nightBox;
+        if (box == null) return;
+        box.removeAllViews();
+        long now = System.currentTimeMillis();
+        PlanRunner runner = service != null ? service.plans() : null;
+        shownPlanVersion = runner != null ? runner.version() : -1;
+        NightPlan saved = Plans.load(this);
+        if (runner != null && runner.armed()) {
+            LinearLayout c = card();
+            c.addView(text("Night plan armed", 17, RED, true));
+            c.addView(text("Next: " + runner.nextText() + ".", 14, RED, false), gap(4));
+            c.addView(text("Leave the phone screen-down, camera to the sky. It starts by itself.", 13, RED_DIM, false), gap(4));
+            Button open = button("Open the plan", false);
+            open.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    openPage(PAGE_PLAN);
+                }
+            });
+            c.addView(open, gap(10));
+            box.addView(c);
+            return;
+        }
+        if (saved != null && saved.armed && !saved.finished()) {
+            LinearLayout c = card();
+            c.addView(text("Tonight's plan needs re-arming", 17, RED, true));
+            c.addView(text("The phone or the app restarted while it was armed, and Android doesn't let the camera start by itself "
+                    + "after that. One tap arms it again; the phone can stay where it is.", 14, RED_DIM, false), gap(4));
+            LinearLayout r = row();
+            Button re = button("Re-arm", true);
+            re.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    armPlan();
+                }
+            });
+            Button open = button("Open the plan", false);
+            open.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    openPage(PAGE_PLAN);
+                }
+            });
+            r.addView(re, weight());
+            r.addView(open, weight());
+            c.addView(r, gap(10));
+            box.addView(c);
+            return;
+        }
+        final NightPlan last = nightToSummarise(saved);
+        if (last != null) {
+            LinearLayout c = card();
+            c.addView(text(last.summaryTitle(), 17, RED, true));
+            LinearLayout pics = row();
+            int shown = 0;
+            for (NightPlan.Item it : last.items) {
+                if (shown >= 4) break;
+                Bitmap b = Plans.thumb(this, it.thumb);
+                if (b == null) continue;
+                ImageView iv = new ImageView(this);
+                iv.setImageBitmap(b);
+                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(64), 1f);
+                lp.rightMargin = dp(4);
+                pics.addView(iv, lp);
+                shown++;
+            }
+            if (shown > 0) c.addView(pics, gap(8));
+            Button see = button("See last night", true);
+            see.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    summaryPlan = last;
+                    openPage(PAGE_SUMMARY);
+                }
+            });
+            c.addView(see, gap(10));
+            box.addView(c);
+        }
+        // tonight's sky
+        Locator.Place place = Locator.best(this, prefs);
+        Tonight t = tonight(place);
+        LinearLayout c = card();
+        if (t == null) {
+            c.addView(text("Tonight", 17, RED, true));
+            c.addView(text("Allow location to see tonight's darkness, the Moon and the best window, and to plan the night.",
+                    14, RED_DIM, false), gap(4));
+            Button loc = button("Allow location", false);
+            loc.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setAskedLocation();
+                    requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION}, 5);
+                }
+            });
+            c.addView(loc, gap(10));
+        } else {
+            shownForecastMs = t.hasForecast ? now - t.forecastAgeMs : 0;
+            c.addView(text(t.headline, 17, RED, true));
+            for (int i = 0; i < Math.min(3, t.lines.size()); i++) c.addView(text(t.lines.get(i), 14, RED_DIM, false), gap(3));
+        }
+        String night = Plans.planningNight(now, t, TimeZone.getDefault());
+        int planned = 0;
+        if (saved != null && !saved.armed && saved.night.equals(night)) {
+            for (NightPlan.Item it : saved.items) if (!it.finished()) planned++;
+        }
+        if (planned > 0) {
+            c.addView(text("Tonight's plan: " + planned + (planned == 1 ? " session" : " sessions") + ", not armed yet.", 14, RED, false), gap(8));
+        }
+        Button plan = button(planned > 0 ? "Open tonight's plan" : "Plan the night", false);
+        plan.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                editPlan = null;
+                openPage(PAGE_PLAN);
+            }
+        });
+        c.addView(plan, gap(10));
+        box.addView(c, last != null ? gap(12) : gap(0));
+        refreshForecast(place);
+    }
+
+    private void openPage(int p) {
+        page = p;
+        showHome();
+    }
+
+    /** Back from a page: the editor goes back to the plan, the rest to the home screen. */
+    private boolean pageBack() {
+        if (page == PAGE_HOME) return false;
+        openPage(page == PAGE_EDIT ? PAGE_PLAN : PAGE_HOME);
+        return true;
+    }
+
+    private void setPageBack(boolean on) {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (on && pageBackCb == null) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    pageBack();
+                }
+            };
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb);
+            pageBackCb = cb;
+        } else if (!on && pageBackCb != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) pageBackCb);
+            pageBackCb = null;
+        }
+    }
+
+    /** The page's frame: a scroll view with a column, and a back line at the top. */
+    private LinearLayout pageColumn(String back) {
+        clearRefs();
+        root.removeAllViews();
+        setPageBack(true);
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        root.addView(sv, match());
+        TextView b = text("‹ " + back, 15, RED_DIM, true);
+        b.setPadding(0, dp(4), 0, dp(10));
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pageBack();
+            }
+        });
+        col.addView(b);
+        return col;
+    }
+
+    /** Tonight's plan: its sessions, its options, and Arm (or, armed, what comes next and Cancel). */
+    private void showPlan() {
+        final long now = System.currentTimeMillis();
+        final TimeZone zone = TimeZone.getDefault();
+        final Locator.Place place = Locator.best(this, prefs);
+        final Tonight t = tonight(place);
+        PlanRunner runner = service != null ? service.plans() : null;
+        shownPlanVersion = runner != null ? runner.version() : -1;
+        final boolean armed = runner != null && runner.armed();
+        NightPlan saved = Plans.load(this);
+        final boolean needsRearm = !armed && saved != null && saved.armed && !saved.finished();
+        final NightPlan p;
+        if (armed || needsRearm) {
+            p = saved;
+            editPlan = null;
+        } else {
+            if (editPlan == null) {
+                editPlan = Plans.forNight(this, Plans.planningNight(now, t, zone), place, now);
+                if (editPlan.items.isEmpty()) {
+                    editPlan.sounds = prefs.planSounds();
+                    editPlan.minBatteryPct = prefs.planMinBattery();
+                }
+            }
+            p = editPlan;
+            p.resolve(t, now);
+        }
+        if (p == null) {
+            openPage(PAGE_HOME);
+            return;
+        }
+        LinearLayout col = pageColumn("Home");
+        col.addView(text(armed ? "Tonight's plan, armed" : "Tonight's plan", 26, RED, true));
+        col.addView(text(nightWords(p.night) + (t != null ? " · " + t.headline : ""), 14, RED_DIM, false), gap(4));
+        if (t != null && !armed) {
+            for (int i = 1; i < Math.min(3, t.lines.size()); i++) col.addView(text(t.lines.get(i), 13, RED_DIM, false), gap(2));
+        }
+
+        if (armed) {
+            LinearLayout c = card();
+            c.addView(text("Next: " + runner.nextText() + ".", 16, RED, true));
+            long wake = runner.nextAtMs();
+            c.addView(text((wake > 0 ? "The camera opens at " + Tonight.clock(wake, zone) + ". " : "")
+                    + "Lay the phone screen-down, camera to the sky, before then; the screen can go off. On a long night, "
+                    + "keep it on a charger or a power bank.", 14, RED_DIM, false), gap(6));
+            col.addView(c, gap(14));
+        } else if (needsRearm) {
+            LinearLayout c = card();
+            c.addView(text("This plan needs re-arming", 16, RED, true));
+            c.addView(text("The phone or the app restarted while it was armed. Re-arming carries on where it was.", 14, RED_DIM, false), gap(4));
+            col.addView(c, gap(14));
+        }
+
+        col.addView(label(p.items.isEmpty() ? "No sessions yet" : "Sessions"), gap(20));
+        for (final NightPlan.Item it : p.items) {
+            LinearLayout c = card();
+            c.addView(text(itemTitle(p, it), 16, RED, true));
+            String body = it.outcome.isEmpty() ? p.describe(it) : it.outcome;
+            c.addView(text(body, 14, it.finished() ? RED_DIM : RED, false), gap(3));
+            if (!armed && !needsRearm && !it.finished() && it.state != NightPlan.State.RUNNING) {
+                Button rm = button("Remove", false);
+                rm.setTextSize(14);
+                rm.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        p.remove(it.id);
+                        savePlan(p, t);
+                        showPlan();
+                    }
+                });
+                c.addView(rm, gap(8));
+            }
+            col.addView(c, gap(8));
+        }
+
+        if (!armed && !needsRearm) {
+            Button add = button("+ Add a session", false);
+            add.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    editItem = defaultItem(p, t);
+                    openPage(PAGE_EDIT);
+                }
+            });
+            col.addView(add, gap(10));
+
+            col.addView(label("During these sessions"), gap(22));
+            CheckBox snd = check("Beeps and voice (off: someone may be asleep nearby)", p.sounds);
+            snd.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton b, boolean on) {
+                    p.sounds = on;
+                    prefs.setPlanSounds(on);
+                    if (!p.items.isEmpty()) savePlan(p, t);
+                }
+            });
+            col.addView(snd, gap(4));
+            col.addView(text("Stop, and don't start, below this battery level", 14, RED, false), gap(10));
+            final int[] levels = {10, 20, 30, 40};
+            final Button[] bs = new Button[levels.length];
+            LinearLayout br = row();
+            for (int k = 0; k < levels.length; k++) {
+                final int lv = levels[k];
+                Button b = chip(lv + "%", p.minBatteryPct == lv);
+                b.setTextSize(15);
+                bs[k] = b;
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        p.minBatteryPct = lv;
+                        prefs.setPlanMinBattery(lv);
+                        for (int j = 0; j < levels.length; j++) styleChip(bs[j], levels[j] == lv);
+                        if (!p.items.isEmpty()) savePlan(p, t);
+                    }
+                });
+                br.addView(b, weight());
+            }
+            col.addView(br, gap(6));
+            col.addView(text("Every session also stops at dawn, when storage runs low or if the phone gets too hot, and keeps "
+                    + "what it captured.", 13, RED_DIM, false), gap(8));
+        }
+
+        if (armed) {
+            Button cancel = button("Cancel the plan", false);
+            cancel.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    confirm("Cancel tonight's plan? A session capturing now is developed with what it has.", new Runnable() {
+                        @Override
+                        public void run() {
+                            startService(new Intent(MainActivity.this, CaptureService.class).setAction(CaptureService.ACTION_CANCEL_PLAN));
+                        }
+                    });
+                }
+            });
+            col.addView(cancel, gap(20));
+            viewerBox = new LinearLayout(this);
+            viewerBox.setOrientation(LinearLayout.VERTICAL);
+            viewerCompact = false;
+            viewerStoppable = false;
+            col.addView(viewerBox, gap(16));
+            refreshViewer(true);
+        } else {
+            boolean left = false;
+            for (NightPlan.Item it : p.items) left |= !it.finished();
+            Button arm = button(needsRearm ? "Re-arm the plan" : "Arm the plan", true);
+            arm.setTextSize(20);
+            arm.setMinHeight(dp(60));
+            arm.setEnabled(left);
+            arm.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (!needsRearm) savePlan(p, t);
+                    armPlan();
+                }
+            });
+            col.addView(arm, gap(24));
+            if (needsRearm) {
+                Button cancel = button("Cancel the plan", false);
+                cancel.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        startService(new Intent(MainActivity.this, CaptureService.class).setAction(CaptureService.ACTION_CANCEL_PLAN));
+                        editPlan = null;
+                        openPage(PAGE_HOME);
+                    }
+                });
+                col.addView(cancel, gap(8));
+            } else if (!left && !p.items.isEmpty()) {
+                col.addView(text("Everything in tonight's plan has run. Add a session to arm it again.", 13, RED_DIM, false), gap(8));
+            } else {
+                col.addView(text("Arm it while the app is open, then lay the phone screen-down outside, camera to the sky. Each "
+                        + "session opens the camera by itself; in between the phone sleeps.", 13, RED_DIM, false), gap(8));
+            }
+        }
+
+        if (!p.log.isEmpty()) {
+            col.addView(label("What happened"), gap(22));
+            int from = Math.max(0, p.log.size() - 10);
+            for (int i = from; i < p.log.size(); i++) col.addView(text(p.log.get(i), 12, RED_DIM, false), gap(2));
+        }
+    }
+
+    /** "10:10 PM · 5-minute stack" (or without the time if it isn't known). */
+    private static String itemTitle(NightPlan p, NightPlan.Item it) {
+        long t = it.startedMs > 0 ? it.startedMs : it.startMs;
+        String state = it.state == NightPlan.State.RUNNING ? " (running)" : it.state == NightPlan.State.DONE ? " ✓" : "";
+        return (t > 0 ? Tonight.clock(t, p.zone) + " · " : "") + it.what() + state;
+    }
+
+    /** "Night of Thursday 22 October". */
+    private static String nightWords(String night) {
+        try {
+            SimpleDateFormat in = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+            Date d = in.parse(night);
+            return "Night of " + new SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(d);
+        } catch (ParseException e) {
+            return "Night of " + night;
+        }
+    }
+
+    private void savePlan(NightPlan p, Tonight t) {
+        Plans.save(this, p);
+        Plans.remindToArm(this, p, t, System.currentTimeMillis());
+    }
+
+    /** A new session for the editor: a 5-minute stack at full darkness, only if clear, or what was last added. */
+    private NightPlan.Item defaultItem(NightPlan p, Tonight t) {
+        NightPlan.Item it = new NightPlan.Item();
+        it.trails = prefs.trails();
+        it.durationSec = it.trails ? Math.max(20, prefs.durationMin()) * 60 : prefs.durationMin() * 60;
+        it.rule = NightPlan.Rule.DARK;
+        if (!p.items.isEmpty()) {
+            // after the last session: an hour later by the clock
+            NightPlan.Item last = p.items.get(p.items.size() - 1);
+            long end = last.endMs > 0 ? last.endMs : last.startMs + last.durationSec * 1000L;
+            if (last.startMs > 0) {
+                it.rule = NightPlan.Rule.CLOCK;
+                it.clockMs = (end + 3600_000L) / 600_000L * 600_000L;
+            }
+        }
+        if (it.clockMs == 0) {
+            long dusk = t != null && t.duskMs > 0 ? t.duskMs : p.clockOnNight(22, 0);
+            it.clockMs = (dusk + 599_999L) / 600_000L * 600_000L;
+        }
+        it.endMs = 0;
+        return it;
+    }
+
+    /** One session's settings: what, when it starts, how long, and whether it waits for a clear sky. */
+    private void showEditor() {
+        final NightPlan p = editPlan;
+        final NightPlan.Item it = editItem;
+        if (p == null || it == null) {
+            openPage(PAGE_PLAN);
+            return;
+        }
+        final Locator.Place place = Locator.best(this, prefs);
+        final Tonight t = tonight(place);
+        final TimeZone zone = TimeZone.getDefault();
+        LinearLayout col = pageColumn("Tonight's plan");
+        col.addView(text("Add a session", 26, RED, true));
+        final TextView preview = text("", 15, RED, false);
+
+        // what
+        col.addView(label("Mode"), gap(18));
+        final Button deep = chip("Deep sky", !it.trails);
+        final Button trails = chip("Star trails", it.trails);
+        LinearLayout mr = row();
+        mr.addView(deep, weight());
+        mr.addView(trails, weight());
+        col.addView(mr, gap(6));
+
+        // when
+        col.addView(label("Starts"), gap(18));
+        final NightPlan.Rule[] rules = {NightPlan.Rule.DARK, NightPlan.Rule.MOONSET, NightPlan.Rule.BEST, NightPlan.Rule.CLOCK};
+        final String[] ruleNames = {"Full darkness", "Moonset", "Best window", "A set time"};
+        final Button[] ruleChips = new Button[rules.length];
+        LinearLayout r1 = row(), r2 = row();
+        for (int k = 0; k < rules.length; k++) {
+            Button b = chip(ruleNames[k], it.rule == rules[k]);
+            b.setTextSize(15);
+            ruleChips[k] = b;
+            (k < 2 ? r1 : r2).addView(b, weight());
+        }
+        col.addView(r1, gap(6));
+        col.addView(r2, gap(6));
+        final LinearLayout offsetRow = row();
+        final int[] offsets = {0, 30, 60, 120};
+        final String[] offsetNames = {"On time", "+30 min", "+1 h", "+2 h"};
+        final Button[] offsetChips = new Button[offsets.length];
+        for (int k = 0; k < offsets.length; k++) {
+            Button b = chip(offsetNames[k], it.offsetMin == offsets[k]);
+            b.setTextSize(14);
+            offsetChips[k] = b;
+            offsetRow.addView(b, weight());
+        }
+        col.addView(offsetRow, gap(6));
+        final TextView clockText = text("", 22, RED, true);
+        clockText.setGravity(Gravity.CENTER);
+        final LinearLayout clockRow = timeStepper(clockText, new long[]{-3600_000L, -600_000L, 600_000L, 3600_000L});
+        col.addView(clockRow, gap(6));
+
+        // how long
+        col.addView(label("How long"), gap(18));
+        final int[] deepMin = {1, 3, 5, 10, 20, 30, 60};
+        final int[] trailMin = {10, 20, 30, 60, 120, -1};
+        final LinearLayout lenBox = new LinearLayout(this);
+        lenBox.setOrientation(LinearLayout.VERTICAL);
+        col.addView(lenBox, gap(6));
+        final TextView endText = text("", 22, RED, true);
+        endText.setGravity(Gravity.CENTER);
+        final LinearLayout endRow = timeStepper(endText, new long[]{-3600_000L, -600_000L, 600_000L, 3600_000L});
+        col.addView(endRow, gap(6));
+
+        // only if clear
+        final CheckBox clear = check("Only if the sky is clear: a test frame counts the stars first, and if there are under a third "
+                + "of what a clear sky shows here, it tries again every 10 minutes", it.onlyIfClear);
+        col.addView(clear, gap(16));
+        final LinearLayout waitRow = row();
+        final int[] waits = {60, 120, 180, -1};
+        final String[] waitNames = {"1 h", "2 h", "3 h", "Till dawn"};
+        final Button[] waitChips = new Button[waits.length];
+        for (int k = 0; k < waits.length; k++) {
+            Button b = chip(waitNames[k], (it.waitMin == 0 ? 120 : it.waitMin) == waits[k]);
+            b.setTextSize(14);
+            waitChips[k] = b;
+            waitRow.addView(b, weight());
+        }
+        final TextView waitLabel = text("Keep trying for", 14, RED, false);
+        col.addView(waitLabel, gap(4));
+        col.addView(waitRow, gap(4));
+
+        col.addView(preview, gap(18));
+
+        // keeps the controls in step with the item
+        final Runnable update = new Runnable() {
+            @Override
+            public void run() {
+                styleChip(deep, !it.trails);
+                styleChip(trails, it.trails);
+                for (int k = 0; k < rules.length; k++) styleChip(ruleChips[k], it.rule == rules[k]);
+                for (int k = 0; k < offsets.length; k++) styleChip(offsetChips[k], it.offsetMin == offsets[k]);
+                offsetRow.setVisibility(it.rule == NightPlan.Rule.CLOCK ? View.GONE : View.VISIBLE);
+                clockRow.setVisibility(it.rule == NightPlan.Rule.CLOCK ? View.VISIBLE : View.GONE);
+                clockText.setText(Tonight.clock(it.clockMs, zone));
+                endRow.setVisibility(it.trails && it.endMs > 0 ? View.VISIBLE : View.GONE);
+                if (it.endMs > 0) endText.setText("until " + Tonight.clock(it.endMs, zone));
+                for (int k = 0; k < waits.length; k++) styleChip(waitChips[k], (it.waitMin == 0 ? 120 : it.waitMin) == waits[k]);
+                waitRow.setVisibility(it.onlyIfClear ? View.VISIBLE : View.GONE);
+                waitLabel.setVisibility(it.onlyIfClear ? View.VISIBLE : View.GONE);
+                preview.setText(p.preview(it, t));
+            }
+        };
+        final Runnable[] fillLengths = new Runnable[1];
+        fillLengths[0] = new Runnable() {
+            @Override
+            public void run() {
+                lenBox.removeAllViews();
+                final int[] mins = it.trails ? trailMin : deepMin;
+                final Button[] bs = new Button[mins.length];
+                LinearLayout row = row(), row2 = null;
+                for (int k = 0; k < mins.length; k++) {
+                    final int m = mins[k];
+                    boolean on = m < 0 ? it.endMs > 0 : it.endMs == 0 && it.durationSec == m * 60;
+                    Button b = chip(m < 0 ? "Until…" : m >= 60 ? (m / 60) + " h" : m + "m", on);
+                    b.setTextSize(14);
+                    bs[k] = b;
+                    b.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            if (m < 0) {
+                                if (it.endMs == 0) it.endMs = p.clockOnNight(1, 0);
+                            } else {
+                                it.endMs = 0;
+                                it.durationSec = m * 60;
+                            }
+                            fillLengths[0].run();
+                            update.run();
+                        }
+                    });
+                    if (k >= 4 && row2 == null) {
+                        row2 = row();
+                    }
+                    (row2 != null ? row2 : row).addView(b, weight());
+                }
+                lenBox.addView(row);
+                if (row2 != null) lenBox.addView(row2, gap(6));
+            }
+        };
+        fillLengths[0].run();
+
+        deep.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                it.trails = false;
+                it.endMs = 0;
+                if (it.durationSec > 3600) it.durationSec = 300;
+                fillLengths[0].run();
+                update.run();
+            }
+        });
+        trails.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                it.trails = true;
+                if (it.durationSec < 600) it.durationSec = 1800;
+                fillLengths[0].run();
+                update.run();
+            }
+        });
+        for (int k = 0; k < rules.length; k++) {
+            final NightPlan.Rule rule = rules[k];
+            ruleChips[k].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (rule == NightPlan.Rule.CLOCK && it.rule != NightPlan.Rule.CLOCK) {
+                        long s = p.previewStart(it, t);
+                        if (s > 0) it.clockMs = (s + 599_999L) / 600_000L * 600_000L;
+                    }
+                    it.rule = rule;
+                    update.run();
+                }
+            });
+        }
+        for (int k = 0; k < offsets.length; k++) {
+            final int o = offsets[k];
+            offsetChips[k].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    it.offsetMin = o;
+                    update.run();
+                }
+            });
+        }
+        clockText.setTag(new TimeTarget() {
+            @Override
+            public void shift(long ms) {
+                it.clockMs = clampToNight(p, it.clockMs + ms);
+                update.run();
+            }
+        });
+        endText.setTag(new TimeTarget() {
+            @Override
+            public void shift(long ms) {
+                it.endMs = clampToNight(p, it.endMs + ms);
+                update.run();
+            }
+        });
+        clear.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                it.onlyIfClear = on;
+                update.run();
+            }
+        });
+        for (int k = 0; k < waits.length; k++) {
+            final int w = waits[k];
+            waitChips[k].setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    it.waitMin = w;
+                    update.run();
+                }
+            });
+        }
+        update.run();
+
+        LinearLayout br = row();
+        Button add = button("Add to the plan", true);
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                long now = System.currentTimeMillis();
+                long start = p.previewStart(it, t);
+                if (start == 0) {
+                    toastish(p.preview(it, t));
+                    return;
+                }
+                if (start < now - 5 * 60_000L && !(it.endMs > now)) {
+                    toastish("That time has passed tonight");
+                    return;
+                }
+                p.add(it);
+                p.resolve(t, now);
+                savePlan(p, t);
+                editItem = null;
+                openPage(PAGE_PLAN);
+            }
+        });
+        Button cancel = button("Cancel", false);
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                editItem = null;
+                openPage(PAGE_PLAN);
+            }
+        });
+        br.addView(add, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+        br.addView(cancel, weight());
+        col.addView(br, gap(18));
+    }
+
+    /** Moves a clock time by a step; the buttons find what to move through the label's tag. */
+    private interface TimeTarget {
+        void shift(long ms);
+    }
+
+    /** [-1 h] [-10] time [+10] [+1 h]: steps a time shown in {@code label} (its tag says what to change). */
+    private LinearLayout timeStepper(final TextView label, long[] steps) {
+        LinearLayout r = row();
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        String[] names = {"−1 h", "−10", "+10", "+1 h"};
+        for (int k = 0; k < steps.length; k++) {
+            final long st = steps[k];
+            Button b = chip(names[k], false);
+            b.setTextSize(14);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Object tg = label.getTag();
+                    if (tg instanceof TimeTarget) ((TimeTarget) tg).shift(st);
+                }
+            });
+            if (k == 2) r.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2.2f));
+            r.addView(b, weight());
+        }
+        return r;
+    }
+
+    /** Keeps a time within the plan's night (noon to noon). */
+    private static long clampToNight(NightPlan p, long ms) {
+        long from = p.clockOnNight(12, 0), to = p.clockOnNight(11, 50);
+        return Math.max(from, Math.min(to, ms));
+    }
+
+    /** Arms the saved plan: the camera service starts now, while the app is on screen, and waits for the alarms. */
+    private void armPlan() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            pendingArm = true;
+            askedNotifications = true;
+            prefs.setAskedLocation();
+            requestPermissions(new String[]{Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS,
+                    Manifest.permission.ACCESS_COARSE_LOCATION}, 6);
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED && !askedNotifications) {
+            // the plan's notification, the re-arm reminder and the morning summary
+            askedNotifications = true;
+            pendingArm = true;
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 6);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        NightPlan p = Plans.load(this);
+        if (p == null || p.items.isEmpty()) {
+            toastish("Add a session first");
+            return;
+        }
+        // what would happen: refuse a plan where nothing can start
+        Tonight t = tonight(Locator.best(this, prefs));
+        NightPlan test = NightPlan.fromJson(p.toJson());
+        test.armed = false;
+        for (NightPlan.Item it : test.items) if (it.state == NightPlan.State.RUNNING) it.state = NightPlan.State.FAILED;
+        test.resolve(t, now);
+        if (test.next(now) == null) {
+            StringBuilder why = new StringBuilder("Nothing in the plan can start tonight:\n");
+            for (NightPlan.Item it : test.items) if (!it.outcome.isEmpty()) why.append("\n• ").append(it.what()).append(": ").append(it.outcome);
+            new AlertDialog.Builder(this).setMessage(why.toString()).setPositiveButton("OK", null).show();
+            return;
+        }
+        startForegroundService(new Intent(this, CaptureService.class).setAction(CaptureService.ACTION_ARM_PLAN));
+        editPlan = null;
+        page = PAGE_PLAN;
+        showHome();
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (!prefs.askedBatteryExemption() && pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            prefs.setAskedBatteryExemption();
+            new AlertDialog.Builder(this).setTitle("Let the plan run at night")
+                    .setMessage("The plan is armed. It opens the camera by itself, hours from now, while the phone sleeps, and "
+                            + "Android may hold that back to save battery. Let Night Sky run in the background? It uses the "
+                            + "battery only during the sessions. (You can change this later in Settings > Apps > Night Sky > "
+                            + "Battery.)")
+                    .setPositiveButton("Allow", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int w) {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                        .setData(Uri.parse("package:" + getPackageName())));
+                            } catch (RuntimeException e) {
+                                toastish("Open Settings > Apps > Night Sky > Battery and choose Unrestricted");
+                            }
+                        }
+                    }).setNegativeButton("Not now", null).show();
+        }
+    }
+
+    /** Last night's summary: every session's picture, how it went, its report, and Repeat tomorrow. */
+    private void showSummary() {
+        final NightPlan p = summaryPlan != null ? summaryPlan : nightToSummarise(Plans.load(this));
+        if (p == null) {
+            openPage(PAGE_HOME);
+            return;
+        }
+        summaryPlan = p;
+        Plans.cancelNotification(this, Plans.NOTIF_MORNING);
+        LinearLayout col = pageColumn("Home");
+        col.addView(text(p.summaryTitle(), 24, RED, true));
+        col.addView(text(nightWords(p.night), 14, RED_DIM, false), gap(4));
+        for (final NightPlan.Item it : p.items) {
+            if (it.state == NightPlan.State.CANCELLED && it.tries == 0) continue;
+            LinearLayout c = card();
+            Bitmap b = Plans.thumb(this, it.thumb);
+            if (b != null) {
+                ImageView iv = new ImageView(this);
+                iv.setImageBitmap(b);
+                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                c.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(170)));
+            }
+            c.addView(text(itemTitle(p, it), 16, RED, true), gap(b != null ? 8 : 0));
+            c.addView(text(it.outcome.isEmpty() ? it.state.name().toLowerCase(Locale.US) : it.outcome, 14, RED_DIM, false), gap(3));
+            LinearLayout r = row();
+            final ReportCard rc = it.session.isEmpty() ? null : savedReport(it.session);
+            if (rc != null) {
+                Button rb = button("Report", false);
+                rb.setTextSize(14);
+                rb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        showReport(rc);
+                    }
+                });
+                r.addView(rb, weight());
+            }
+            if (!it.photo.isEmpty()) {
+                Button ob = button("Photo", false);
+                ob.setTextSize(14);
+                ob.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        view(Uri.parse(it.photo));
+                    }
+                });
+                r.addView(ob, weight());
+            }
+            if (it.state == NightPlan.State.DONE) {
+                final Button rep = button("Repeat tomorrow", false);
+                rep.setTextSize(14);
+                rep.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (addRepeat(it, p.night)) {
+                            rep.setEnabled(false);
+                            rep.setText("Added ✓");
+                        }
+                    }
+                });
+                r.addView(rep, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.6f));
+            }
+            if (r.getChildCount() > 0) c.addView(r, gap(8));
+            col.addView(c, gap(10));
+        }
+        if (!p.log.isEmpty()) {
+            col.addView(label("What happened, step by step"), gap(22));
+            for (String l : p.log) col.addView(text(l, 12, RED_DIM, false), gap(2));
+        }
+        Button done = button("Done", true);
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                markSummaryDone(p);
+                summaryPlan = null;
+                openPage(PAGE_HOME);
+            }
+        });
+        col.addView(done, gap(20));
+    }
+
+    /** A session's saved report (null if it has none). */
+    private ReportCard savedReport(String session) {
+        try {
+            String json = new com.brandon.nightsky.processing.SessionStore(new File(SessionController.sessionsRoot(this), session))
+                    .readText("report.json");
+            return json == null || json.isEmpty() ? null : ReportCard.fromJson(json);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private void markSummaryDone(NightPlan p) {
+        NightPlan cur = Plans.load(this);
+        if (cur != null && cur.night.equals(p.night) && cur.createdMs == p.createdMs) {
+            cur.summaryDone = true;
+            Plans.save(this, cur);
+        } else {
+            Plans.archivedSummaryDone(this);
+        }
+        p.summaryDone = true;
+        Plans.cancelNotification(this, Plans.NOTIF_MORNING);
+    }
+
+    /**
+     * Puts the same session on the next night's plan, a sidereal day later per night (the same stars overhead).
+     * Returns false if it couldn't (that night's plan is armed).
+     */
+    private boolean addRepeat(NightPlan.Item done, String doneNight) {
+        long now = System.currentTimeMillis();
+        Locator.Place place = Locator.best(this, prefs);
+        Tonight t = tonight(place);
+        String target = NightPlan.nightAfter(doneNight);
+        String planning = Plans.planningNight(now, t, TimeZone.getDefault());
+        if (target.compareTo(planning) < 0) target = planning;
+        NightPlan cur = Plans.load(this);
+        if (cur != null && cur.armed && !cur.finished()) {
+            toastish("A plan is armed: cancel it before changing the plans");
+            return false;
+        }
+        NightPlan.Item r = NightPlan.repeatAfter(done, NightPlan.nightsBetween(doneNight, target));
+        NightPlan p = Plans.forNight(this, target, place, now);
+        if (p.items.isEmpty()) {
+            p.sounds = prefs.planSounds();
+            p.minBatteryPct = prefs.planMinBattery();
+        }
+        p.add(r);
+        p.resolve(target.equals(planning) ? t : null, now);
+        savePlan(p, target.equals(planning) ? t : null);
+        editPlan = null;
+        toastish("On " + (target.equals(planning) ? "tonight's" : "tomorrow night's") + " plan: " + r.what() + " at "
+                + Tonight.clock(r.clockMs, TimeZone.getDefault()) + ". Arm it in the evening.");
+        return true;
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -831,7 +1864,8 @@ public final class MainActivity extends Activity {
         viewerStoppable = false;
         col.addView(viewerBox, gap(12));
         refreshViewer(true);
-        Button cancel = button("Cancel", false);
+        boolean scheduled = service != null && service.controller().status().scheduled;
+        Button cancel = button(scheduled ? "Skip this session (the plan goes on)" : "Cancel", false);
         cancel.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1064,6 +2098,21 @@ public final class MainActivity extends Activity {
         });
         row2.addView(open, weight());
         row2.addView(again, weight());
+        if (r != null && r.startedMs > 0 && !s.scheduled) {
+            // the same stars at the same height tomorrow night: 3 min 56 s earlier by the clock
+            final Button rep = button("Repeat tomorrow", false);
+            rep.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    NightPlan.Item done = NightPlan.ofSession(r.trails, r.startedMs, r.durationSec, r.session);
+                    if (addRepeat(done, NightPlan.nightOf(r.startedMs, TimeZone.getDefault()))) {
+                        rep.setEnabled(false);
+                        rep.setText("On tomorrow's plan ✓");
+                    }
+                }
+            });
+            row2.addView(rep, weight());
+        }
         col.addView(row2, gap(6));
         String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG" : " (JPEG")
                 + (r != null && r.labelled != null ? ", and a copy with names)" : ")");
@@ -1181,11 +2230,12 @@ public final class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        // before Android 13 (from 13 on, the callback above takes Back)
+        // before Android 13 (from 13 on, the callbacks take Back)
         if (reportOverlay != null) {
             closeReport();
             return;
         }
+        if ((shownPhase == null || screenOf(shownPhase) == 0) && pageBack()) return;
         super.onBackPressed();
     }
 

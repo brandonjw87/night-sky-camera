@@ -18,7 +18,7 @@ import java.util.Locale;
  * their own warning and no other.
  * <p>
  * Usage: PreflightTest [case ...] (clean, smudge, branch, halfcloud, somecloud, overcast, haze, moon, twilight,
- * compass, noplace, staleplace, pattern, gradient, transients, sparse, city, milkyway; default all)
+ * compass, noplace, staleplace, pattern, gradient, transients, sparse, city, milkyway, covered; default all)
  */
 public final class PreflightTest {
     static final int W = 4080, H = 3072;
@@ -38,7 +38,7 @@ public final class PreflightTest {
         for (String a : args) cases.add(a);
         if (cases.isEmpty()) {
             String[] all = {"clean", "smudge", "branch", "halfcloud", "somecloud", "overcast", "haze", "moon", "twilight", "compass",
-                    "noplace", "staleplace", "pattern", "gradient", "transients", "sparse", "city", "milkyway"};
+                    "noplace", "staleplace", "pattern", "gradient", "transients", "sparse", "city", "milkyway", "covered"};
             for (String a : all) cases.add(a);
         }
         // the clean lens's halo and a clear night's zero point, as the app learns them from a good session
@@ -105,6 +105,11 @@ public final class PreflightTest {
             sim.meteorFrame = 0;
         }
         if (name.equals("sparse")) sim.starGain = 0.1;
+        if (name.equals("covered")) {
+            // a lens cap, a hand or the table: no light at all
+            sim.starGain = 0;
+            for (int c = 0; c < 3; c++) sim.skyRate[c] = 0;
+        }
         short[] raw = new short[W * H];
         UnitProcessor.FrameInfo info = new UnitProcessor.FrameInfo();
         long t0 = System.currentTimeMillis();
@@ -178,6 +183,7 @@ public final class PreflightTest {
             case "haze": want = "clouds"; break;
             case "moon": want = "moon"; break;
             case "twilight": want = "sun"; break;
+            case "covered": want = "clouds"; break;
             default: want = ""; break;
         }
         StringBuilder got = new StringBuilder();
@@ -201,6 +207,20 @@ public final class PreflightTest {
         }
         if (ok && (name.equals("noplace") || name.equals("staleplace"))) {
             ok = Math.abs(r.latDeg - sim.latitudeDeg) < 4 && Math.abs(r.lonDeg - lon) < 5 && r.placeSource.startsWith("stars");
+        }
+        // "only if clear" (E2) on the same test frame: start, or wait and try again
+        Preflight.Clear cl = Preflight.clearEnough(r, Double.NaN);
+        System.out.println("  only if clear: " + (cl.clear ? "start" : "wait") + " (" + cl.seen + ")");
+        String wantClear = "";
+        switch (name) {
+            case "clean": case "branch": case "somecloud": case "moon": case "pattern": case "gradient": case "transients":
+            case "milkyway": case "noplace": case "staleplace": wantClear = "start"; break;
+            case "overcast": case "covered": wantClear = "wait"; break;
+            default: break;
+        }
+        if (!wantClear.isEmpty() && !wantClear.equals(cl.clear ? "start" : "wait")) {
+            System.out.println("  only if clear should " + wantClear);
+            ok = false;
         }
         System.out.println("  " + (ok ? "PASS" : "FAIL") + ": warnings [" + got + "], expected [" + want + "]");
         if (!ok) failures++;

@@ -69,6 +69,12 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
 .strip span.out{background:transparent;border:1px solid var(--dim);border-bottom:0}
 .strip span.sel{box-shadow:0 0 0 2px var(--pale)}
 #rSky p{margin:0 0 4px}
+.plan{list-style:none;margin:6px 0 0;padding:0}
+.plan li{padding:7px 0;border-top:1px solid var(--sel)}
+.plan li:first-child{border-top:0}
+.plan .w{font-weight:700;color:var(--pale)}
+.plan .s{color:var(--dim);font-size:13px}
+.plan li.done .w::after{content:" ✓";color:var(--red)}
 </style>
 </head>
 <body>
@@ -94,6 +100,12 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
         </div>
         <div id="note" class="muted"></div>
         <div id="checks" hidden><h2>Sky check</h2><div id="checksSummary"></div><ul id="checksList"></ul></div>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="planCard" hidden>
+        <h2 style="margin-top:2px" id="planTitle">Tonight's plan</h2>
+        <p id="planNext" style="margin:0"></p>
+        <ul id="planItems" class="plan"></ul>
       </div>
 
       <div class="card" style="margin-top:16px">
@@ -242,6 +254,7 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
     $("reject").textContent = s.rejected ? (s.rejected + " left out so far" + (s.lastReject ? ", the last because of " + s.lastReject : "") + ".") : "";
 
     renderChecks(s.preflight);
+    renderPlan(s.plan);
     renderReport(s.state === "done" && s.result ? s.result.report : null);
 
     var clip = s.clip;
@@ -351,6 +364,35 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
     show("rSatAll", named.length > 5);
     $("rCond").textContent = r.conditions || "";
     $("rTip").textContent = r.tip || "";
+  }
+
+  // a night plan: what's next, and how each session went
+  var lastPlan = null;
+  function renderPlan(p) {
+    lastPlan = p || null;
+    show("planCard", !!p);
+    if (!p) return;
+    $("planTitle").textContent = p.title || "Tonight's plan";
+    $("planNext").textContent = p.next ? "Next: " + p.next + (p.wakesMs ? ". The phone wakes at " + hhmm(p.wakesMs) + "." : "") : "";
+    var ul = $("planItems");
+    ul.textContent = "";
+    (p.items || []).forEach(function (it) {
+      var li = document.createElement("li");
+      if (it.state === "done") li.className = "done";
+      var w = document.createElement("div");
+      w.className = "w";
+      w.textContent = (it.when ? it.when + " · " : "") + it.what;
+      var t = document.createElement("div");
+      t.className = "s";
+      t.textContent = it.text || it.state;
+      li.appendChild(w);
+      li.appendChild(t);
+      ul.appendChild(li);
+    });
+  }
+
+  function hhmm(ms) {
+    return new Date(ms).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
   }
 
   function stateName(x) {
@@ -501,6 +543,13 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
         $("connText").textContent = "This link has expired";
         $("headline").textContent = "This viewer link no longer works";
         $("detail").textContent = "Each session has its own link. Open the new one shown on the phone.";
+        return;
+      }
+      if (lastPlan && lastPlan.armed && lastPlan.wakesMs && lastPlan.wakesMs > Date.now() - 180000) {
+        // between scheduled sessions the phone sleeps (no wake lock): it answers again when the next one starts
+        $("connText").textContent = "The phone sleeps until " + hhmm(lastPlan.wakesMs);
+        $("detail").textContent = "Between scheduled sessions the phone sleeps to save battery. This page reconnects by itself when the next one starts.";
+        schedule(15000);
         return;
       }
       $("connText").textContent = lastOk ? "Lost the phone, retrying…" : "Cannot reach the phone";

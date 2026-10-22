@@ -159,6 +159,42 @@ final class Prefs {
         sp.edit().putBoolean("showLabels", v).apply();
     }
 
+    /** Tonight's cloud forecast from Open-Meteo (the place rounded to about 10 km is sent with the request). */
+    boolean forecast() {
+        return sp.getBoolean("forecast", true);
+    }
+
+    void setForecast(boolean v) {
+        sp.edit().putBoolean("forecast", v).apply();
+    }
+
+    /** Beeps and voice during scheduled sessions, for new plans (off: someone may be asleep nearby). */
+    boolean planSounds() {
+        return sp.getBoolean("planSounds", false);
+    }
+
+    void setPlanSounds(boolean v) {
+        sp.edit().putBoolean("planSounds", v).apply();
+    }
+
+    /** Scheduled sessions stop, and don't start, below this battery level (%), for new plans. */
+    int planMinBattery() {
+        return sp.getInt("planMinBattery", 20);
+    }
+
+    void setPlanMinBattery(int v) {
+        sp.edit().putInt("planMinBattery", v).apply();
+    }
+
+    /** Whether the app has asked once to be left out of battery optimisation (for night plans). */
+    boolean askedBatteryExemption() {
+        return sp.getBoolean("askedBatteryExemption", false);
+    }
+
+    void setAskedBatteryExemption() {
+        sp.edit().putBoolean("askedBatteryExemption", true).apply();
+    }
+
     /** Whether the app has asked for the (approximate) location once already. */
     boolean askedLocation() {
         return sp.getBoolean("askedLocation", false);

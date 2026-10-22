@@ -237,6 +237,50 @@ public final class Preflight {
         }
     }
 
+    /** "Only if clear" (E2): whether a scheduled session should start, and what the test frame saw. */
+    public static final class Clear {
+        public final boolean clear;
+        /** "12 of 140 stars that should show, 9%" */
+        public final String seen;
+
+        Clear(boolean clear, String seen) {
+            this.clear = clear;
+            this.seen = seen;
+        }
+    }
+
+    /**
+     * Whether the sky is clear enough for a scheduled start: at least a third of the stars a clear night shows
+     * here. That is the catalogue's stars for this field and exposure, times the share this site shows on its
+     * clear nights ({@code siteShare}, NaN if unknown, for light pollution or a hazy horizon), so a site that
+     * never shows them all isn't always "cloudy". A frame whose star patterns can't be found isn't clear: its
+     * "stars" are mostly noise (an overcast sky or a covered lens still gives a few hundred faint spots).
+     */
+    public static Clear clearEnough(Report rep, double siteShare) {
+        double share = Double.isNaN(siteShare) ? 1 : Math.max(0.3, Math.min(1, siteShare));
+        double need = share / 3;
+        if (rep.expected >= 12 && !Double.isNaN(rep.seenFraction)) {
+            String seen = String.format(Locale.US, "%d of %d stars that should show, %d%%", rep.seen, rep.expected,
+                    Math.round(100 * rep.seenFraction));
+            if (!Double.isNaN(rep.hazeMag) && rep.hazeMag >= 2.5) {
+                return new Clear(false, seen + "; even the clearest are " + String.format(Locale.US, "%.1f", rep.hazeMag)
+                        + " magnitudes dimmer than on a clear night");
+            }
+            return new Clear(rep.seenFraction >= need, seen);
+        }
+        if (rep.solution == null) {
+            if (rep.stars < 15) return new Clear(false, "only " + rep.stars + " stars: overcast, or something covers the lens");
+            Item c = rep.item("clouds");
+            if (c == null || c.level == Level.WARN || c.level == Level.STOP) {
+                return new Clear(false, "no star patterns among " + rep.stars + " faint spots: cloud, haze or a covered lens");
+            }
+            // no catalogue to check against: a frame full of stars counts as clear
+            return new Clear(rep.stars >= 60, rep.stars + " stars (not checked against the catalogue)");
+        }
+        // solved, but too few catalogue stars to test (a small patch of open sky): the stars found decide
+        return new Clear(rep.stars >= 30, rep.stars + " stars");
+    }
+
     /** Which problems the spoken summary names first. */
     static final String[] PRIORITY = {"storage", "sun", "clouds", "lens", "obstruction", "moon", "battery", "clipping"};
     /** What "Ready." goes on to say. */

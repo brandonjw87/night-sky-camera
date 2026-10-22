@@ -30,6 +30,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * is covered, and shows progress in a silent notification. It also runs the remote viewer ({@link RemoteHost})
  * and, if asked, a Wi-Fi hotspot for it; while a viewer is watching it stays up after the photo is done, until
  * nobody has used the viewer for {@link RemoteHost#IDLE_STOP_MS} (and at most {@link RemoteHost#MAX_KEEP_MS}).
+ * <p>
+ * An armed night plan ({@link PlanRunner}) keeps it in the foreground between scheduled sessions, as a camera
+ * service only (no time limit), with the camera closed and no wake lock until the next start's alarm.
  */
 public final class CaptureService extends Service implements SessionController.Host {
     static final String ACTION_START = "com.brandon.nightsky.START";
@@ -37,6 +40,8 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_CANCEL = "com.brandon.nightsky.CANCEL";
     static final String ACTION_RECOVER = "com.brandon.nightsky.RECOVER";
     static final String ACTION_STOP_VIEWER = "com.brandon.nightsky.STOP_VIEWER";
+    static final String ACTION_ARM_PLAN = "com.brandon.nightsky.ARM_PLAN";
+    static final String ACTION_CANCEL_PLAN = "com.brandon.nightsky.CANCEL_PLAN";
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_BRIGHTNESS = "brightness",
             EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_PREFLIGHT = "preflight",
             EXTRA_KEEP_SATELLITES = "keepSatellites", EXTRA_START_AT = "startAt";
@@ -49,6 +54,9 @@ public final class CaptureService extends Service implements SessionController.H
             return CaptureService.this;
         }
     }
+
+    /** The running service, for the plan's alarms (null when there is none). Main thread. */
+    static volatile CaptureService instance;
 
     private final IBinder binder = new LocalBinder();
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -71,6 +79,12 @@ public final class CaptureService extends Service implements SessionController.H
     private volatile boolean keepingForViewer;
     private long endedMs;
 
+    // night plan
+    private PlanRunner plans;
+    /** Why the last "Arm" didn't work, for the screen (null if it did); and when. */
+    private volatile String planError;
+    private volatile long planErrorMs;
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -82,10 +96,27 @@ public final class CaptureService extends Service implements SessionController.H
         ch.setShowBadge(false);
         nm.createNotificationChannel(ch);
         controller = new SessionController(this, new Prefs(this), this);
+        plans = new PlanRunner(this, controller);
+        instance = this;
     }
 
     SessionController controller() {
         return controller;
+    }
+
+    PlanRunner plans() {
+        return plans;
+    }
+
+    /** Why the last "Arm" failed, if it was in the last minute (else null). */
+    String planError() {
+        String e = planError;
+        return e != null && System.currentTimeMillis() - planErrorMs < 60_000L ? e : null;
+    }
+
+    /** When it failed (tells two failures with the same words apart). */
+    long planErrorMs() {
+        return planErrorMs;
     }
 
     @Override
@@ -108,18 +139,20 @@ public final class CaptureService extends Service implements SessionController.H
             s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
             keepingForViewer = false;
             if (!goForeground(true)) {
-                stopRemote();
-                stopSelf();
+                if (!plans.armed()) {
+                    stopRemote();
+                    stopSelf();
+                }
                 return START_NOT_STICKY;
             }
             acquireLocks(true);
             if (intent.getBooleanExtra(EXTRA_VIEWER, false)) startRemote();
-            else stopRemote();
+            else if (!plans.armed()) stopRemote();
             controller.start(s);
         } else if (ACTION_RECOVER.equals(a)) {
             String dir = intent.getStringExtra(EXTRA_DIR);
             if (dir == null || !goForeground(false)) {
-                stopSelf();
+                if (!plans.armed()) stopSelf();
                 return START_NOT_STICKY;
             }
             // developing again: the service works for the session now, not just for the viewer
@@ -132,8 +165,88 @@ public final class CaptureService extends Service implements SessionController.H
             controller.cancel();
         } else if (ACTION_STOP_VIEWER.equals(a)) {
             stopViewer();
+        } else if (ACTION_ARM_PLAN.equals(a)) {
+            // the app is on screen: the only time a camera service may start, so the plan can open it later
+            planError = null;
+            if (!goForeground(true, true)) {
+                planError = "Android didn't let the camera service start. Open the app and try again.";
+                planErrorMs = System.currentTimeMillis();
+                if (sessionOver() && !plans.armed()) stopSelf();
+                return START_NOT_STICKY;
+            }
+            keepingForViewer = false;
+            String err = plans.arm();
+            if (err != null) {
+                planError = err;
+                planErrorMs = System.currentTimeMillis();
+                afterPlan();
+            } else if (new Prefs(this).remoteViewer()) {
+                // one viewer link for the whole night: pair a laptop now, it follows every session
+                startRemote();
+            }
+        } else if (ACTION_CANCEL_PLAN.equals(a)) {
+            plans.cancel("cancelled by you");
+            afterPlan();
         }
         return START_NOT_STICKY;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Night plan
+    // ------------------------------------------------------------------------------------------------
+
+    /** The plan's start alarm (from {@link PlanReceiver}, main thread). */
+    void onPlanAlarm() {
+        // the alarm's own wake lock ends when the receiver returns: hold the CPU while the start is decided
+        acquireCpu();
+        plans.onAlarm();
+        if (!plans.running() && sessionOver()) {
+            releaseLocks();
+            afterPlan();
+        }
+    }
+
+    /** A scheduled session starts (the plan's settings). */
+    void startScheduled(SessionController.Settings s) {
+        keepingForViewer = false;
+        acquireLocks(true);
+        if (new Prefs(this).remoteViewer()) startRemote();
+        controller.start(s);
+    }
+
+    /** The plan waits for its next start: the notification says what and when, with a Cancel button. */
+    void showPlanWaiting(String next, String wakeTime) {
+        if (!foreground) return;
+        Intent cancel = new Intent(this, CaptureService.class).setAction(ACTION_CANCEL_PLAN);
+        PendingIntent pc = PendingIntent.getService(this, 3, cancel, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Notification n = new Notification.Builder(this, CHANNEL)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Night plan armed")
+                .setContentText("Next: " + next)
+                .setStyle(new Notification.BigTextStyle().bigText("Next: " + next + ". The camera opens at " + wakeTime
+                        + ". Leave the phone screen-down, camera to the sky."))
+                .setContentIntent(Plans.openApp(this, "plan", false, 38))
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setColor(0xFFE53935)
+                .addAction(new Notification.Action.Builder(null, "Cancel plan", pc).build())
+                .build();
+        nm.notify(NOTIF_ID, n);
+    }
+
+    /** After the plan changed: if it's over and nothing runs, let go as at the end of a session. */
+    private void afterPlan() {
+        if (plans.armed() || !sessionOver()) return;
+        RemoteHost r = remote;
+        if (r != null && r.running() && r.watching() && foreground) {
+            keepingForViewer = true;
+            endedMs = System.currentTimeMillis();
+            releaseProximity();
+            nm.notify(NOTIF_ID, viewerNotification(r));
+            return;
+        }
+        stopRemote();
+        finishIdle();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -197,9 +310,11 @@ public final class CaptureService extends Service implements SessionController.H
             RemoteHost r = remote;
             if (r == null) return;
             long now = System.currentTimeMillis();
-            if (r.watching()) acquireWifiLock();
+            // between a plan's sessions the phone sleeps: no point keeping Wi-Fi on full power
+            boolean planWaiting = plans.armed() && sessionOver();
+            if (r.watching() && !planWaiting) acquireWifiLock();
             else releaseWifiLock();
-            if (keepingForViewer && sessionOver()) {
+            if (keepingForViewer && sessionOver() && !plans.armed()) {
                 // only what a person did counts (an open page polling by itself doesn't), and never past the cap
                 long quiet = now - Math.max(r.lastActiveMs(), endedMs);
                 if (quiet > RemoteHost.IDLE_STOP_MS || now - endedMs > RemoteHost.MAX_KEEP_MS) {
@@ -390,8 +505,14 @@ public final class CaptureService extends Service implements SessionController.H
     }
 
     private boolean goForeground(boolean camera) {
-        Notification n = build(camera ? "Getting ready" : "Developing", "", -1, camera);
-        int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+        // while a plan is armed the service must keep its camera type (and only that: data sync has a daily limit)
+        return goForeground(camera || plans.armed(), plans.armed());
+    }
+
+    /** {@code planOnly}: a camera service without data sync, which Android lets run all night. */
+    private boolean goForeground(boolean camera, boolean planOnly) {
+        Notification n = build(planOnly && sessionOver() ? "Night plan" : camera ? "Getting ready" : "Developing", "", -1, camera && !planOnly);
+        int type = planOnly ? ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA : ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
         if (camera) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
         try {
             startForeground(NOTIF_ID, n, type);
@@ -404,13 +525,18 @@ public final class CaptureService extends Service implements SessionController.H
         }
     }
 
-    private void acquireLocks(boolean proximity) {
+    private void acquireCpu() {
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (cpuLock == null) {
             cpuLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nightsky:session");
             cpuLock.setReferenceCounted(false);
         }
         cpuLock.acquire(4 * 60 * 60 * 1000L);
+    }
+
+    private void acquireLocks(boolean proximity) {
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        acquireCpu();
         if (proximity && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
             if (proximityLock == null) {
                 proximityLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "nightsky:screen");
@@ -446,6 +572,10 @@ public final class CaptureService extends Service implements SessionController.H
         lastPhase = s.phase;
         lastNotifyMs = now;
         if (!foreground || keepingForViewer) return;
+        // between a plan's sessions the plan's own notification stays
+        boolean ended = s.phase == SessionController.Phase.IDLE || s.phase == SessionController.Phase.DONE
+                || s.phase == SessionController.Phase.FAILED;
+        if (ended && plans.armed() && !plans.running()) return;
         boolean capturing = s.phase.ordinal() <= SessionController.Phase.PAUSED.ordinal();
         nm.notify(NOTIF_ID, build(s.headline, s.detail, s.progress, capturing));
     }
@@ -466,8 +596,19 @@ public final class CaptureService extends Service implements SessionController.H
             @Override
             public void run() {
                 SessionController.Status s = controller.status();
-                if (s.phase == SessionController.Phase.DONE || s.phase == SessionController.Phase.FAILED) {
+                boolean keep = plans.onIdle(s);
+                // a scheduled session's photo goes into the morning summary instead
+                if (!s.scheduled && (s.phase == SessionController.Phase.DONE || s.phase == SessionController.Phase.FAILED)) {
                     nm.notify(NOTIF_ID + 1, build(s.headline, s.detail, -1, false));
+                }
+                if (keep) {
+                    // the plan waits for its next start: the camera is closed, the CPU may sleep
+                    releaseLocks();
+                    RemoteHost rv = remote;
+                    boolean watched = rv != null && rv.running() && rv.watching();
+                    // the developed picture is large: let it go unless someone is looking at it (app or viewer)
+                    if (s.scheduled && !watched && !MainActivity.visible) controller.clearResult();
+                    return;
                 }
                 RemoteHost r = remote;
                 if (r != null && r.running() && r.watching() && foreground) {
@@ -484,10 +625,11 @@ public final class CaptureService extends Service implements SessionController.H
         });
     }
 
-    /** Nothing runs any more: let go of the locks and the foreground state. */
+    /** Nothing runs any more: let go of the locks and the foreground state (not while a plan is armed). */
     private void finishIdle() {
         keepingForViewer = false;
         releaseLocks();
+        if (plans.armed()) return;
         if (foreground) {
             stopForeground(STOP_FOREGROUND_REMOVE);
             foreground = false;
@@ -548,6 +690,7 @@ public final class CaptureService extends Service implements SessionController.H
 
     @Override
     public void onDestroy() {
+        if (instance == this) instance = null;
         stopRemote();
         releaseLocks();
         controller.shutdown();

@@ -23,6 +23,7 @@ import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
+import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Progress;
@@ -38,6 +39,7 @@ import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.SkyGuide;
+import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
 
@@ -95,6 +97,29 @@ final class SessionController {
         boolean keepSatellites;
         /** Start no earlier than this (Unix ms; 0 for as soon as it's ready): the quietest stretch, chosen on the home screen. */
         long startAtMs;
+        /** Why it starts at {@link #startAtMs}, for the screen and the log; empty for the quietest stretch for satellites. */
+        String startWhy = "";
+        /**
+         * Part of a night's plan (E2): nobody is watching, so it doesn't wait for anyone after a warning, it gives up
+         * if the phone isn't lying still, and how it ended goes back to the plan ({@link Status#outcome}).
+         */
+        boolean scheduled;
+        /** Start only if the test frame shows enough stars; otherwise end with {@link NightPlan.Outcome#CLOUDY}. */
+        boolean onlyIfClear;
+        /** Share of the catalogue's stars this site shows on a clear night (NaN: not known yet), for "only if clear". */
+        double clearBaseline = Double.NaN;
+        /** Stop capturing at this time (Unix ms; 0: no end time). */
+        long endAtMs;
+        /** Stop when the Sun climbs above 18 degrees below the horizon. */
+        boolean stopAtDawn;
+        /** Stop capturing below this battery level (%), and don't start below it when scheduled. */
+        int minBatteryPct = 5;
+        /** Give up waiting for the phone to lie still and screen-down after this long (ms; 0: wait for ever). */
+        long placeTimeoutMs;
+        /** Keep capturing until this many seconds of clear frames are in (0: off), for at most maxDurationSec. */
+        int clearTargetSec, maxDurationSec;
+        /** The preset or plan entry it came from, for the log ("" if none). */
+        String origin = "";
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -120,10 +145,20 @@ final class SessionController {
         Preflight.Report preflight;
         /** Failed for want of storage: the screen offers to free some. */
         boolean storageShort;
+        /** How the last session or attempt ended (null while one runs, or before the first), and the details. */
+        NightPlan.Outcome outcome;
+        String outcomeDetail = "";
+        /** Part of a night's plan. */
+        boolean scheduled;
     }
 
     static final class Result {
-        String summary = "", name = "";
+        /** The photo's file name (without extension), and the session folder's name. */
+        String summary = "", name = "", session = "";
+        /** When the capture began (Unix ms, 0 if unknown), how long it ran (s) and whether it was star trails. */
+        long startedMs;
+        int durationSec;
+        boolean trails;
         Uri jpeg, dng, log;
         boolean canAdjust;
         float brightness;
@@ -240,6 +275,17 @@ final class SessionController {
     private long testSentMs, graceUntilMs;
     private Preflight.Report preflightReport;
     private boolean startedAfterWarnings, storageShort;
+    /** How the last session or attempt ended, for the plan (null while one runs). */
+    private NightPlan.Outcome outcome;
+    private String outcomeDetail = "";
+    /** Scheduled: when the wait for the phone to lie still began (0: not waiting), and whether it was said. */
+    private long placeSinceMs;
+    private boolean movedSaid;
+    /** Scheduled starts and stop conditions, for the session's log. */
+    private String planLog = "";
+    /** Why the capture stopped before its planned end, for the report (empty if it didn't). */
+    private String stopReason = "";
+    private long stopCheckMs, sunCheckMs, batteryCheckMs;
     /**
      * Waiting to start (a bright satellite to let pass, or the stretch chosen on the home screen): the countdown
      * begins at this time (Unix ms), so that the capture starts when planned; why, for the screen.
@@ -267,6 +313,8 @@ final class SessionController {
     private int inFlight, framesDone, framesDropped, consecutiveFailures, restarts, awayTicks;
     private boolean firstFrameChecked;
     private long captureStartMs, lastProgressMs, pausedAtMs, pausedTotalMs;
+    /** When the capture began by the wall clock (for Repeat tomorrow), 0 before it has. */
+    private long captureStartWallMs;
     /** The hottest the phone said it got during the capture (PowerManager thermal status), and when it first
      *  got severely hot (Unix ms, 0 if never). */
     private int thermalMax;
@@ -714,8 +762,18 @@ final class SessionController {
         if (!s.fromViewer) muted = false;
         token++;
         resetCapture();
+        outcome = null;
+        outcomeDetail = "";
         phase = Phase.STARTING;
-        publish("Getting the camera ready", "", -1);
+        publish(s.scheduled ? "Scheduled session: getting the camera ready" : "Getting the camera ready", "", -1);
+        if (s.scheduled) {
+            BatteryInfo b = BatteryInfo.read(ctx);
+            if (!b.charging && b.pct >= 0 && b.pct < s.minBatteryPct) {
+                endAttempt(NightPlan.Outcome.LOW_BATTERY, String.format(Locale.US, "the battery was at %d%%, below the %d%% set for scheduled sessions",
+                        b.pct, s.minBatteryPct));
+                return;
+            }
+        }
         CameraManager cm = (CameraManager) ctx.getSystemService(Context.CAMERA_SERVICE);
         try {
             cameraId = CameraRig.pickCamera(cm);
@@ -746,6 +804,18 @@ final class SessionController {
             plan = ExposurePlan.make(spec.model.fx, place != null ? place.latDeg : ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
                     prefs.verifiedExposureNs(cameraId), prefs.clampDeliveredNs(cameraId), isoStart, isoMin, spec.white);
             String space = checkSpace();
+            if (space != null && s.scheduled) {
+                // nobody is there to free space: a shorter session that fits beats none
+                int fits = secondsThatFit();
+                if (fits >= 300) {
+                    planLog += (planLog.isEmpty() ? "" : "\n") + String.format(Locale.US,
+                            "decision: shortened from %d to %d minutes to fit the free storage (%.1f GB)", s.durationSec / 60, fits / 60,
+                            freeBytes() / 1e9);
+                    s.durationSec = fits;
+                    plan.setDuration(fits);
+                    space = null;
+                }
+            }
             if (space != null) {
                 storageShort = true;
                 fail(space);
@@ -835,6 +905,16 @@ final class SessionController {
         return unitBytes * (units + 2) + (400L << 20);
     }
 
+    /** The longest session the free storage holds (seconds), for a scheduled session that doesn't fit. */
+    private int secondsThatFit() {
+        long free = freeBytes();
+        if (free < 0) return settings.durationSec;
+        long unitBytes = 2L * spec.width * spec.height;
+        long units = (free - (400L << 20)) / unitBytes - 2;
+        if (units <= 0) return 0;
+        return (int) Math.min(settings.durationSec, units * plan.framesPerUnit * plan.frameExpNs / 1_000_000_000L);
+    }
+
     private long freeBytes() {
         try {
             return new StatFs(root.getAbsolutePath()).getAvailableBytes();
@@ -871,6 +951,7 @@ final class SessionController {
     private void resetCapture() {
         reqs.clear();
         tsToSeq.clear();
+        captureStartWallMs = 0;
         inFlight = 0;
         framesDone = 0;
         framesDropped = 0;
@@ -894,6 +975,13 @@ final class SessionController {
         preflightReport = null;
         startedAfterWarnings = false;
         storageShort = false;
+        placeSinceMs = 0;
+        movedSaid = false;
+        planLog = "";
+        stopReason = "";
+        stopCheckMs = 0;
+        sunCheckMs = 0;
+        batteryCheckMs = 0;
         waitUntilWallMs = 0;
         waitWhy = "";
         waitLog = "";
@@ -937,6 +1025,8 @@ final class SessionController {
                 if (forced || motion.faceDown()) {
                     phase = Phase.STEADY;
                     publish("Hold still", "Starting once the phone is still", -1);
+                } else if (settings.scheduled) {
+                    placeWait(now);
                 }
                 break;
             case STEADY:
@@ -944,8 +1034,11 @@ final class SessionController {
                     phase = Phase.PLACE;
                     publishPlace();
                 } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
-                    if (settings.preflight && !forced) startPreflight(now);
+                    placeSinceMs = 0;
+                    if ((settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
                     else proceed(now);
+                } else if (settings.scheduled) {
+                    placeWait(now);
                 }
                 break;
             case PREFLIGHT:
@@ -1039,11 +1132,13 @@ final class SessionController {
                 if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
                 noteThermal(now);
                 if (phase == Phase.CAPTURING) satCountdown();
+                if (phase == Phase.CAPTURING) checkStops(now);
                 break;
             case PAUSED:
                 if (forced ? motion.quietNs() >= STILL_NS : motion.stillNs() >= STILL_NS) resume();
                 else if (now - pausedAtMs > MAX_PAUSE_MS) finishCapture("the phone was not put back down");
                 else if (now - lastPublishMs >= 1000) publishCapture();
+                if (phase == Phase.PAUSED) checkStops(now);
                 break;
             default:
                 break;
@@ -1051,9 +1146,77 @@ final class SessionController {
     }
 
     private void publishPlace() {
+        if (settings.scheduled) {
+            publish("Scheduled session: lay the phone screen-down", "The back camera must face the sky. It starts once the phone is "
+                    + "still" + (settings.placeTimeoutMs > 0 ? ", or tries again later." : "."), -1);
+            return;
+        }
         publish("Lay the phone screen-down", settings.preflight && !forced
                 ? "The back camera must face the sky. Once the phone is still it checks the sky, then starts by itself."
                 : "The back camera must face the sky. It starts by itself once the phone is still.", -1);
+    }
+
+    /**
+     * A scheduled start finds the phone moved (not lying still, screen-down): it says so once, waits, and after
+     * {@link Settings#placeTimeoutMs} hands back to the plan, which tries again later.
+     */
+    private void placeWait(long now) {
+        if (placeSinceMs == 0) placeSinceMs = now;
+        if (!movedSaid && now - placeSinceMs > 4000) {
+            movedSaid = true;
+            planLog += (planLog.isEmpty() ? "" : "\n") + "scheduled start: the phone wasn't lying still, screen-down; waiting for it";
+            android.util.Log.i("NightSky", "scheduled start: the phone has been moved");
+            if (sounds != null) sounds.say("The phone has been moved. Lay it screen-down, camera to the sky, to start.", null);
+        }
+        if (settings.placeTimeoutMs > 0 && now - placeSinceMs > settings.placeTimeoutMs) {
+            endAttempt(NightPlan.Outcome.NOT_PLACED, String.format(Locale.US, "The phone wasn't lying still and screen-down for %d minutes",
+                    Math.round(settings.placeTimeoutMs / 60_000.0)));
+        }
+    }
+
+    /**
+     * Every few seconds while capturing: the session's stop conditions. Each develops what was captured: the
+     * end time, the sky brightening at dawn, a low battery, storage running out, the phone overheating.
+     */
+    private void checkStops(long now) {
+        if (now - stopCheckMs < 5000) return;
+        stopCheckMs = now;
+        long wall = System.currentTimeMillis();
+        if (settings.endAtMs > 0 && wall >= settings.endAtMs) {
+            stopEarly("it reached its end time, " + clockTime(settings.endAtMs));
+            return;
+        }
+        if (settings.stopAtDawn && sky.located() && now - sunCheckMs >= 60_000L) {
+            sunCheckMs = now;
+            double alt = Tonight.sunAlt(wall, sky.latDeg * Astro.DEG, sky.lonDeg * Astro.DEG);
+            if (alt > Tonight.DARK_DEG) {
+                stopEarly(String.format(Locale.US, "dawn: the Sun rose to %.0f degrees below the horizon and the sky began to brighten", -alt));
+                return;
+            }
+        }
+        if (settings.minBatteryPct > 0 && now - batteryCheckMs >= 30_000L) {
+            batteryCheckMs = now;
+            BatteryInfo b = BatteryInfo.read(ctx);
+            if (!b.charging && b.pct >= 0 && b.pct < settings.minBatteryPct) {
+                stopEarly(String.format(Locale.US, "the battery fell to %d%% (sessions stop below %d%%)", b.pct, settings.minBatteryPct));
+                return;
+            }
+        }
+        long free = freeBytes();
+        if (free >= 0 && spec != null && free < 2L * spec.width * spec.height * 3 + (300L << 20)) {
+            stopEarly(String.format(Locale.US, "storage ran low (%.1f GB free)", free / 1e9));
+            return;
+        }
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm != null && pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_CRITICAL) {
+            stopEarly("the phone got critically hot");
+        }
+    }
+
+    private void stopEarly(String why) {
+        stopReason = why;
+        log("decision: stopped early: " + why);
+        finishCapture(why);
     }
 
     private void startCountdown(long now) {
@@ -1086,8 +1249,13 @@ final class SessionController {
         }
         if (settings.startAtMs > at) {
             at = settings.startAtMs;
-            why = "Starts at " + clockTime(at) + ", the quietest stretch for satellites";
-            reason = "the quietest stretch for satellites, picked on the home screen";
+            if (settings.startWhy.isEmpty()) {
+                why = "Starts at " + clockTime(at) + ", the quietest stretch for satellites";
+                reason = "the quietest stretch for satellites, picked on the home screen";
+            } else {
+                why = "Starts at " + clockTime(at) + ", " + settings.startWhy;
+                reason = settings.startWhy;
+            }
         }
         long lead = countdownLeadMs();
         if (forced || at - lead - wall < 2000) {
@@ -1132,7 +1300,8 @@ final class SessionController {
         StringBuilder w = new StringBuilder();
         boolean satWait = p != null && p.waits();
         if (!satWait && settings.startAtMs - System.currentTimeMillis() > countdownLeadMs() + 15_000L) {
-            w.append("I'll start at ").append(sayTime(settings.startAtMs)).append(", the quietest few minutes for satellites.");
+            w.append("I'll start at ").append(sayTime(settings.startAtMs))
+                    .append(settings.startWhy.isEmpty() ? ", the quietest few minutes for satellites." : ", as planned.");
         }
         if (p != null && !p.spoken.isEmpty()) w.append(w.length() > 0 ? " " : "").append(p.spoken);
         return w.toString();
@@ -1341,8 +1510,21 @@ final class SessionController {
         }
         preflightReport = rep;
         android.util.Log.i("NightSky", "pre-flight (" + rep.millis + " ms): " + rep.spoken() + "\n" + rep.describe());
+        if (settings.onlyIfClear) {
+            Preflight.Clear c = Preflight.clearEnough(rep, settings.clearBaseline);
+            String line = "only if clear: " + c.seen + (c.clear ? ": clear enough, starting" : ": not clear enough");
+            android.util.Log.i("NightSky", line);
+            if (!c.clear) {
+                endAttempt(NightPlan.Outcome.CLOUDY, capital(c.seen));
+                return;
+            }
+            planLog += (planLog.isEmpty() ? "" : "\n") + "decision: " + line;
+        }
         final Preflight.Item stop = rep.stop();
-        final boolean warn = rep.hasWarnings();
+        final boolean warn = rep.hasWarnings() && !settings.scheduled;
+        if (rep.hasWarnings() && settings.scheduled) {
+            planLog += (planLog.isEmpty() ? "" : "\n") + "decision: started despite the pre-flight warnings: a scheduled session has nobody there to fix them";
+        }
         pfStep = PF_SPEAK;
         String say = rep.spoken();
         String later = stop != null ? "" : startWords(rep);
@@ -1500,6 +1682,15 @@ final class SessionController {
             fail("Could not create the session folder: " + e.getMessage());
             return;
         }
+        if (settings.endAtMs > 0) {
+            int left = (int) ((settings.endAtMs - System.currentTimeMillis()) / 1000);
+            if (left < settings.durationSec) {
+                settings.durationSec = Math.max(60, left);
+                plan.setDuration(settings.durationSec);
+                log(String.format(Locale.US, "decision: %d minutes left until the end time (%s): %d frames", Math.round(left / 60f),
+                        clockTime(settings.endAtMs), plan.frames));
+            }
+        }
         BatteryInfo b = BatteryInfo.read(ctx);
         batteryAtStart = b.charging ? -1 : b.pct;
         batteryAtStartMs = SystemClock.elapsedRealtime();
@@ -1510,6 +1701,7 @@ final class SessionController {
         if (settings.keepSatellites && sp != null) countdownPasses.addAll(sp.countdown);
         phase = Phase.CAPTURING;
         captureStartMs = SystemClock.elapsedRealtime();
+        captureStartWallMs = System.currentTimeMillis();
         lastProgressMs = captureStartMs;
         publishCapture();
         submitNext();
@@ -1576,6 +1768,19 @@ final class SessionController {
                     : "satellites: their streaks are taken out of the stack");
         }
         if (!waitLog.isEmpty()) store.log(waitLog);
+        if (!settings.origin.isEmpty()) store.log(settings.origin);
+        if (settings.scheduled) {
+            store.log(String.format(Locale.US, "scheduled session: %s; stops below %d%% battery%s%s", settings.sounds ? "with sounds" : "silent",
+                    settings.minBatteryPct, settings.endAtMs > 0 ? ", at " + clockTime(settings.endAtMs) : "",
+                    settings.stopAtDawn ? ", at dawn" : ""));
+        }
+        for (String l : planLog.split("\n")) if (!l.isEmpty()) store.log(l);
+        if (settings.clearTargetSec > 0) {
+            store.log(String.format(Locale.US, "collecting %d clear minutes (for at most %d minutes)", Math.round(settings.clearTargetSec / 60f),
+                    Math.round(settings.maxDurationSec / 60f)));
+        }
+        p.setProperty("scheduled", Boolean.toString(settings.scheduled));
+        store.writeSettings(p);
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
         liveSpec = spec;
@@ -1635,8 +1840,55 @@ final class SessionController {
         info.focus = fd != null ? fd : 0f;
         up.submit(r.buf, info);
         framesDone++;
-        if (framesDone >= plan.frames) finishCapture(null);
+        if (framesDone >= plan.frames && !moreForClearSky()) finishCapture(null);
         else submitNext();
+    }
+
+    /**
+     * "Collect N clear minutes" (the Partly cloudy preset): at the planned end, if the frames judged clear so far
+     * (those not judged yet counted as clear) add up to less than the target, capture on, up to the longest
+     * allowed. True if it goes on.
+     */
+    private boolean moreForClearSky() {
+        if (settings.clearTargetSec <= 0) return false;
+        double unitSec = plan.unitExpNs() / 1e9;
+        List<LiveStats.Unit> us = liveStats.from(0);
+        double clear = 0;
+        for (LiveStats.Unit u : us) if (u.ok && u.reason == null) clear += unitSec;
+        int pending = Math.max(0, framesDone / plan.framesPerUnit - us.size());
+        clear += pending * unitSec;
+        long now = SystemClock.elapsedRealtime();
+        long ran = now - captureStartMs - pausedTotalMs;
+        if (clear >= settings.clearTargetSec) {
+            if (settings.durationSec > 0 && ran > settings.durationSec * 1000L + 30_000L) {
+                log(String.format(Locale.US, "decision: %.1f clear minutes collected: done", clear / 60));
+            }
+            return false;
+        }
+        long maxMs = Math.max(settings.durationSec, settings.maxDurationSec) * 1000L;
+        if (ran >= maxMs - plan.frameExpNs / 1_000_000L) {
+            log(String.format(Locale.US, "decision: only %.1f of %d clear minutes by the longest it may run (%d minutes): developing what there is",
+                    clear / 60, Math.round(settings.clearTargetSec / 60f), Math.round(maxMs / 60_000f)));
+            return false;
+        }
+        if (settings.endAtMs > 0 && System.currentTimeMillis() >= settings.endAtMs) return false;
+        double needSec = settings.clearTargetSec - clear;
+        int extra = (int) Math.ceil(needSec * 1e9 / plan.frameExpNs);
+        extra = (int) Math.max(plan.framesPerUnit, Math.min(extra, (maxMs - ran) * 1_000_000L / plan.frameExpNs));
+        extra = (extra + plan.framesPerUnit - 1) / plan.framesPerUnit * plan.framesPerUnit;
+        long unitBytes = 2L * spec.width * spec.height;
+        long need = unitBytes * (extra / plan.framesPerUnit + 2) + (400L << 20);
+        long free = freeBytes();
+        if (free >= 0 && free < need) {
+            log("decision: not enough storage to capture longer for clear sky");
+            return false;
+        }
+        plan.frames += extra;
+        settings.durationSec += (int) Math.round(extra * plan.frameExpNs / 1e9);
+        log(String.format(Locale.US, "decision: %.1f of %d clear minutes so far (clouds): %d more frames, %d minutes in all",
+                clear / 60, Math.round(settings.clearTargetSec / 60f), extra, Math.round(settings.durationSec / 60f)));
+        publishCapture();
+        return true;
     }
 
     private void replanAfterClamp(long deliveredNs) {
@@ -1995,6 +2247,9 @@ final class SessionController {
             p.setProperty("capture.framesDropped", Integer.toString(framesDropped));
             p.setProperty("capture.thermalMax", Integer.toString(thermalMax));
             if (thermalSevereAtMs > 0) p.setProperty("capture.thermalSevereAtMs", Long.toString(thermalSevereAtMs));
+            if (!stopReason.isEmpty()) p.setProperty("capture.stopReason", stopReason);
+            if (captureStartWallMs > 0) p.setProperty("capture.startWallMs", Long.toString(captureStartWallMs));
+            p.setProperty("capture.durationSec", Integer.toString(settings.durationSec));
             st.writeSettings(p);
         } catch (IOException e) {
             st.log("could not note the capture's details: " + e.getMessage());
@@ -2145,6 +2400,10 @@ final class SessionController {
             final Result r = new Result();
             r.summary = o.summary;
             r.name = name;
+            r.session = st.dir.getName();
+            r.trails = trails;
+            r.startedMs = parseLong(props.getProperty("capture.startWallMs"));
+            r.durationSec = (int) parseLong(props.getProperty("capture.durationSec", props.getProperty("durationSec")));
             r.jpeg = jpeg;
             r.dng = dng;
             r.log = log;
@@ -2170,6 +2429,8 @@ final class SessionController {
                     preview = decorate(bmp);
                     previewVersion++;
                     phase = Phase.DONE;
+                    outcome = NightPlan.Outcome.DONE;
+                    outcomeDetail = doneWords(r, out);
                     publish(trails ? "Your star trails are ready" : "Your photo is ready", r.summary, -1);
                     if (snd != null) {
                         snd.say(r.report != null ? r.report.spoken : spoken(out), new Runnable() {
@@ -2188,6 +2449,8 @@ final class SessionController {
                 @Override
                 public void run() {
                     phase = Phase.IDLE;
+                    outcome = NightPlan.Outcome.CANCELLED;
+                    outcomeDetail = "Developing was cancelled; the frames are kept";
                     publish("Cancelled", "The frames are kept: you can develop them later from the start screen.", -1);
                     if (snd != null) snd.release();
                     host.onIdle();
@@ -2248,12 +2511,31 @@ final class SessionController {
         }
     }
 
+    private static long parseLong(String s) {
+        try {
+            return s == null ? 0 : Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     private static double parseDouble(String s) {
         try {
             return s == null ? Double.NaN : Double.parseDouble(s);
         } catch (NumberFormatException e) {
             return Double.NaN;
         }
+    }
+
+    /** "18 good frames, like a 4-minute exposure. Thin cloud after 11:40." for the plan's summary. */
+    private static String doneWords(Result r, PostProcessor.Output o) {
+        String s = r.report != null ? r.report.spoken : spoken(o);
+        if (s.startsWith("Done. ")) s = s.substring(6);
+        return s.isEmpty() ? r.summary : s;
+    }
+
+    private static String capital(String s) {
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
     private static String spoken(PostProcessor.Output o) {
@@ -2323,7 +2605,34 @@ final class SessionController {
         up = null;
         store = null;
         phase = Phase.IDLE;
+        outcome = NightPlan.Outcome.CANCELLED;
+        outcomeDetail = "Cancelled";
         publish("", "", -1);
+        host.onCaptureEnded();
+        host.onIdle();
+    }
+
+    /**
+     * A scheduled attempt that didn't start: too cloudy, the phone not lying still, the battery too low. The
+     * camera closes and the plan decides what next (another try later, or the next session).
+     */
+    private void endAttempt(NightPlan.Outcome o, String detail) {
+        android.util.Log.i("NightSky", "scheduled attempt ended: " + o + ": " + detail);
+        token++;
+        startToken++;
+        stopLocating();
+        abortInFlight();
+        releaseCapture();
+        if (up != null) up.abort();
+        if (store != null) store.deleteAll();
+        up = null;
+        store = null;
+        phase = Phase.IDLE;
+        outcome = o;
+        outcomeDetail = detail;
+        String head = o == NightPlan.Outcome.CLOUDY ? "Not clear enough to start"
+                : o == NightPlan.Outcome.NOT_PLACED ? "The phone wasn't lying still" : "Not started";
+        publish(head, detail, -1);
         host.onCaptureEnded();
         host.onIdle();
     }
@@ -2340,6 +2649,8 @@ final class SessionController {
         }
         store = null;
         phase = Phase.FAILED;
+        outcome = NightPlan.Outcome.FAILED;
+        outcomeDetail = msg;
         publish("Something went wrong", msg, -1);
         host.onCaptureEnded();
         host.onIdle();
@@ -2455,6 +2766,9 @@ final class SessionController {
         s.latestVersion = latestVersion;
         s.preflight = preflightReport;
         s.storageShort = storageShort;
+        s.outcome = outcome;
+        s.outcomeDetail = outcomeDetail;
+        s.scheduled = settings != null && settings.scheduled;
         return s;
     }
 

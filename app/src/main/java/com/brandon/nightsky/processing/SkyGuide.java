@@ -43,6 +43,24 @@ public final class SkyGuide {
 
     private SkyGuide() {}
 
+    /** What a saved report says about the picture (see {@link ReportCard#toJson()}). */
+    static SkyGuide fromJson(com.brandon.nightsky.remote.JsonTree.Obj o) {
+        SkyGuide g = new SkyGuide();
+        g.centre = o.str("centre", "");
+        g.placed = o.bool("placed", false);
+        g.lines.addAll(o.strs("lines"));
+        for (com.brandon.nightsky.remote.JsonTree.Obj x : o.objs("items")) {
+            Item it = new Item(x.str("kind", ""), x.str("name", ""));
+            it.where = x.str("where", "");
+            it.mag = x.num("mag", Double.NaN);
+            it.x = x.num("x", Double.NaN);
+            it.y = x.num("y", Double.NaN);
+            it.share = x.num("share", Double.NaN);
+            g.items.add(it);
+        }
+        return g;
+    }
+
     /** Galactic to J2000 equatorial: rows are the directions of l = 0, l = 90 and the north galactic pole. */
     private static final double[] GAL = {
             -0.0548755604, -0.8734370902, -0.4838350155,

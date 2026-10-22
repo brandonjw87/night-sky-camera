@@ -195,7 +195,13 @@ final class RemoteHost implements RemoteServer.Backend {
         Json j = new Json().obj();
         j.put("app", "Night Sky " + BuildInfo.VERSION);
         j.put("state", stateOf(ph)).put("phase", ph.name());
-        j.put("headline", s.headline).put("detail", s.detail);
+        PlanRunner plan = service.plans();
+        if (ended && plan.armed() && !plan.running()) {
+            // between a night plan's sessions
+            j.put("headline", "Night plan armed").put("detail", "Next: " + plan.nextText());
+        } else {
+            j.put("headline", s.headline).put("detail", s.detail);
+        }
         j.put("mode", s.trails ? "trails" : "deep");
         j.put("progress", s.progress);
         j.put("frame", Math.min(s.planned, s.done + (ph == SessionController.Phase.CAPTURING ? 1 : 0))).put("frames", s.planned);
@@ -272,6 +278,9 @@ final class RemoteHost implements RemoteServer.Backend {
         j.put("mute", s.soundsOn && !ended);
         j.put("arm", ended && service.canArmFromViewer());
         j.end();
+
+        String pj = plan.viewerJson();
+        if (pj != null) j.raw("plan", pj);
 
         if (s.result != null) {
             j.obj("result").put("summary", s.result.summary).put("name", s.result.name);

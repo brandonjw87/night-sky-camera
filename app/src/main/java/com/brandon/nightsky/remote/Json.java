@@ -83,6 +83,12 @@ public final class Json {
         return val(v);
     }
 
+    /** A number to {@code digits} significant digits (places and the like, where 4 aren't enough). */
+    public Json put(String name, double v, int digits) {
+        name(name);
+        return val(v, digits);
+    }
+
     /** Inserts already-encoded JSON as the value of {@code name}. */
     public Json raw(String name, String json) {
         name(name);
@@ -109,6 +115,14 @@ public final class Json {
         if (Double.isNaN(v) || Double.isInfinite(v)) sb.append("null");
         else if (v == Math.rint(v) && Math.abs(v) < 1e15) sb.append((long) v);
         else sb.append(String.format(Locale.US, "%.4g", v));
+        return this;
+    }
+
+    public Json val(double v, int digits) {
+        sep();
+        if (Double.isNaN(v) || Double.isInfinite(v)) sb.append("null");
+        else if (v == Math.rint(v) && Math.abs(v) < 1e15) sb.append((long) v);
+        else sb.append(String.format(Locale.US, "%." + Math.max(1, Math.min(17, digits)) + "g", v));
         return this;
     }
 

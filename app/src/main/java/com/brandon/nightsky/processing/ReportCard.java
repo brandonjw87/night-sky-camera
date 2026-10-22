@@ -1,6 +1,7 @@
 package com.brandon.nightsky.processing;
 
 import com.brandon.nightsky.remote.Json;
+import com.brandon.nightsky.remote.JsonTree;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -1128,7 +1129,7 @@ public final class ReportCard {
         j.obj("gain").put("text", gain).put("nEff", round(nEff, 2)).put("measured", gainMeasured)
                 .put("noiseDown", round(noiseDown, 2)).put("idealDown", round(idealDown, 2))
                 .put("equivalentSeconds", Math.round(equivalentSec));
-        NoiseProbe.Result nr = in.out.noise;
+        NoiseProbe.Result nr = in != null ? in.out.noise : null;
         if (nr != null) {
             j.put("sigmaFrame", round(nr.sigmaFrame, 4)).put("sigmaStack", round(nr.sigmaStack, 4)).put("blocks", nr.blocks)
                     .put("frameUnit", in.out.noiseUnit);
@@ -1136,7 +1137,7 @@ public final class ReportCard {
         j.end();
         j.obj("registration").put("text", registration).put("confidence", confidence).put("matchedMean", round(matchedMean, 1))
                 .put("residualPx", round(residualMean, 3)).put("aligned", alignedFrames).put("fallback", fallbackFrames);
-        if (in.out.solution != null) j.put("catalogStars", in.out.solution.matched);
+        if (in != null && in.out.solution != null) j.put("catalogStars", in.out.solution.matched);
         j.end();
         j.arr("frames");
         for (Frame f : frames) {
@@ -1177,6 +1178,77 @@ public final class ReportCard {
         j.put("tip", tip).put("spoken", spoken);
         j.end();
         return j.toString();
+    }
+
+    /**
+     * A saved report read back (from a session's report.json), for the morning summary and old sessions: what
+     * the report screen shows. Throws IllegalArgumentException if it isn't a report.
+     */
+    public static ReportCard fromJson(String json) {
+        JsonTree.Obj o = JsonTree.object(json);
+        ReportCard r = new ReportCard();
+        r.headline = o.str("headline", "");
+        for (JsonTree.Obj x : o.objs("problems")) {
+            Problem p = new Problem(x.str("key", ""), x.str("title", ""), x.num("impact", 0));
+            p.evidence = x.str("evidence", "");
+            p.fix = x.str("fix", "");
+            p.spoken = x.str("spoken", "");
+            r.problems.add(p);
+        }
+        r.notes.addAll(o.strs("notes"));
+        JsonTree.Obj g = o.obj("gain");
+        if (g != null) {
+            r.gain = g.str("text", "");
+            r.nEff = g.num("nEff", Double.NaN);
+            r.gainMeasured = g.bool("measured", false);
+            r.noiseDown = g.num("noiseDown", Double.NaN);
+            r.idealDown = g.num("idealDown", Double.NaN);
+            r.equivalentSec = g.num("equivalentSeconds", Double.NaN);
+        }
+        JsonTree.Obj reg = o.obj("registration");
+        if (reg != null) {
+            r.registration = reg.str("text", "");
+            r.confidence = reg.str("confidence", "");
+            r.matchedMean = reg.num("matchedMean", Double.NaN);
+            r.residualMean = reg.num("residualPx", Double.NaN);
+            r.alignedFrames = reg.integer("aligned", 0);
+            r.fallbackFrames = reg.integer("fallback", 0);
+        }
+        List<JsonTree.Obj> fl = o.objs("frames");
+        r.frames = new Frame[fl.size()];
+        for (int k = 0; k < fl.size(); k++) {
+            JsonTree.Obj x = fl.get(k);
+            Frame f = new Frame();
+            f.index = x.integer("index", k + 1);
+            f.score = x.integer("score", 0);
+            f.time = x.str("time", "");
+            f.used = x.bool("used", true);
+            f.partly = x.bool("partly", false);
+            f.reason = x.str("reason", "");
+            r.frames[k] = f;
+        }
+        r.goodFrames = o.integer("goodFrames", 0);
+        JsonTree.Obj sky = o.obj("sky");
+        if (sky != null) r.sky = SkyGuide.fromJson(sky);
+        r.skyMag = o.num("skyMag", Double.NaN);
+        JsonTree.Obj st = o.obj("streaks");
+        if (st != null) {
+            r.streaks = st.str("text", "");
+            for (JsonTree.Obj x : st.objs("items")) {
+                Streak k = new Streak();
+                k.name = x.str("name", "");
+                k.frames = x.integer("frames", 0);
+                k.kept = x.bool("kept", false);
+                k.norad = x.integer("norad", 0);
+                k.time = x.str("time", "");
+                k.mag = x.num("mag", Double.NaN);
+                r.streakList.add(k);
+            }
+        }
+        r.conditions = o.str("conditions", "");
+        r.tip = o.str("tip", "");
+        r.spoken = o.str("spoken", "");
+        return r;
     }
 
     /** The report as plain text, for the log and the review screen. */
