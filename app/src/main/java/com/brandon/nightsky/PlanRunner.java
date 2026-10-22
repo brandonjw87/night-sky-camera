@@ -296,11 +296,13 @@ final class PlanRunner {
         Plans.save(svc, p);
         viewerJson = json(p, "", 0);
         version++;
+        Glance.refresh(svc);
     }
 
     private void publish() {
         viewerJson = plan != null ? json(plan, nextText, nextAtMs) : null;
         version++;
+        Glance.refresh(svc);
     }
 
     /** What the viewer shows of the plan. */

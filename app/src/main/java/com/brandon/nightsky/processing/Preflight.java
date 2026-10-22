@@ -113,6 +113,18 @@ public final class Preflight {
         public double zeroPointNorm = Double.NaN;
         /** Magnitudes the clearest stars lose against a clear night (haze, thin cloud, dew); NaN if unknown. */
         public double hazeMag = Double.NaN;
+        /** Zero point of the test frame itself (2.5 log10 of a star's flux plus its V magnitude); NaN if unknown. */
+        public double zeroPointFrame = Double.NaN;
+        /**
+         * Sky brightness over the central 20 degrees, magnitudes per square arcsecond (green, close to V): between the
+         * stars, and with them as a handheld meter (SQM-L) reads it. NaN without the stars' zero point.
+         */
+        public double skyMag = Double.NaN, skyMagWithStars = Double.NaN;
+        /** The faintest catalogue star matched in the frame (V magnitude); NaN without a solution. */
+        public double faintestMag = Double.NaN;
+        /** The test frame's exposure (s) and ISO. */
+        public double exposureS;
+        public int iso;
         public SkySolver.Solution solution;
         public double jdUtc = Double.NaN;
         public double latDeg = Double.NaN, lonDeg = Double.NaN;
@@ -212,6 +224,7 @@ public final class Preflight {
             j.end();
             j.put("clippedStars", clippedStars);
             j.put("zeroPointNorm", zeroPointNorm).put("hazeMag", hazeMag);
+            j.put("skyMag", skyMag).put("skyMagWithStars", skyMagWithStars);
             if (solution != null) {
                 double[] c = solution.direction(solution.model.cx, solution.model.cy);
                 double[] rd = Astro.raDec(c);
@@ -302,6 +315,8 @@ public final class Preflight {
     public static Report run(Input in) {
         long t0 = System.currentTimeMillis();
         Report rep = new Report();
+        rep.exposureS = in.exposureS;
+        rep.iso = in.iso;
         SensorSpec spec = in.spec;
         int W = spec.width, H = spec.height;
         CameraModel model = spec.model != null ? spec.model
@@ -342,6 +357,12 @@ public final class Preflight {
             SkySolver.Solution s = SkySolver.solve(stars, null, model, in.catalog, pr);
             if (s == null && pr.located()) s = SkySolver.solve(stars, null, model, in.catalog, null);
             rep.solution = s;
+            if (s != null) {
+                for (int k = 0; k < s.matched; k++) {
+                    float v = in.catalog.vmag[s.cat[k]];
+                    if (v < 30 && !(v <= rep.faintestMag)) rep.faintestMag = v;
+                }
+            }
             double[] p = s != null && !Double.isNaN(jd) && in.up != null ? placeFromStars(s, in.up, jd) : null;
             if (p != null) {
                 rep.starLatDeg = p[0];
@@ -389,6 +410,7 @@ public final class Preflight {
         checkSun(rep, utcMs, lat, lon, located);
         checkLens(in, rep, stars, black, noise);
         checkClouds(in, rep, stars, model, ob, camToEnu);
+        measureSky(in, rep, rep.solution != null && rep.solution.model != null ? rep.solution.model : model, black);
         checkObstruction(rep, ob);
         checkMoon(in, rep, utcMs, lat, lon, located, model, camToEnu);
         checkClipping(in, rep, stars, black, scale);
@@ -785,6 +807,7 @@ public final class Preflight {
             return;
         }
         double zp80 = zs[0];
+        rep.zeroPointFrame = zs[1];
         rep.zeroPointNorm = zs[1] - norm;
         // haze: how much dimmer than a clear night even the clearest stars here are (needs a clear night to compare)
         // (a smudged lens dims the stars' cores too: then the dimming isn't put down to haze)
@@ -876,6 +899,78 @@ public final class Preflight {
             rep.items.add(new Item("clouds", Level.OK, String.format(Locale.US, "Clear sky: %d of %d stars that should show do (%d%%)%s",
                     seen, expected, pct, baseline ? "" : "; haze not measured yet (no clear night to compare)"), "clear sky"));
         }
+    }
+
+    /**
+     * Sky brightness over the central 20 degrees of the test frame (H3): the frame's sky
+     * against the zero point of its catalogue stars, in magnitudes per square arcsecond. The stars' flux is
+     * summed in the detector's half-resolution green image, whose cells are 2 x 2 pixels, so a square arcsecond
+     * holds a quarter of a cell's sky over the pixel scale squared. Two values: between the stars (the median of
+     * the green pixels) and with them (their mean, single hot pixels left out), which is what a handheld meter
+     * reads. Lens shading is taken out as for the zero point. Nothing without the zero point.
+     */
+    static void measureSky(Input in, Report rep, CameraModel model, float[] black) {
+        if (Double.isNaN(rep.zeroPointFrame) || !(model.fx > 0)) return;
+        SensorSpec spec = in.spec;
+        int W = spec.width, H = spec.height;
+        double pix = 206264.806 / model.fx;
+        double r = model.fx * Math.tan(Math.toRadians(10));
+        ShadingMap sh = spec.shading;
+        double g0 = sh != null ? sh.gain(greenSite(spec), model.cx, model.cy) : 1;
+        int x0 = Math.max(1, (int) (model.cx - r)), x1 = Math.min(W - 2, (int) (model.cx + r));
+        int y0 = Math.max(1, (int) (model.cy - r)), y1 = Math.min(H - 2, (int) (model.cy + r));
+        if (x1 <= x0 || y1 <= y0) return;
+        // green pixels in the circle, shading taken out (each one's value, for the median)
+        int cap = (int) Math.min(Integer.MAX_VALUE - 8, (long) (x1 - x0 + 1) * (y1 - y0 + 1) / 2 + 2);
+        float[] v = new float[cap];
+        float[] gain = new float[4];
+        int n = 0;
+        double r2 = r * r;
+        for (int y = y0; y <= y1; y++) {
+            double dy = y + 0.5 - model.cy;
+            for (int x = x0; x <= x1; x++) {
+                int q = ((y & 1) << 1) | (x & 1);
+                if (spec.cfa[q] != 1) continue;
+                double dx = x + 0.5 - model.cx;
+                if (dx * dx + dy * dy > r2 || n >= cap) continue;
+                float g = sh != null ? (float) (sh.gain(q, x, y) / g0) : 1f;
+                v[n++] = ((in.raw[y * W + x] & 0xFFFF) * in.invScale - black[q]) * g;
+            }
+        }
+        if (n < 1000) return;
+        float[] tmp = Arrays.copyOf(v, n);
+        float med = Stats.median(tmp, n);
+        float sig = Math.max(0.3f, Stats.madSigma(tmp, n, med));
+        // the mean with the stars, a pixel far above the sky whose four (green) diagonal neighbours are near the sky
+        // being a hot pixel, not a star (a star spreads into them)
+        double sum = 0;
+        int m = 0;
+        for (int y = y0; y <= y1; y++) {
+            double dy = y + 0.5 - model.cy;
+            for (int x = x0; x <= x1; x++) {
+                int q = ((y & 1) << 1) | (x & 1);
+                if (spec.cfa[q] != 1) continue;
+                double dx = x + 0.5 - model.cx;
+                if (dx * dx + dy * dy > r2) continue;
+                float g = sh != null ? (float) (sh.gain(q, x, y) / g0) : 1f;
+                float val = ((in.raw[y * W + x] & 0xFFFF) * in.invScale - black[q]) * g;
+                if (val > med + 8 * sig) {
+                    float nb = Float.NEGATIVE_INFINITY;
+                    for (int k = 0; k < 4; k++) {
+                        int xx = x + ((k & 1) == 0 ? -1 : 1), yy = y + (k < 2 ? -1 : 1);
+                        int qq = ((yy & 1) << 1) | (xx & 1);
+                        nb = Math.max(nb, ((in.raw[yy * W + xx] & 0xFFFF) * in.invScale - black[qq]) * g);
+                    }
+                    if (nb < med + 2 * sig) val = med;
+                }
+                sum += val;
+                m++;
+            }
+        }
+        double mean = m > 0 ? sum / m : Double.NaN;
+        double area = 4 * pix * pix;
+        if (med > 0) rep.skyMag = rep.zeroPointFrame - 2.5 * Math.log10(med / area);
+        if (mean > 0) rep.skyMagWithStars = rep.zeroPointFrame - 2.5 * Math.log10(mean / area);
     }
 
     /** The green CFA site the background and photometry use. */

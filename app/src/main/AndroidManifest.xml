@@ -50,7 +50,42 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- long-press the app icon: 5-minute stack, star trails, quick look, sky reading -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- the "Night sky" Quick Settings tile: opens the app, over the lock screen if the phone is locked -->
+        <service
+            android:name=".NightTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- the home-screen widget: tonight's sky, the plan, the last photo and Arm -->
+        <receiver
+            android:name=".NightWidget"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_night_info" />
+        </receiver>
+
+        <!-- every two hours while a widget is placed: tonight's forecast, then the widget redrawn -->
+        <service
+            android:name=".SkyJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <service
             android:name=".CaptureService"

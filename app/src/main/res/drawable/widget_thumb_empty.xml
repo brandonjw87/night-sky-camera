@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No photo yet: a dark square with a small star. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path android:fillColor="#FF14090A" android:pathData="M0,0h64v64h-64z" />
+    <path android:fillColor="#FF9A2A25"
+        android:pathData="M32,20 L34.2,29.8 L44,32 L34.2,34.2 L32,44 L29.8,34.2 L20,32 L29.8,29.8 Z" />
+</vector>

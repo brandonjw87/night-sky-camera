@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quick look: a star and a lightning stroke. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFE53935"
+        android:pathData="M58,32 L42,57 L52,57 L48,76 L66,49 L56,49 Z" />
+    <path android:fillColor="#FFB33A35"
+        android:pathData="M36,36 L37.2,40.8 L42,42 L37.2,43.2 L36,48 L34.8,43.2 L30,42 L34.8,40.8 Z" />
+</vector>

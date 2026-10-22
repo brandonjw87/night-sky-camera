@@ -307,4 +307,38 @@ final class Prefs {
     void setLastResultUri(String uri) {
         sp.edit().putString("lastResult", uri).apply();
     }
+
+    /** The last photo's small picture (a file in the thumbnails folder, "" if none) and when it was taken (Unix ms). */
+    String lastThumb() {
+        return sp.getString("lastThumb", "");
+    }
+
+    long lastResultMs() {
+        return sp.getLong("lastResultMs", 0L);
+    }
+
+    void setLastThumb(String name, long takenMs) {
+        sp.edit().putString("lastThumb", name).putLong("lastResultMs", takenMs).apply();
+    }
+
+    /**
+     * Added to sky readings: a real meter's (SQM-L) reading minus this app's for the same sky, from a check against
+     * one (0: never checked).
+     */
+    double sqmOffset() {
+        return sp.getFloat("sqmOffset", 0f);
+    }
+
+    void setSqmOffset(double v) {
+        sp.edit().putFloat("sqmOffset", (float) v).apply();
+    }
+
+    /** The Quick Settings tile asks to unlock the phone first, instead of opening over the lock screen. */
+    boolean tileUnlocks() {
+        return sp.getBoolean("tileUnlocks", false);
+    }
+
+    void setTileUnlocks(boolean v) {
+        sp.edit().putBoolean("tileUnlocks", v).apply();
+    }
 }

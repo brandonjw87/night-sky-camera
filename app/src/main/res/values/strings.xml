@@ -3,4 +3,20 @@
     <string name="app_name">Night Sky</string>
     <string name="channel_name">Night sky capture</string>
     <string name="channel_desc">Shows progress while a night sky photo is being taken and developed</string>
+    <string name="tile_label">Night sky</string>
+    <string name="widget_desc">Tonight\'s sky, the night plan and the last photo, with Arm</string>
+    <string name="widget_thumb">The last photo</string>
+    <string name="widget_arm">Arm</string>
+    <string name="widget_window_preview">Tonight\'s score and best window</string>
+    <string name="widget_next_preview">The night plan and the last photo</string>
+    <string name="sc_stack5_short">5-min stack</string>
+    <string name="sc_stack5_long">Arm 5-minute stack</string>
+    <string name="sc_trails30_short">Trails 30 min</string>
+    <string name="sc_trails30_long">Star trails 30 min</string>
+    <string name="sc_quick_short">Quick look</string>
+    <string name="sc_quick_long">Quick look (2 minutes)</string>
+    <string name="sc_reading_short">Sky reading</string>
+    <string name="sc_reading_long">Sky reading (about 30 s)</string>
+    <string name="sc_plan_short">Tonight\'s plan</string>
+    <string name="sc_plan_long">Open tonight\'s plan</string>
 </resources>

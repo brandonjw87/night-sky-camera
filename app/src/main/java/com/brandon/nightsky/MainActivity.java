@@ -23,6 +23,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -32,6 +33,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -49,6 +51,7 @@ import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
 import com.brandon.nightsky.processing.SatPlanner;
 import com.brandon.nightsky.processing.SatSky;
+import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.remote.QrCode;
 
@@ -74,6 +77,17 @@ public final class MainActivity extends Activity {
     static final int QR_LIGHT = 0xFFFFCDD2;
     /** The screen is in front (the capture service keeps a scheduled session's result on screen while it is). */
     static volatile boolean visible;
+    /**
+     * Opened from the tile, the widget or a shortcut (E3): the data is nightsky://launch/what, where what is home,
+     * arm (start with the saved settings), stack5, trails30, quick, reading, plan, armplan or summary.
+     */
+    static final String ACTION_LAUNCH = "com.brandon.nightsky.LAUNCH";
+    /** With {@link #ACTION_LAUNCH}: the phone was locked (the tile): show over the lock screen. */
+    static final String EXTRA_OVER_LOCK = "overLock";
+
+    static Uri launchUri(String what) {
+        return Uri.parse("nightsky://launch/" + what);
+    }
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private Prefs prefs;
@@ -108,6 +122,12 @@ public final class MainActivity extends Activity {
     private long shownForecastMs, shownPlanErrorMs;
     /** Arm once the permissions asked for are answered; re-arm once the app is on screen. */
     private boolean pendingArm, pendingRearm;
+    /** What the tile, widget or shortcut asked for, done once the screen is up (null: nothing). */
+    private String pendingLaunch;
+    /** The settings the session waiting on a permission starts with (null: the saved ones). */
+    private Launch pendingLaunchSettings;
+    /** A launch waiting for the capture service to connect (it may be running a session already). */
+    private String launchAfterBind;
     /** The pages' back-gesture handler (API 33+). */
     private Object pageBackCb;
 
@@ -139,6 +159,11 @@ public final class MainActivity extends Activity {
             shownVersion = -1;
             shownPhase = null;
             refresh();
+            if (launchAfterBind != null) {
+                String what = launchAfterBind;
+                launchAfterBind = null;
+                launch(what);
+            }
         }
 
         @Override
@@ -188,6 +213,19 @@ public final class MainActivity extends Activity {
     /** From a notification or the alarm: open the plan or last night's summary, or re-arm the plan. */
     private void handleIntent(Intent i) {
         if (i == null) return;
+        if (ACTION_LAUNCH.equals(i.getAction()) && i.getData() != null) {
+            // the tile, the widget or a shortcut: done once, in onResume
+            pendingLaunch = i.getData().getLastPathSegment();
+            boolean overLock = i.getBooleanExtra(EXTRA_OVER_LOCK, false);
+            setShowWhenLocked(overLock);
+            setTurnScreenOn(overLock);
+            // done with; the extra stays, so a recreated screen still shows over the lock screen
+            i.setAction(Intent.ACTION_MAIN);
+            i.setData(null);
+        } else {
+            // opened any other way: over the lock screen only if this is still the tile's opening
+            setShowWhenLocked(i.getBooleanExtra(EXTRA_OVER_LOCK, false));
+        }
         String screen = i.getStringExtra(Plans.EXTRA_SCREEN);
         if ("plan".equals(screen)) {
             page = PAGE_PLAN;
@@ -217,12 +255,26 @@ public final class MainActivity extends Activity {
                 }
             });
         }
+        if (pendingLaunch != null) {
+            final String what = pendingLaunch;
+            pendingLaunch = null;
+            main.post(new Runnable() {
+                @Override
+                public void run() {
+                    launch(what);
+                }
+            });
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         visible = false;
+        // the screen was turned on for the tile once; not again
+        setTurnScreenOn(false);
+        // settings or the plan may have changed: the widget and the shortcuts follow
+        Glance.refresh(this);
         main.removeCallbacks(poll);
     }
 
@@ -265,7 +317,10 @@ public final class MainActivity extends Activity {
                 case 1: showArming(); break;
                 case 2: showCapturing(); break;
                 case 3: showDeveloping(); break;
-                case 4: showResult(s); break;
+                case 4:
+                    if (s.reading != null && s.result == null) showReading(s);
+                    else showResult(s);
+                    break;
                 default: showFailed(s); break;
             }
         }
@@ -583,6 +638,14 @@ public final class MainActivity extends Activity {
             });
             col.addView(open, gap(18));
         }
+        Button reading = button("Sky reading: how dark is it here?", false);
+        reading.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startSession(0, Launch.of("reading"));
+            }
+        });
+        col.addView(reading, gap(last != null ? 10 : 18));
         col.addView(text("Version " + BuildInfo.VERSION + " · photos are saved in Pictures/NightSky", 12, RED_DIM, false), gap(24));
     }
 
@@ -799,6 +862,37 @@ public final class MainActivity extends Activity {
         kr.addView(keep, weight());
         box.addView(kr, gap(6));
         box.addView(keepHelp, gap(6));
+
+        // the Quick Settings tile (E3)
+        box.addView(label("Quick Settings tile"), gap(20));
+        CheckBox unlock = check("Ask to unlock the phone first (otherwise the tile opens the app over the lock screen, ready to "
+                + "start)", prefs.tileUnlocks());
+        unlock.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setTileUnlocks(on);
+            }
+        });
+        box.addView(unlock, gap(6));
+        box.addView(text("To add the tile: swipe down twice from the top, tap the pencil, and drag \"Night sky\" into your "
+                + "tiles. For the widget, touch and hold the home screen, then Widgets > Night Sky.", 13, RED_DIM, false), gap(2));
+
+        // sky readings (H3)
+        box.addView(label("Sky readings"), gap(20));
+        int n = SkyReadings.count(this);
+        double off = prefs.sqmOffset();
+        box.addView(text(n + (n == 1 ? " reading" : " readings") + " in the log"
+                + (off != 0 ? String.format(Locale.US, ". Matched to a meter: %+.2f added.", off) : "."), 13, RED_DIM, false), gap(4));
+        Button export = button("Save the readings (CSV for Excel)", false);
+        export.setTextSize(15);
+        export.setEnabled(n > 0);
+        export.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportReadings();
+            }
+        });
+        box.addView(export, gap(6));
     }
 
     private static String advancedHead(boolean open) {
@@ -836,9 +930,102 @@ public final class MainActivity extends Activity {
         return Math.round(b * 100) + "%";
     }
 
+    /**
+     * A session started from the tile, the widget or a shortcut (E3): what it changes from the saved settings, for
+     * this session only (null: as saved).
+     */
+    static final class Launch {
+        Boolean trails, saveDng;
+        Integer durationMin;
+        /** A sky reading: the check only, no photo. */
+        boolean reading;
+        /** For the session's log: "shortcut: Star trails 30 min". */
+        String origin = "";
+
+        static Launch of(String what) {
+            Launch l = new Launch();
+            switch (what) {
+                case "stack5":
+                    l.trails = false;
+                    l.durationMin = 5;
+                    l.origin = "shortcut: Arm 5-minute stack";
+                    return l;
+                case "trails30":
+                    l.trails = true;
+                    l.durationMin = 30;
+                    l.origin = "shortcut: Star trails 30 min";
+                    return l;
+                case "quick":
+                    // the Quick look preset: two minutes, JPEG only
+                    l.trails = false;
+                    l.durationMin = 2;
+                    l.saveDng = false;
+                    l.origin = "shortcut: Quick look";
+                    return l;
+                case "reading":
+                    l.reading = true;
+                    l.trails = false;
+                    l.durationMin = 1;
+                    l.saveDng = false;
+                    l.origin = "shortcut: Sky reading";
+                    return l;
+                default:
+                    return null;
+            }
+        }
+    }
+
+    /** Does what the tile, the widget or a shortcut asked for (the screen is up). */
+    private void launch(String what) {
+        if (what == null) return;
+        if (service == null) {
+            // not connected yet: whether a session is running isn't known
+            launchAfterBind = what;
+            return;
+        }
+        Shortcuts.used(this, what);
+        SessionController.Status s = service != null ? service.controller().status() : null;
+        boolean busy = s != null && screenOf(s.phase) >= 1 && screenOf(s.phase) <= 3;
+        switch (what) {
+            case "plan":
+                if (!busy) openPage(PAGE_PLAN);
+                return;
+            case "armplan":
+                if (busy) break;
+                editPlan = null;
+                openPage(PAGE_PLAN);
+                armPlan();
+                return;
+            case "summary":
+                if (!busy) openPage(PAGE_SUMMARY);
+                return;
+            case "arm":
+            case "stack5":
+            case "trails30":
+            case "quick":
+            case "reading":
+                if (busy) break;
+                if (screenOf(shownPhase) != 0 && shownPhase != null && service != null) service.controller().clearResult();
+                page = PAGE_HOME;
+                showHome();
+                startSession(0, Launch.of(what));
+                return;
+            default:
+                if (!busy && page != PAGE_HOME) openPage(PAGE_HOME);
+                return;
+        }
+        toastish("A session is running: it's on screen");
+    }
+
     /** Starts a session; {@code startAtMs}: the capture begins no earlier than this (0: once the phone is ready). */
     private void startSession(long startAtMs) {
+        startSession(startAtMs, null);
+    }
+
+    /** The same, with some settings changed for this session only ({@code l} null: the saved settings). */
+    private void startSession(long startAtMs, Launch l) {
         pendingStartAt = startAtMs;
+        pendingLaunchSettings = l;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = true;
             askedNotifications = true; // asked together with the camera: don't ask again if it is refused
@@ -862,16 +1049,23 @@ public final class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
             return;
         }
+        pendingLaunchSettings = null;
+        boolean trails = l != null && l.trails != null ? l.trails : prefs.trails();
+        int min = l != null && l.durationMin != null ? l.durationMin : prefs.durationMin();
+        boolean dng = l != null && l.saveDng != null ? l.saveDng : prefs.saveDng();
+        boolean reading = l != null && l.reading;
         Intent i = new Intent(this, CaptureService.class).setAction(CaptureService.ACTION_START)
-                .putExtra(CaptureService.EXTRA_TRAILS, prefs.trails())
-                .putExtra(CaptureService.EXTRA_DURATION, prefs.durationMin() * 60)
+                .putExtra(CaptureService.EXTRA_TRAILS, trails)
+                .putExtra(CaptureService.EXTRA_DURATION, min * 60)
                 .putExtra(CaptureService.EXTRA_BRIGHTNESS, prefs.brightness())
                 .putExtra(CaptureService.EXTRA_SOUNDS, prefs.sounds())
-                .putExtra(CaptureService.EXTRA_DNG, prefs.saveDng())
-                .putExtra(CaptureService.EXTRA_PREFLIGHT, prefs.preflight())
-                .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer())
+                .putExtra(CaptureService.EXTRA_DNG, dng)
+                .putExtra(CaptureService.EXTRA_PREFLIGHT, prefs.preflight() || reading)
+                .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer() && !reading)
                 .putExtra(CaptureService.EXTRA_KEEP_SATELLITES, prefs.keepSatellites())
-                .putExtra(CaptureService.EXTRA_START_AT, startAtMs);
+                .putExtra(CaptureService.EXTRA_START_AT, startAtMs)
+                .putExtra(CaptureService.EXTRA_READING, reading)
+                .putExtra(CaptureService.EXTRA_ORIGIN, l != null ? l.origin : "");
         startForegroundService(i);
     }
 
@@ -905,7 +1099,7 @@ public final class MainActivity extends Activity {
         if (!pendingStart) return;
         pendingStart = false;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startSession(pendingStartAt);
+            startSession(pendingStartAt, pendingLaunchSettings);
         } else {
             new AlertDialog.Builder(this).setMessage("The app needs the camera to take the photo. You can allow it in "
                     + "Settings > Apps > Night Sky > Permissions.").setPositiveButton("OK", null).show();
@@ -931,6 +1125,7 @@ public final class MainActivity extends Activity {
             @Override
             public void done(Tonight.Forecast f, String error) {
                 if (tk != forecastToken || f == null || f.fetchedMs == shownForecastMs) return;
+                Glance.refresh(MainActivity.this);
                 if (screenOf(shownPhase) != 0 && shownPhase != null) return;
                 if (page == PAGE_HOME && nightBox != null) fillNightBox();
                 else if (page == PAGE_PLAN) showPlan();
@@ -2415,6 +2610,143 @@ public final class MainActivity extends Activity {
         lp.topMargin = dp(topDp);
         lp.gravity = Gravity.CENTER_HORIZONTAL;
         return lp;
+    }
+
+    /**
+     * A sky reading (H3): the value and what it means, then read again, save the log, match a meter or done.
+     * Shown over the lock screen too when the tile opened the app there.
+     */
+    private void showReading(SessionController.Status s) {
+        clearRefs();
+        root.removeAllViews();
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        root.addView(sv, match());
+        final SkyReading r = s.reading;
+        col.addView(label("Sky reading"));
+        col.addView(text(r.headline, 26, RED, true), gap(6));
+        if (r.frames > 0) {
+            col.addView(text(String.format(Locale.US, "Naked-eye stars to about magnitude %.1f%s", r.nelm, r.valid ? "" : " (doesn't count)"),
+                    17, RED, false), gap(4));
+        }
+        for (String line : r.lines) col.addView(text(line, 14, RED_DIM, false), gap(8));
+        int n = SkyReadings.count(this);
+        col.addView(text(n + (n == 1 ? " reading" : " readings") + " in the log.", 13, RED_DIM, false), gap(14));
+
+        Button again = button("Read again", true);
+        again.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startSession(0, Launch.of("reading"));
+            }
+        });
+        col.addView(again, gap(18));
+        Button save = button("Save the readings (CSV for Excel)", false);
+        save.setEnabled(n > 0);
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportReadings();
+            }
+        });
+        col.addView(save, gap(10));
+        if (r.frames > 0) {
+            Button meter = button(prefs.sqmOffset() != 0 ? String.format(Locale.US, "Matched to a meter (%+.2f): change", prefs.sqmOffset())
+                    : "Match it to a handheld meter (SQM-L)", false);
+            meter.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    matchMeter(r);
+                }
+            });
+            col.addView(meter, gap(10));
+        }
+        Button done = button("Done", false);
+        done.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (service != null) service.controller().clearResult();
+                page = PAGE_HOME;
+                showHome();
+            }
+        });
+        col.addView(done, gap(10));
+    }
+
+    /** Saves the readings' log as a CSV file in Documents/NightSky (off the main thread). */
+    private void exportReadings() {
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try {
+                    SkyReadings.export(app);
+                    msg = "Saved in Documents/NightSky: open it in Excel or Sheets";
+                } catch (Exception e) {
+                    msg = "Not saved: " + e.getMessage();
+                }
+                final String m = msg;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        toastish(m);
+                    }
+                });
+            }
+        }, "export").start();
+    }
+
+    /**
+     * A handheld meter read the same sky: the difference is kept and added to later readings (H3). Asks for the
+     * meter's value; takes it only within 2 of this reading.
+     */
+    private void matchMeter(final SkyReading r) {
+        final double own = r.meterMag - r.offset;
+        final EditText in = new EditText(this);
+        in.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        in.setHint(String.format(Locale.US, "%.2f", r.meterMag));
+        in.setTextColor(RED);
+        in.setHintTextColor(RED_DIM);
+        FrameLayout pad = new FrameLayout(this);
+        pad.setPadding(dp(20), dp(8), dp(20), 0);
+        pad.addView(in);
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("Match a handheld meter")
+                .setMessage("Point your SQM-L straight up at the same sky now and type what it reads. Later readings are shifted "
+                        + "by the difference.")
+                .setView(pad)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        double v;
+                        try {
+                            v = Double.parseDouble(in.getText().toString().trim().replace(',', '.'));
+                        } catch (NumberFormatException e) {
+                            toastish("That isn't a number");
+                            return;
+                        }
+                        double off = v - own;
+                        if (!(Math.abs(off) <= 2)) {
+                            toastish(String.format(Locale.US, "%.2f is more than 2 away from this reading: check the number", v));
+                            return;
+                        }
+                        prefs.setSqmOffset(off);
+                        toastish(String.format(Locale.US, "Saved: readings from now on add %+.2f", off));
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+        if (prefs.sqmOffset() != 0) {
+            b.setNeutralButton("Remove the offset", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    prefs.setSqmOffset(0);
+                    toastish("Offset removed");
+                }
+            });
+        }
+        b.show();
     }
 
     private void showFailed(SessionController.Status s) {

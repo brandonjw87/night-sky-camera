@@ -44,7 +44,7 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_CANCEL_PLAN = "com.brandon.nightsky.CANCEL_PLAN";
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_BRIGHTNESS = "brightness",
             EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_PREFLIGHT = "preflight",
-            EXTRA_KEEP_SATELLITES = "keepSatellites", EXTRA_START_AT = "startAt";
+            EXTRA_KEEP_SATELLITES = "keepSatellites", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -128,6 +128,10 @@ public final class CaptureService extends Service implements SessionController.H
     public int onStartCommand(Intent intent, int flags, int startId) {
         String a = intent != null ? intent.getAction() : null;
         if (ACTION_START.equals(a)) {
+            if (!sessionOver()) {
+                // a session is already running (a second tap, a shortcut): it carries on as it is
+                return START_NOT_STICKY;
+            }
             SessionController.Settings s = new SessionController.Settings();
             s.trails = intent.getBooleanExtra(EXTRA_TRAILS, false);
             s.durationSec = intent.getIntExtra(EXTRA_DURATION, 300);
@@ -137,6 +141,9 @@ public final class CaptureService extends Service implements SessionController.H
             s.preflight = intent.getBooleanExtra(EXTRA_PREFLIGHT, true);
             s.keepSatellites = intent.getBooleanExtra(EXTRA_KEEP_SATELLITES, false);
             s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
+            s.readingOnly = intent.getBooleanExtra(EXTRA_READING, false);
+            String origin = intent.getStringExtra(EXTRA_ORIGIN);
+            if (origin != null) s.origin = origin;
             keepingForViewer = false;
             if (!goForeground(true)) {
                 if (!plans.armed()) {
@@ -565,9 +572,40 @@ public final class CaptureService extends Service implements SessionController.H
 
     // ---- SessionController.Host (controller thread) ----
 
+    /** What the widget last showed of the session (0 nothing running, 1 getting ready, 2 capturing, 3 developing). */
+    private int glanceState;
+    private long glanceLeft = -1;
+
+    private static int glanceState(SessionController.Phase p) {
+        switch (p) {
+            case STARTING:
+            case PLACE:
+            case STEADY:
+            case PREFLIGHT:
+            case COUNTDOWN:
+                return 1;
+            case CAPTURING:
+            case PAUSED:
+                return 2;
+            case FINISHING:
+            case DEVELOPING:
+                return 3;
+            default:
+                return 0;
+        }
+    }
+
     @Override
     public void onStatus(final SessionController.Status s) {
         long now = SystemClock.elapsedRealtime();
+        // the widget follows the session: getting ready, capturing (minutes left), developing
+        int gs = glanceState(s.phase);
+        long left = gs == 2 && s.remainingMs >= 0 ? Math.round(s.remainingMs / 60_000f) : -1;
+        if (gs != glanceState || left != glanceLeft) {
+            glanceState = gs;
+            glanceLeft = left;
+            if (gs != 0) Glance.refresh(this);
+        }
         if (s.phase == lastPhase && now - lastNotifyMs < 2000) return;
         lastPhase = s.phase;
         lastNotifyMs = now;
@@ -597,6 +635,13 @@ public final class CaptureService extends Service implements SessionController.H
             public void run() {
                 SessionController.Status s = controller.status();
                 boolean keep = plans.onIdle(s);
+                // the widget: the new photo, or just what's next
+                if (s.phase == SessionController.Phase.DONE && s.result != null) {
+                    Glance.photoDone(CaptureService.this, controller.preview(),
+                            s.result.startedMs > 0 ? s.result.startedMs : System.currentTimeMillis());
+                } else {
+                    Glance.refresh(CaptureService.this);
+                }
                 // a scheduled session's photo goes into the morning summary instead
                 if (!s.scheduled && (s.phase == SessionController.Phase.DONE || s.phase == SessionController.Phase.FAILED)) {
                     nm.notify(NOTIF_ID + 1, build(s.headline, s.detail, -1, false));

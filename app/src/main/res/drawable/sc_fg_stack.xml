@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arm 5-minute stack: three stacked frames with a star. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FF9A2A25" android:strokeWidth="2.5" android:fillColor="#00000000"
+        android:pathData="M40,34h32v24h-32z" />
+    <path android:strokeColor="#FFB33A35" android:strokeWidth="2.5" android:fillColor="#00000000"
+        android:pathData="M36,40h32v24h-32z" />
+    <path android:strokeColor="#FFE53935" android:strokeWidth="3" android:fillColor="#FF14090A"
+        android:pathData="M32,46h32v24h-32z" />
+    <path android:fillColor="#FFE53935"
+        android:pathData="M48,50 L49.6,56.4 L56,58 L49.6,59.6 L48,66 L46.4,59.6 L40,58 L46.4,56.4 Z" />
+</vector>

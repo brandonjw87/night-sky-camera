@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tonight's plan: a clock with a star. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FFE53935" android:strokeWidth="3.5" android:fillColor="#00000000"
+        android:pathData="M54,56m-18,0a18,18 0 1,0 36,0a18,18 0 1,0 -36,0" />
+    <path android:strokeColor="#FFE53935" android:strokeWidth="3.5" android:strokeLineCap="round" android:fillColor="#00000000"
+        android:pathData="M54,44 L54,56 L62,62" />
+    <path android:fillColor="#FFB33A35"
+        android:pathData="M72,30 L73.2,34.8 L78,36 L73.2,37.2 L72,42 L70.8,37.2 L66,36 L70.8,34.8 Z" />
+</vector>

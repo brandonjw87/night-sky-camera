@@ -73,6 +73,11 @@ final class MediaSaver {
                 "image/x-adobe-dng", PICTURES_DIR, time, w);
     }
 
+    /** A file of any type in Documents/NightSky (a CSV log, a settings export). */
+    static Uri saveDocument(Context c, String name, String mime, Writer w) throws IOException {
+        return insert(c, MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name, mime, DOCS_DIR, new Date(), w);
+    }
+
     static Uri saveText(Context c, String name, final String text) throws IOException {
         return insert(c, MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name, "text/plain",
                 DOCS_DIR, new Date(), new Writer() {

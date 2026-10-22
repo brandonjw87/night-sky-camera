@@ -227,6 +227,33 @@ final class Plans {
         }
     }
 
+    /**
+     * Saves a small copy of the latest photo for the home-screen widget (E3), over the last one: written aside and
+     * renamed, so the widget never reads half a file. Its file name, or "" if it couldn't.
+     */
+    static String saveLastThumb(Context c, Bitmap preview) {
+        if (preview == null) return "";
+        File tmp = new File(thumbDir(c), "last.tmp"), dst = new File(thumbDir(c), "last.jpg");
+        try {
+            int w = 480, h = Math.max(1, Math.round(w * preview.getHeight() / (float) preview.getWidth()));
+            Bitmap small = Bitmap.createScaledBitmap(preview, w, h, true);
+            OutputStream o = new FileOutputStream(tmp);
+            try {
+                small.compress(Bitmap.CompressFormat.JPEG, 85, o);
+            } finally {
+                o.close();
+            }
+            if (small != preview) small.recycle();
+            if (!tmp.renameTo(dst)) throw new IOException("could not rename " + tmp);
+            return dst.getName();
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            android.util.Log.w("NightSky", "no picture for the widget: " + e);
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            return "";
+        }
+    }
+
     static Bitmap thumb(Context c, String name) {
         if (name == null || name.isEmpty()) return null;
         File f = new File(thumbDir(c), name);

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app icon (E3). Each opens the app and starts with these settings: lay the phone down. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_stack"
+        android:shortcutId="stack5"
+        android:shortcutLongLabel="@string/sc_stack5_long"
+        android:shortcutShortLabel="@string/sc_stack5_short">
+        <intent
+            android:action="com.brandon.nightsky.LAUNCH"
+            android:data="nightsky://launch/stack5"
+            android:targetClass="com.brandon.nightsky.MainActivity"
+            android:targetPackage="com.brandon.nightsky" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_trails"
+        android:shortcutId="trails30"
+        android:shortcutLongLabel="@string/sc_trails30_long"
+        android:shortcutShortLabel="@string/sc_trails30_short">
+        <intent
+            android:action="com.brandon.nightsky.LAUNCH"
+            android:data="nightsky://launch/trails30"
+            android:targetClass="com.brandon.nightsky.MainActivity"
+            android:targetPackage="com.brandon.nightsky" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_quick"
+        android:shortcutId="quick"
+        android:shortcutLongLabel="@string/sc_quick_long"
+        android:shortcutShortLabel="@string/sc_quick_short">
+        <intent
+            android:action="com.brandon.nightsky.LAUNCH"
+            android:data="nightsky://launch/quick"
+            android:targetClass="com.brandon.nightsky.MainActivity"
+            android:targetPackage="com.brandon.nightsky" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_sc_reading"
+        android:shortcutId="reading"
+        android:shortcutLongLabel="@string/sc_reading_long"
+        android:shortcutShortLabel="@string/sc_reading_short">
+        <intent
+            android:action="com.brandon.nightsky.LAUNCH"
+            android:data="nightsky://launch/reading"
+            android:targetClass="com.brandon.nightsky.MainActivity"
+            android:targetPackage="com.brandon.nightsky" />
+    </shortcut>
+</shortcuts>

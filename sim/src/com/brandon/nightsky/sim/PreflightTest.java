@@ -27,13 +27,7 @@ public final class PreflightTest {
     static int failures;
 
     public static void main(String[] args) throws Exception {
-        catalog = SimRunner.loadCatalog();
-        truth = CameraModel.nominal(W, H, 2875.0);
-        truth.cx = W / 2.0 + 14.0;
-        truth.cy = H / 2.0 - 9.0;
-        truth.k1 = -0.045;
-        truth.k2 = 0.018;
-        truth.source = "truth";
+        init();
         List<String> cases = new ArrayList<String>();
         for (String a : args) cases.add(a);
         if (cases.isEmpty()) {
@@ -55,11 +49,124 @@ public final class PreflightTest {
         if (failures > 0) System.exit(1);
     }
 
+    /** The star catalogue and the simulated camera. */
+    static void init() throws Exception {
+        catalog = SimRunner.loadCatalog();
+        truth = CameraModel.nominal(W, H, 2875.0);
+        truth.cx = W / 2.0 + 14.0;
+        truth.cy = H / 2.0 - 9.0;
+        truth.k1 = -0.045;
+        truth.k2 = 0.018;
+        truth.source = "truth";
+    }
+
+    /**
+     * The simulation's own sky brightness between the stars (H3), magnitudes per square arcsecond. A star of
+     * magnitude m gives fluxZero 10^(-0.4 m) a second, its green pixels hold cg of that and the detector's
+     * half-resolution cells a quarter; a green pixel collects the sky's rate plus the dark current the frame's
+     * black level doesn't carry (it carries 70%). So the sky is 2.5 log10(fluxZero cg pixel^2 / (sky + 0.3 dark)),
+     * cg being the stars' typical green share.
+     */
+    static double trueSky(SkySim sim) {
+        double[][] tab = sim.starTable(0);
+        float[] cgs = new float[tab.length];
+        for (int k = 0; k < tab.length; k++) cgs[k] = (float) (4 / (tab[k][3] + 2 + tab[k][4]));
+        double cg = com.brandon.nightsky.processing.Stats.median(cgs, cgs.length);
+        double pix = 206264.806 / truth.fx;
+        return 2.5 * Math.log10(sim.fluxZero * sim.starGain * cg * pix * pix / (sim.skyRate[1] + 0.3 * sim.darkRate));
+    }
+
     static Preflight.Report run(String name, double haloBaseline, double clearZp) {
         long startMs = name.equals("milkyway") ? 1786762800000L : SimRunner.DEFAULT_TIME_MS; // 2026-08-15 03:00 UTC
         double lon = SimRunner.DEFAULT_LON;
         if (name.equals("moon")) startMs = moonHighTime(startMs, lon);
         if (name.equals("twilight")) startMs = twilightTime(startMs, lon, -8);
+        SkySim sim = makeSim(name, startMs, lon);
+        short[] raw = new short[W * H];
+        UnitProcessor.FrameInfo info = new UnitProcessor.FrameInfo();
+        long t0 = System.currentTimeMillis();
+        sim.render(0, raw, info, 7);
+        long t1 = System.currentTimeMillis();
+        Preflight.Input in = makeInput(name, sim, raw, info, startMs, lon, haloBaseline, clearZp);
+        Preflight.Report r = Preflight.run(in);
+        System.out.printf(Locale.US, "== %s (render %d ms, check %d ms)%n", name, t1 - t0, r.millis);
+        System.out.println(indent(r.describe()));
+        System.out.println("  spoken: " + r.spoken());
+        System.out.printf(Locale.US, "  stars %d, halo %.3f (%d stars, limit %.3f), seen %d/%d, obstructed %.1f%% at %.0f deg (%s), "
+                        + "zp %.2f haze %.2f, sun %.1f, moon %.1f (%.0f%%, %.1f deg from frame), place %.2f,%.2f (%s)%n",
+                r.stars, r.haloRatio, r.haloStars, r.haloLimit, r.seen, r.expected, 100 * r.obstructedFraction,
+                r.obstructionAzimuthDeg, r.obstructionSide, r.zeroPointNorm, r.hazeMag, r.sunAltDeg, r.moonAltDeg,
+                100 * r.moonIllum, r.moonFromFrameDeg, r.latDeg, r.lonDeg, r.placeSource);
+        // expectations: which checks warn
+        String want;
+        switch (name) {
+            case "smudge": want = "lens"; break;
+            case "branch": want = "obstruction"; break;
+            case "compass": want = "obstruction"; break;
+            case "halfcloud": want = "clouds"; break;
+            case "overcast": want = "clouds"; break;
+            case "haze": want = "clouds"; break;
+            case "moon": want = "moon"; break;
+            case "twilight": want = "sun"; break;
+            case "covered": want = "clouds"; break;
+            default: want = ""; break;
+        }
+        StringBuilder got = new StringBuilder();
+        for (Preflight.Item it : r.items) {
+            if (it.level == Preflight.Level.WARN || it.level == Preflight.Level.STOP) {
+                if (got.length() > 0) got.append(',');
+                got.append(it.key);
+            }
+        }
+        boolean ok = got.toString().equals(want);
+        if (ok && (name.equals("branch") || name.equals("compass"))) {
+            // the branch hangs over the frame's left edge: the phone's top, which the sim points at headingTopDeg
+            double d = Math.abs(((r.obstructionAzimuthDeg - sim.headingTopDeg()) % 360 + 540) % 360 - 180);
+            ok = d < 30;
+            if (!ok) System.out.printf(Locale.US, "  branch side %.0f deg, expected about %.0f%n", r.obstructionAzimuthDeg, sim.headingTopDeg());
+        }
+        if (ok && name.equals("somecloud")) {
+            // a little cloud is named, without a warning
+            Preflight.Item c = r.item("clouds");
+            ok = c != null && c.level == Preflight.Level.NOTE && c.text.contains("cloud");
+        }
+        if (ok && (name.equals("noplace") || name.equals("staleplace"))) {
+            ok = Math.abs(r.latDeg - sim.latitudeDeg) < 4 && Math.abs(r.lonDeg - lon) < 5 && r.placeSource.startsWith("stars");
+        }
+        // sky brightness (H3): against the simulation's own sky
+        double trueSky = trueSky(sim);
+        System.out.printf(Locale.US, "  sky brightness %.2f (with stars %.2f), simulated %.2f%n", r.skyMag, r.skyMagWithStars, trueSky);
+        boolean skyCase = name.equals("clean") || name.equals("city") || name.equals("pattern") || name.equals("gradient")
+                || name.equals("milkyway") || name.equals("sparse") || name.equals("noplace");
+        if (skyCase && !(Math.abs(r.skyMag - trueSky) < 0.15 && r.skyMagWithStars < r.skyMag && r.skyMag - r.skyMagWithStars < 0.6)) {
+            System.out.println("  sky brightness should be within 0.15 of the simulation's, a little brighter with the stars");
+            ok = false;
+        }
+        if ((name.equals("overcast") || name.equals("covered")) && !Double.isNaN(r.skyMag)) {
+            System.out.println("  no sky brightness without the stars' zero point");
+            ok = false;
+        }
+        // "only if clear" (E2) on the same test frame: start, or wait and try again
+        Preflight.Clear cl = Preflight.clearEnough(r, Double.NaN);
+        System.out.println("  only if clear: " + (cl.clear ? "start" : "wait") + " (" + cl.seen + ")");
+        String wantClear = "";
+        switch (name) {
+            case "clean": case "branch": case "somecloud": case "moon": case "pattern": case "gradient": case "transients":
+            case "milkyway": case "noplace": case "staleplace": wantClear = "start"; break;
+            case "overcast": case "covered": wantClear = "wait"; break;
+            default: break;
+        }
+        if (!wantClear.isEmpty() && !wantClear.equals(cl.clear ? "start" : "wait")) {
+            System.out.println("  only if clear should " + wantClear);
+            ok = false;
+        }
+        System.out.println("  " + (ok ? "PASS" : "FAIL") + ": warnings [" + got + "], expected [" + want + "]");
+        if (!ok) failures++;
+        return r;
+    }
+
+    /** The simulated sky for a case. */
+    static SkySim makeSim(String name, long startMs, double lon) {
         SkySim sim = new SkySim(W, H, truth, 42, catalog, startMs, lon);
         sim.psfSigma = 0.85;
         sim.frameExp = 8;
@@ -110,11 +217,12 @@ public final class PreflightTest {
             sim.starGain = 0;
             for (int c = 0; c < 3; c++) sim.skyRate[c] = 0;
         }
-        short[] raw = new short[W * H];
-        UnitProcessor.FrameInfo info = new UnitProcessor.FrameInfo();
-        long t0 = System.currentTimeMillis();
-        sim.render(0, raw, info, 7);
-        long t1 = System.currentTimeMillis();
+        return sim;
+    }
+
+    /** The check's input for a rendered test frame of a case. */
+    static Preflight.Input makeInput(String name, SkySim sim, short[] raw, UnitProcessor.FrameInfo info, long startMs, double lon,
+                                     double haloBaseline, double clearZp) {
         SensorSpec spec = sim.spec(true);
         Preflight.Input in = new Preflight.Input();
         in.raw = raw;
@@ -163,68 +271,7 @@ public final class PreflightTest {
         in.needBytes = 1_500_000_000L;
         in.batteryPct = 80;
         in.batteryTempC = 18;
-        Preflight.Report r = Preflight.run(in);
-        System.out.printf(Locale.US, "== %s (render %d ms, check %d ms)%n", name, t1 - t0, r.millis);
-        System.out.println(indent(r.describe()));
-        System.out.println("  spoken: " + r.spoken());
-        System.out.printf(Locale.US, "  stars %d, halo %.3f (%d stars, limit %.3f), seen %d/%d, obstructed %.1f%% at %.0f deg (%s), "
-                        + "zp %.2f haze %.2f, sun %.1f, moon %.1f (%.0f%%, %.1f deg from frame), place %.2f,%.2f (%s)%n",
-                r.stars, r.haloRatio, r.haloStars, r.haloLimit, r.seen, r.expected, 100 * r.obstructedFraction,
-                r.obstructionAzimuthDeg, r.obstructionSide, r.zeroPointNorm, r.hazeMag, r.sunAltDeg, r.moonAltDeg,
-                100 * r.moonIllum, r.moonFromFrameDeg, r.latDeg, r.lonDeg, r.placeSource);
-        // expectations: which checks warn
-        String want;
-        switch (name) {
-            case "smudge": want = "lens"; break;
-            case "branch": want = "obstruction"; break;
-            case "compass": want = "obstruction"; break;
-            case "halfcloud": want = "clouds"; break;
-            case "overcast": want = "clouds"; break;
-            case "haze": want = "clouds"; break;
-            case "moon": want = "moon"; break;
-            case "twilight": want = "sun"; break;
-            case "covered": want = "clouds"; break;
-            default: want = ""; break;
-        }
-        StringBuilder got = new StringBuilder();
-        for (Preflight.Item it : r.items) {
-            if (it.level == Preflight.Level.WARN || it.level == Preflight.Level.STOP) {
-                if (got.length() > 0) got.append(',');
-                got.append(it.key);
-            }
-        }
-        boolean ok = got.toString().equals(want);
-        if (ok && (name.equals("branch") || name.equals("compass"))) {
-            // the branch hangs over the frame's left edge: the phone's top, which the sim points at headingTopDeg
-            double d = Math.abs(((r.obstructionAzimuthDeg - sim.headingTopDeg()) % 360 + 540) % 360 - 180);
-            ok = d < 30;
-            if (!ok) System.out.printf(Locale.US, "  branch side %.0f deg, expected about %.0f%n", r.obstructionAzimuthDeg, sim.headingTopDeg());
-        }
-        if (ok && name.equals("somecloud")) {
-            // a little cloud is named, without a warning
-            Preflight.Item c = r.item("clouds");
-            ok = c != null && c.level == Preflight.Level.NOTE && c.text.contains("cloud");
-        }
-        if (ok && (name.equals("noplace") || name.equals("staleplace"))) {
-            ok = Math.abs(r.latDeg - sim.latitudeDeg) < 4 && Math.abs(r.lonDeg - lon) < 5 && r.placeSource.startsWith("stars");
-        }
-        // "only if clear" (E2) on the same test frame: start, or wait and try again
-        Preflight.Clear cl = Preflight.clearEnough(r, Double.NaN);
-        System.out.println("  only if clear: " + (cl.clear ? "start" : "wait") + " (" + cl.seen + ")");
-        String wantClear = "";
-        switch (name) {
-            case "clean": case "branch": case "somecloud": case "moon": case "pattern": case "gradient": case "transients":
-            case "milkyway": case "noplace": case "staleplace": wantClear = "start"; break;
-            case "overcast": case "covered": wantClear = "wait"; break;
-            default: break;
-        }
-        if (!wantClear.isEmpty() && !wantClear.equals(cl.clear ? "start" : "wait")) {
-            System.out.println("  only if clear should " + wantClear);
-            ok = false;
-        }
-        System.out.println("  " + (ok ? "PASS" : "FAIL") + ": warnings [" + got + "], expected [" + want + "]");
-        if (!ok) failures++;
-        return r;
+        return in;
     }
 
     static String indent(String s) {

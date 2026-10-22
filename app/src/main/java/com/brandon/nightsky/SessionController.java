@@ -39,6 +39,7 @@ import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.SkyGuide;
+import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
@@ -77,6 +78,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * it on disk at once; pause if the phone is picked up, restart the camera if it stalls,</li>
  * <li>develop: align and stack ({@link PostProcessor}), render, save JPEG, DNG and log.</li>
  * </ol>
+ * A sky reading ({@link Settings#readingOnly}) takes three test frames and stops: how dark the sky is, said aloud
+ * and added to the readings' log, and no photo.
  * Everything except developing runs on one thread, the camera's callbacks included.
  */
 final class SessionController {
@@ -120,6 +123,8 @@ final class SessionController {
         int clearTargetSec, maxDurationSec;
         /** The preset or plan entry it came from, for the log ("" if none). */
         String origin = "";
+        /** A sky reading (H3): pre-flight test frames only, read for the sky's brightness; no photo. */
+        boolean readingOnly;
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -150,6 +155,8 @@ final class SessionController {
         String outcomeDetail = "";
         /** Part of a night's plan. */
         boolean scheduled;
+        /** A sky reading's result (null unless one just finished). */
+        SkyReading reading;
     }
 
     static final class Result {
@@ -275,6 +282,9 @@ final class SessionController {
     private long testSentMs, graceUntilMs;
     private Preflight.Report preflightReport;
     private boolean startedAfterWarnings, storageShort;
+    /** A sky reading's frames so far, and the reading made from them (null if none). */
+    private final List<Preflight.Report> readingReports = new ArrayList<Preflight.Report>();
+    private SkyReading reading;
     /** How the last session or attempt ended, for the plan (null while one runs). */
     private NightPlan.Outcome outcome;
     private String outcomeDetail = "";
@@ -556,6 +566,7 @@ final class SessionController {
                     output = null;
                     small = null;
                     result = null;
+                    reading = null;
                     preview = null;
                     previewBase = null;
                     phase = Phase.IDLE;
@@ -765,7 +776,8 @@ final class SessionController {
         outcome = null;
         outcomeDetail = "";
         phase = Phase.STARTING;
-        publish(s.scheduled ? "Scheduled session: getting the camera ready" : "Getting the camera ready", "", -1);
+        publish(s.scheduled ? "Scheduled session: getting the camera ready" : s.readingOnly ? "Sky reading: getting the camera ready"
+                : "Getting the camera ready", "", -1);
         if (s.scheduled) {
             BatteryInfo b = BatteryInfo.read(ctx);
             if (!b.charging && b.pct >= 0 && b.pct < s.minBatteryPct) {
@@ -803,7 +815,8 @@ final class SessionController {
             if (realtimeClock) setClock(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos());
             plan = ExposurePlan.make(spec.model.fx, place != null ? place.latDeg : ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
                     prefs.verifiedExposureNs(cameraId), prefs.clampDeliveredNs(cameraId), isoStart, isoMin, spec.white);
-            String space = checkSpace();
+            // a reading keeps no frames
+            String space = s.readingOnly ? null : checkSpace();
             if (space != null && s.scheduled) {
                 // nobody is there to free space: a shorter session that fits beats none
                 int fits = secondsThatFit();
@@ -835,7 +848,7 @@ final class SessionController {
             cleanupOldSessions();
             satCatalog = null;
             satDataLog = "";
-            if (!s.trails) loadSatellites(tk);
+            if (!s.trails && !s.readingOnly) loadSatellites(tk);
             motion = new MotionMonitor(ctx);
             motion.start();
             sounds = new Sounds(ctx, s.sounds);
@@ -973,6 +986,8 @@ final class SessionController {
         testBuf = null;
         testRetries = 0;
         preflightReport = null;
+        readingReports.clear();
+        reading = null;
         startedAfterWarnings = false;
         storageShort = false;
         placeSinceMs = 0;
@@ -1035,14 +1050,14 @@ final class SessionController {
                     publishPlace();
                 } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
                     placeSinceMs = 0;
-                    if ((settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
+                    if (settings.readingOnly || (settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
                     else proceed(now);
                 } else if (settings.scheduled) {
                     placeWait(now);
                 }
                 break;
             case PREFLIGHT:
-                if (forced) {
+                if (forced && !settings.readingOnly) {
                     // "Start now" from the viewer: no more checking or waiting
                     skipPreflight(now, pfStep == PF_WAIT ? "start now from the viewer, without waiting"
                             : "skipped the rest of the check: start now from the viewer");
@@ -1149,6 +1164,11 @@ final class SessionController {
         if (settings.scheduled) {
             publish("Scheduled session: lay the phone screen-down", "The back camera must face the sky. It starts once the phone is "
                     + "still" + (settings.placeTimeoutMs > 0 ? ", or tries again later." : "."), -1);
+            return;
+        }
+        if (settings.readingOnly) {
+            publish("Lay the phone screen-down", "The back camera must face the sky. Once the phone is still, three test frames "
+                    + "measure how dark the sky is (about 30 seconds).", -1);
             return;
         }
         publish("Lay the phone screen-down", settings.preflight && !forced
@@ -1351,11 +1371,13 @@ final class SessionController {
         phase = Phase.PREFLIGHT;
         preflightToken++;
         preflightReport = null;
+        readingReports.clear();
         testRetries = 0;
         testReq = null;
         pfStep = PF_PROBE;
         sounds.tick();
-        publish("Checking the sky", "A test frame looks for a smudged lens, obstructions, clouds and the Moon", -1);
+        if (settings.readingOnly) publish("Reading the sky", "Three test frames measure how dark the sky is", -1);
+        else publish("Checking the sky", "A test frame looks for a smudged lens, obstructions, clouds and the Moon", -1);
         if (!probeSent) sendProbe();
         if (probeDone) sendTest(now);
     }
@@ -1370,7 +1392,66 @@ final class SessionController {
     private void skipPreflight(long now, String why) {
         log("pre-flight: " + why);
         abandonPreflight();
+        if (settings.readingOnly) {
+            finishReading(why);
+            return;
+        }
         startCountdown(now);
+    }
+
+    /**
+     * A sky reading's frame was read: another frame, or the reading. The first frame not measured (no stars to
+     * measure against) ends it at once; after that, a frame not measured (a cloud passing) just doesn't count.
+     */
+    private void readingFrame(Preflight.Report rep) {
+        readingReports.add(rep);
+        int n = readingReports.size();
+        android.util.Log.i("NightSky", String.format(Locale.US, "sky reading: frame %d: %.2f with the stars, %.2f between them", n,
+                rep.skyMagWithStars, rep.skyMag));
+        if (n < SkyReading.FRAMES && SkyReading.measured(readingReports.get(0))) {
+            testRetries = 0;
+            sendTest(SystemClock.elapsedRealtime());
+            return;
+        }
+        finishReading("");
+    }
+
+    /**
+     * A sky reading is over (H3): the frames' sky brightness (or why there is none) goes on the screen, is said
+     * aloud and is added to the readings' log; the camera closes. No photo, no session folder.
+     */
+    private void finishReading(String why) {
+        long wall = System.currentTimeMillis();
+        SkyReading r = SkyReading.of(new ArrayList<Preflight.Report>(readingReports), wall, prefs.sqmOffset(), why);
+        if (Double.isNaN(r.latDeg) && place != null) {
+            r.latDeg = place.latDeg;
+            r.lonDeg = place.lonDeg;
+        }
+        android.util.Log.i("NightSky", "sky reading: " + r.headline + (r.valid ? "" : " (doesn't count: " + r.why + ")"));
+        token++;
+        startToken++;
+        abandonPreflight();
+        stopLocating();
+        releaseCamera();
+        final Sounds sp = sounds;
+        sounds = null;
+        reading = r;
+        phase = Phase.DONE;
+        outcome = NightPlan.Outcome.DONE;
+        outcomeDetail = r.headline;
+        String saved = SkyReadings.append(ctx, r);
+        if (saved != null) android.util.Log.w("NightSky", "sky reading not logged: " + saved);
+        publish("Sky reading", r.headline, -1);
+        if (sp != null) {
+            sp.say(r.spoken, new Runnable() {
+                @Override
+                public void run() {
+                    sp.release();
+                }
+            });
+        }
+        host.onCaptureEnded();
+        host.onIdle();
     }
 
     private void forgetTest() {
@@ -1402,7 +1483,12 @@ final class SessionController {
         testReq = r;
         testSentMs = now;
         pfStep = PF_TEST;
-        publish("Checking the sky", String.format(Locale.US, "Test frame: %.0f seconds at ISO %d", exp / 1e9, plan.iso), -1);
+        if (settings.readingOnly) {
+            publish("Reading the sky", String.format(Locale.US, "Frame %d of %d: %.0f seconds at ISO %d", readingReports.size() + 1,
+                    SkyReading.FRAMES, exp / 1e9, plan.iso), -1);
+        } else {
+            publish("Checking the sky", String.format(Locale.US, "Test frame: %.0f seconds at ISO %d", exp / 1e9, plan.iso), -1);
+        }
     }
 
     private void testArrived(Req r) {
@@ -1476,7 +1562,8 @@ final class SessionController {
         long middle = System.currentTimeMillis() - exp / 2_000_000L;
         if (settings.startAtMs > 0) in.startDelayMs = Math.max(in.startDelayMs, settings.startAtMs - middle);
         pfStep = PF_READ;
-        publish("Checking the sky", "Reading the test frame", -1);
+        publish(settings.readingOnly ? "Reading the sky" : "Checking the sky", settings.readingOnly
+                ? String.format(Locale.US, "Measuring frame %d of %d", readingReports.size() + 1, SkyReading.FRAMES) : "Reading the test frame", -1);
         final int tk = preflightToken;
         new Thread(new Runnable() {
             @Override
@@ -1510,6 +1597,10 @@ final class SessionController {
         }
         preflightReport = rep;
         android.util.Log.i("NightSky", "pre-flight (" + rep.millis + " ms): " + rep.spoken() + "\n" + rep.describe());
+        if (settings.readingOnly) {
+            readingFrame(rep);
+            return;
+        }
         if (settings.onlyIfClear) {
             Preflight.Clear c = Preflight.clearEnough(rep, settings.clearBaseline);
             String line = "only if clear: " + c.seen + (c.clear ? ": clear enough, starting" : ": not clear enough");
@@ -2769,6 +2860,7 @@ final class SessionController {
         s.outcome = outcome;
         s.outcomeDetail = outcomeDetail;
         s.scheduled = settings != null && settings.scheduled;
+        s.reading = reading;
         return s;
     }
 
