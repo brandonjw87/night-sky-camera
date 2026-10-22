@@ -38,7 +38,8 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_RECOVER = "com.brandon.nightsky.RECOVER";
     static final String ACTION_STOP_VIEWER = "com.brandon.nightsky.STOP_VIEWER";
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_BRIGHTNESS = "brightness",
-            EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_PREFLIGHT = "preflight";
+            EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_PREFLIGHT = "preflight",
+            EXTRA_KEEP_SATELLITES = "keepSatellites", EXTRA_START_AT = "startAt";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -103,6 +104,8 @@ public final class CaptureService extends Service implements SessionController.H
             s.sounds = intent.getBooleanExtra(EXTRA_SOUNDS, true);
             s.saveDng = intent.getBooleanExtra(EXTRA_DNG, true);
             s.preflight = intent.getBooleanExtra(EXTRA_PREFLIGHT, true);
+            s.keepSatellites = intent.getBooleanExtra(EXTRA_KEEP_SATELLITES, false);
+            s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
             keepingForViewer = false;
             if (!goForeground(true)) {
                 stopRemote();
@@ -272,6 +275,7 @@ public final class CaptureService extends Service implements SessionController.H
                     s.sounds = prefs.sounds();
                     s.saveDng = prefs.saveDng();
                     s.preflight = prefs.preflight();
+                    s.keepSatellites = prefs.keepSatellites();
                     s.fromViewer = true;
                     keepingForViewer = false;
                     acquireLocks(true);

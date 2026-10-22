@@ -60,6 +60,16 @@ public final class SharpStacker {
         public LocalWeights transparency;
         /** The sensor's own pattern to take out of this frame as it is loaded ({@link SensorPattern}), or null. */
         public SensorPattern.Frame pattern;
+        /**
+         * Corridors where this frame's samples are left out (a satellite's or a plane's streak), in reference
+         * coordinates: x0, y0, x1, y1 and half width per corridor; null for none.
+         */
+        public float[] masks;
+        /**
+         * Corridors where this frame's streak is kept at full brightness: its samples rejected as too bright there
+         * go on top of the stack (whichever is brighter) instead of away. Same layout; null for none.
+         */
+        public float[] keep;
     }
 
     public static final class Result {
@@ -77,6 +87,8 @@ public final class SharpStacker {
         public int bandRows;
         /** Samples from next to a cloud edge, judged against the frames clear all around, and how many of them went. */
         public long edgeSamples, edgeRejected;
+        /** Pixel samples left out in the plans' corridors ({@link Plan#masks}). */
+        public long masked;
     }
 
     public static final int STEP = 32;
@@ -100,6 +112,10 @@ public final class SharpStacker {
     public RgbImage into;
     /** What the progress shows while stacking. */
     public String label = "Stacking";
+    /** Measures the stack's real noise gain as it adds up the samples ({@link NoiseProbe}), or null. */
+    public NoiseProbe noise;
+    /** Collects where each frame had samples rejected as too bright ({@link StreakEvidence}), or null. */
+    public StreakEvidence evidence;
 
     /** Keeping every sample needs bands at least this tall, or re-reading the frames' overlapping rows costs too much. */
     static final int MIN_KEEP_ROWS = 24;
@@ -205,10 +221,12 @@ public final class SharpStacker {
 
         final boolean keep = keepsSamples(nf);
         long rows = keep ? keepRows(nf) : Math.max(32, memoryBudget / ((long) W * STREAM_BYTES));
-        int bandRows = (int) Math.min(Math.min(512, rows), H + 1) & ~1;
+        // bands start on a cell of the streak evidence (and on a Bayer row pair)
+        int bandRows = (int) Math.min(Math.min(512, rows), H + 1) & ~(StreakEvidence.CELL - 1);
         res.method = method;
         res.keptSamples = keep;
         res.bandRows = bandRows;
+        if (noise != null) noise.reset(bandRows);
         final int bandPix = bandRows * W;
         final float[][] acc = new float[keep ? 5 : 10][bandPix * 3];
         final double[] sq = keep ? null : new double[bandPix * 3];
@@ -230,6 +248,16 @@ public final class SharpStacker {
         final float[][] nv = new float[keep ? nf : 1][maxNodeRows * nx * NK];
         final float[] tgt = new float[maxNodeRows * nx * 3];
         final int covThr = Math.max(1, Math.round(coverageFraction * nf));
+        // the current plan's corridors in the band, and the brightest kept streak per pixel and channel
+        boolean anyKeep = false, anyMask = false;
+        for (Plan p : plans) {
+            anyKeep |= p.keep != null;
+            anyMask |= p.masks != null;
+        }
+        final long[] maskBits = anyMask ? new long[(bandPix + 63) >> 6] : null;
+        final long[] keepBits = anyKeep ? new long[(bandPix + 63) >> 6] : null;
+        final float[] trail = anyKeep ? new float[bandPix * 3] : null;
+        final StreakEvidence ev = evidence;
 
         ExecutorService io = Executors.newSingleThreadExecutor(new ThreadFactory() {
             @Override
@@ -259,6 +287,8 @@ public final class SharpStacker {
                 Arrays.fill(cnt, 0, n, (short) 0);
                 Arrays.fill(icnt, 0, n, (short) 0);
                 Arrays.fill(ccnt, 0, n, (short) 0);
+                if (trail != null) Arrays.fill(trail, 0, n * 3, Float.NaN);
+                if (ev != null) ev.beginBand(y0, y1);
                 for (int pass = 0; pass < 2; pass++) {
                     Future<Loaded> next = io.submit(loader(plans.get(0), grids[0], y0, y1, bufs[0]));
                     for (int f = 0; f < nf; f++) {
@@ -268,21 +298,30 @@ public final class SharpStacker {
                             Plan p = plans.get(f);
                             float[] nvf = keep ? nv[f] : nv[0];
                             if (!keep) normNodes(p, grids[f], doubt[f], iyA, iyB, nx, tgt, nvf);
-                            if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, res);
-                            else if (keep) integrateKept(cur, grids[f], p, nvf, iyA, f, nf, y0, y1, vals, acc, icnt, ccnt, res);
-                            else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, res);
-                            else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, res);
+                            long[] mb = maskBits != null && corridors(p.masks, y0, y1, maskBits) ? maskBits : null;
+                            long[] kb = keepBits != null && pass == 1 && corridors(p.keep, y0, y1, keepBits) ? keepBits : null;
+                            if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, mb, res);
+                            else if (keep) integrateKept(cur, grids[f], p, nvf, iyA, f, nf, y0, y1, vals, acc, icnt, ccnt, kb, trail, res);
+                            else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, mb, res);
+                            else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, mb, kb, trail, ev, res);
                         }
                         if (progress.cancelled()) throw new CancelledException();
                         progress.update(label, ((b * 2 + pass) + (f + 1f) / nf) / (bands * 2f));
                     }
                     if (pass == 0) {
-                        if (keep) reject(nv, grids, iyA, ny, nx, times, nf, y0, y1, vals, cnt, acc[0], tgt, rej, res);
+                        if (keep) reject(nv, grids, iyA, ny, nx, times, nf, y0, y1, vals, cnt, acc[0], tgt, rej, ev, res);
                         else limits(n, y0, acc, sq, icnt);
                     }
                 }
-                if (keep) finish(y0, y1, acc[1], acc[2], acc[3], acc[4], acc[0], false, cnt, icnt, ccnt, covThr, out, res);
-                else finish(y0, y1, acc[3], acc[4], acc[5], acc[0], acc[6], true, cnt, icnt, ccnt, covThr, out, res);
+                if (keep) {
+                    finish(y0, y1, acc[1], acc[2], acc[3], acc[4], acc[0], false, cnt, icnt, ccnt, covThr, out, res);
+                    if (noise != null) noise.endBand(y0, y1, acc[1], acc[2], acc[3], acc[4], icnt);
+                } else {
+                    finish(y0, y1, acc[3], acc[4], acc[5], acc[0], acc[6], true, cnt, icnt, ccnt, covThr, out, res);
+                    if (noise != null) noise.endBand(y0, y1, acc[3], acc[4], acc[5], acc[0], icnt);
+                }
+                if (trail != null) lighten(y0, y1, trail, out);
+                if (ev != null) ev.endBand();
             }
         } finally {
             io.shutdownNow();
@@ -294,6 +333,57 @@ public final class SharpStacker {
         out.x1 = crop[2];
         out.y1 = crop[3];
         return res;
+    }
+
+    /**
+     * Sets the bits (pixels of the band [y0, y1), row by row) within any of the corridors {@code c} (x0, y0, x1,
+     * y1, half width each, in reference coordinates); false, and nothing set, if none reaches the band.
+     */
+    private boolean corridors(float[] c, int y0, int y1, long[] bits) {
+        if (c == null || c.length < 5) return false;
+        boolean cleared = false, any = false;
+        for (int s = 0; s + 4 < c.length; s += 5) {
+            float ax = c[s], ay = c[s + 1], bx = c[s + 2], by = c[s + 3], hw = c[s + 4];
+            int ya = Math.max(y0, (int) Math.floor(Math.min(ay, by) - hw)), yb = Math.min(y1 - 1, (int) Math.ceil(Math.max(ay, by) + hw));
+            int xa = Math.max(0, (int) Math.floor(Math.min(ax, bx) - hw)), xb = Math.min(W - 1, (int) Math.ceil(Math.max(ax, bx) + hw));
+            if (ya > yb || xa > xb) continue;
+            if (!cleared) {
+                Arrays.fill(bits, 0, ((y1 - y0) * W + 63) >> 6, 0L);
+                cleared = true;
+            }
+            double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy, hw2 = (double) hw * hw;
+            for (int y = ya; y <= yb; y++) {
+                double py = y + 0.5 - ay;
+                for (int x = xa; x <= xb; x++) {
+                    double px = x + 0.5 - ax;
+                    double t = l2 > 0 ? Math.max(0, Math.min(1, (px * dx + py * dy) / l2)) : 0;
+                    double ex = px - t * dx, ey = py - t * dy;
+                    if (ex * ex + ey * ey > hw2) continue;
+                    int bp = (y - y0) * W + x;
+                    bits[bp >> 6] |= 1L << (bp & 63);
+                    any = true;
+                }
+            }
+        }
+        return any;
+    }
+
+    private static boolean bit(long[] bits, int bp) {
+        return bits != null && (bits[bp >> 6] & (1L << (bp & 63))) != 0;
+    }
+
+    /** Kept streaks over the stack: per pixel and channel the brighter of the two. */
+    private void lighten(int y0, int y1, float[] trail, RgbImage out) {
+        for (int j = 0; j < y1 - y0; j++) {
+            int o = (y0 + j) * W;
+            for (int x = 0; x < W; x++) {
+                int k = (j * W + x) * 3;
+                for (int c = 0; c < 3; c++) {
+                    float t = trail[k + c];
+                    if (t == t && t > out.channel(c)[o + x]) out.channel(c)[o + x] = t;
+                }
+            }
+        }
     }
 
     private static Loaded await(Future<Loaded> f) throws IOException {
@@ -587,7 +677,7 @@ public final class SharpStacker {
 
     /** Pass A: every frame's normalised sample of every pixel, as half floats [pixel][frame][channel]. */
     private void collect(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int nf,
-                         final int y0, final int y1, final short[] vals, final short[] cnt, final Result res) {
+                         final int y0, final int y1, final short[] vals, final short[] cnt, final long[] mask, final Result res) {
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -595,7 +685,7 @@ public final class SharpStacker {
                 float[] st = new float[3], rgb = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
-                long smp = 0;
+                long smp = 0, msk = 0;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
@@ -615,9 +705,13 @@ public final class SharpStacker {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
+                            int bp = j * W + x;
+                            if (bit(mask, bp)) {
+                                msk++;
+                                continue;
+                            }
                             sampleRgb(d, rs, mx, my, st, rgb, null, null);
                             float sc = sc0 + dsc * t;
-                            int bp = j * W + x;
                             cnt[bp]++;
                             smp++;
                             int k = (bp * nf + f) * 3;
@@ -629,6 +723,7 @@ public final class SharpStacker {
                 }
                 synchronized (res) {
                     res.samples[f] += smp;
+                    res.masked += msk;
                 }
             }
         });
@@ -644,11 +739,13 @@ public final class SharpStacker {
      */
     private void reject(final float[][] nv, final WarpGrid[] grids, final int iyA, final int ny, final int nx,
                         final float[] times, final int nf, final int y0, final int y1, final short[] vals,
-                        final short[] cnt, final float[] centre, final float[] tgt, final Rejection rej, final Result res) {
+                        final short[] cnt, final float[] centre, final float[] tgt, final Rejection rej,
+                        final StreakEvidence ev, final Result res) {
         Parallel.forRange(y1 - y0, 1, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
                 Rejection.Work wk = new Rejection.Work(nf);
+                StreakEvidence.Batch eb = ev != null ? ev.batch() : null;
                 float[][] nr = new float[nf][nx * NK];
                 float[][] rxs = new float[nf][nx], rys = new float[nf][nx];
                 float[] base = new float[nx * 3];
@@ -723,15 +820,20 @@ public final class SharpStacker {
                                 if (wk.keep[i]) {
                                     sum += wk.v[i];
                                     m++;
-                                } else {
-                                    vals[kv + idx[i] * 3 + c] = Half.REJECTED;
-                                    rejF[idx[i]]++;
                                 }
                             }
-                            centre[k3 + c] = m > 0 ? (float) (sum / m) : 0f;
+                            float cm = m > 0 ? (float) (sum / m) : 0f;
+                            for (int i = 0; i < n; i++) {
+                                if (wk.keep[i]) continue;
+                                vals[kv + idx[i] * 3 + c] = Half.REJECTED;
+                                rejF[idx[i]]++;
+                                if (eb != null && wk.v[i] > cm) eb.add(idx[i], x, y);
+                            }
+                            centre[k3 + c] = cm;
                         }
                     }
                 }
+                if (eb != null) eb.flush();
                 synchronized (res) {
                     for (int f = 0; f < nf; f++) res.rejected[f] += rejF[f];
                     res.edgeSamples += edge;
@@ -758,14 +860,16 @@ public final class SharpStacker {
      */
     private void integrateKept(final Loaded cur, final WarpGrid grid, final Plan plan, final float[] nvf, final int iyA,
                                final int f, final int nf, final int y0, final int y1, final short[] vals, final float[][] acc,
-                               final short[] icnt, final short[] ccnt, final Result res) {
+                               final short[] icnt, final short[] ccnt, final long[] keepB, final float[] trail,
+                               final Result res) {
         final float[] thr = clipThresholds(plan);
-        final float[] s2 = acc[1], s3 = acc[2], s4 = acc[3], s5 = acc[4];
+        final float[] centre = acc[0], s2 = acc[1], s3 = acc[2], s4 = acc[3], s5 = acc[4];
+        final NoiseProbe probe = noise;
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
                 float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
-                float[] st = new float[3], rgb = new float[3], dz = new float[6];
+                float[] st = new float[3], rgb = new float[3], dz = new float[6], nz = new float[3];
                 float[] o0 = new float[3], dO = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
@@ -788,6 +892,7 @@ public final class SharpStacker {
                             o0[c] = nr[q + K_OFF + c];
                             dO[c] = (nr[q + NK + K_OFF + c] - o0[c]) / STEP;
                         }
+                        float gn0 = nr[q + K_NOISE + 1], dgn = (nr[q + NK + K_NOISE + 1] - gn0) / STEP;
                         for (int x = xa; x < xb; x++) {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
@@ -797,17 +902,28 @@ public final class SharpStacker {
                             int bp = j * W + x;
                             int kv = (bp * nf + f) * 3;
                             if (vals[kv + 1] == Half.MISSING) continue;
-                            boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr, null);
+                            boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr, probe != null ? nz : null);
                             drizzleRgb(d, rs, mx, my, st, dz);
                             float sc = sc0 + dsc * t;
-                            boolean any = false;
+                            boolean any = false, kept = bit(keepB, bp);
                             for (int c = 0, k = bp * 3; c < 3; c++, k++) {
-                                if (vals[kv + c] == Half.REJECTED) continue;
                                 float o = o0[c] + dO[c] * t;
-                                s2[k] += w * (dz[c] * sc + o * dz[c + 3]);
+                                float v = rgb[c] * sc + o;
+                                if (vals[kv + c] == Half.REJECTED) {
+                                    if (kept && v > centre[k] && !(trail[k] >= v)) trail[k] = v;
+                                    // the tail of the noise, not an outlier: the noise gain allows for it
+                                    if (c == 1 && probe != null && Math.abs(v - centre[k])
+                                            < NoiseProbe.NOISE_TAIL * Math.max(1e-3f, (gn0 + dgn * t) * nz[1])) {
+                                        probe.addRejected(f, bp, w, v, dz[1] * sc + o * dz[4], dz[4]);
+                                    }
+                                    continue;
+                                }
+                                float dzv = dz[c] * sc + o * dz[c + 3];
+                                s2[k] += w * dzv;
                                 s3[k] += w * dz[c + 3];
-                                s4[k] += w * (rgb[c] * sc + o);
+                                s4[k] += w * v;
                                 s5[k] += w;
+                                if (c == 1 && probe != null) probe.add(f, bp, w, v, dzv, dz[c + 3]);
                                 any = true;
                             }
                             if (any) {
@@ -839,7 +955,7 @@ public final class SharpStacker {
      */
     private void gather(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int y0,
                         final int y1, final float[][] acc, final double[] sq, final short[] cnt, final short[] icnt,
-                        final Result res) {
+                        final long[] mask, final Result res) {
         final float[] sW = acc[0], sM = acc[1], t1v = acc[3], t1s = acc[4], t2v = acc[5], t2s = acc[6];
         final float[] b1v = acc[7], b1s = acc[8], b2v = acc[9], b2s = acc[2];
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
@@ -850,7 +966,7 @@ public final class SharpStacker {
                 float[] o0 = new float[3], dO = new float[3], n0 = new float[3], dN = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
-                long smp = 0;
+                long smp = 0, msk = 0;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
@@ -877,6 +993,10 @@ public final class SharpStacker {
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
                             int bp = j * W + x;
+                            if (bit(mask, bp)) {
+                                msk++;
+                                continue;
+                            }
                             cnt[bp]++;
                             smp++;
                             float w = tr0 + dtr * t < minTransparency ? 0f : w0 + dw * t;
@@ -918,6 +1038,7 @@ public final class SharpStacker {
                 }
                 synchronized (res) {
                     res.samples[f] += smp;
+                    res.masked += msk;
                 }
             }
         });
@@ -1011,9 +1132,11 @@ public final class SharpStacker {
      */
     private void integrateClipped(final Loaded cur, final WarpGrid grid, final Plan plan, final float[] nvf, final int iyA,
                                   final int f, final int y0, final int y1, final float[][] acc, final short[] icnt,
-                                  final short[] ccnt, final Result res) {
+                                  final short[] ccnt, final long[] mask, final long[] keepB, final float[] trail,
+                                  final StreakEvidence ev, final Result res) {
         final float[] thr = clipThresholds(plan);
         final float[] cen = acc[1], sd = acc[2], s2 = acc[3], s3 = acc[4], s4 = acc[5], s5 = acc[0], fb = acc[6];
+        final NoiseProbe probe = noise;
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -1023,6 +1146,7 @@ public final class SharpStacker {
                 float[] d = cur.data;
                 int rs = cur.rs;
                 long rej = 0, inc = 0, edge = 0, edgeRej = 0;
+                StreakEvidence.Batch eb = ev != null ? ev.batch() : null;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
@@ -1048,11 +1172,13 @@ public final class SharpStacker {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
+                            int bp = j * W + x;
+                            if (bit(mask, bp)) continue;
                             boolean edgeSample = du0 + ddu * t >= 0.5f;
                             boolean clipped = sampleRgb(d, rs, mx, my, st, rgb, thr, nz);
                             float sc = sc0 + dsc * t;
                             float w = tr0 + dtr * t < minTransparency ? 0f : w0 + dw * t;
-                            int bp = j * W + x;
+                            boolean kept = bit(keepB, bp);
                             if (!(w > 0)) {
                                 for (int c = 0, k = bp * 3; c < 3; c++, k++) fb[k] += rgb[c] * sc + (o0[c] + dO[c] * t);
                                 continue;
@@ -1075,12 +1201,22 @@ public final class SharpStacker {
                                 }
                                 if (out) {
                                     rej++;
+                                    if (dv > 0) {
+                                        if (eb != null) eb.add(f, x, y);
+                                        if (kept && !(trail[k] >= v)) trail[k] = v;
+                                    }
+                                    // the tail of the noise, not an outlier: the noise gain allows for it
+                                    if (c == 1 && probe != null && Math.abs(dv) < NoiseProbe.NOISE_TAIL * s * Math.max(1f, sk)) {
+                                        probe.addRejected(f, bp, w, v, dz[1] * sc + o * dz[4], dz[4]);
+                                    }
                                     continue;
                                 }
-                                s2[k] += w * (dz[c] * sc + o * dz[c + 3]);
+                                float dzv = dz[c] * sc + o * dz[c + 3];
+                                s2[k] += w * dzv;
                                 s3[k] += w * dz[c + 3];
                                 s4[k] += w * v;
                                 s5[k] += w;
+                                if (c == 1 && probe != null) probe.add(f, bp, w, v, dzv, dz[c + 3]);
                                 any = true;
                             }
                             if (any) {
@@ -1091,6 +1227,7 @@ public final class SharpStacker {
                         }
                     }
                 }
+                if (eb != null) eb.flush();
                 synchronized (res) {
                     res.rejected[f] += rej;
                     res.included[f] += inc;

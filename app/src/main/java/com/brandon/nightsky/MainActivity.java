@@ -16,6 +16,7 @@ import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -36,9 +37,15 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Rejection;
+import com.brandon.nightsky.processing.ReportCard;
+import com.brandon.nightsky.processing.SatCatalog;
+import com.brandon.nightsky.processing.SatPlanner;
+import com.brandon.nightsky.processing.SatSky;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -47,6 +54,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 
 /**
  * The whole app on one screen that changes with the session: set up, place the phone, capturing,
@@ -64,11 +72,22 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private Prefs prefs;
     private FrameLayout root;
+    /** The session report, shown over the result screen; and its back-gesture handler (API 33+). */
+    private FrameLayout reportOverlay;
+    private Object reportBack;
     private CaptureService service;
     private SessionController.Phase shownPhase;
     private long shownVersion = -1;
     private int shownPreview = -1;
     private boolean pendingStart, askedNotifications;
+    /** When the session waiting on a permission should start (Unix ms; 0 for at once). */
+    private long pendingStartAt;
+    /** The home screen's satellite card; a counter that drops stale results; the last outlook, reused for a while. */
+    private LinearLayout satBox;
+    private int satToken;
+    private static SatPlanner.Outlook lastOutlook;
+    private static String lastOutlookKey = "";
+    private static long lastOutlookMs;
     private Boolean windowActive;
 
     // views of the current screen (whichever exist)
@@ -242,6 +261,7 @@ public final class MainActivity extends Activity {
     }
 
     private void clearRefs() {
+        closeReport();
         headline = detail = stage = null;
         checks = null;
         shownChecks = null;
@@ -253,6 +273,7 @@ public final class MainActivity extends Activity {
         shownPreview = -1;
         viewerBox = null;
         shownViewer = null;
+        satBox = null;
         setQrBright(false);
     }
 
@@ -339,6 +360,7 @@ public final class MainActivity extends Activity {
                 styleChip(deep, !t);
                 styleChip(trails, t);
                 modeHelp.setText(modeHelp(t));
+                showSatellites();
             }
         };
         deep.setOnClickListener(modeClick);
@@ -348,6 +370,17 @@ public final class MainActivity extends Activity {
         modes.addView(trails, weight());
         col.addView(modes, gap(8));
         col.addView(modeHelp, gap(6));
+
+        // satellites in the camera's view: the passes, and the quietest stretch to start in (deep sky only)
+        satBox = card();
+        col.addView(satBox, gap(14));
+        showSatellites();
+        Satellites.refresh(this, false, new Satellites.Callback() {
+            @Override
+            public void done(String log) {
+                if (!log.isEmpty()) showSatellites();
+            }
+        });
 
         // length
         col.addView(label("How long"), gap(22));
@@ -363,6 +396,7 @@ public final class MainActivity extends Activity {
                 public void onClick(View v) {
                     prefs.setDurationMin(min);
                     for (int j = 0; j < lenChips.length; j++) styleChip(lenChips[j], Prefs.DURATIONS_MIN[j] == min);
+                    showSatellites();
                 }
             });
             lens.addView(b, weight());
@@ -433,7 +467,7 @@ public final class MainActivity extends Activity {
         start.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                startSession();
+                startSession(0);
             }
         });
         col.addView(start, gap(24));
@@ -453,6 +487,108 @@ public final class MainActivity extends Activity {
             col.addView(open, gap(18));
         }
         col.addView(text("Version " + BuildInfo.VERSION + " · photos are saved in Pictures/NightSky", 12, RED_DIM, false), gap(24));
+    }
+
+    /**
+     * Fills the home screen's satellite card: the passes through the camera's view for a session started now,
+     * the quietest stretch in the next hour (with a button to start then), and the bright passes of the night.
+     * Worked out off the main thread (thousands of orbits), and kept for two minutes.
+     */
+    private void showSatellites() {
+        final LinearLayout box = satBox;
+        if (box == null) return;
+        box.removeAllViews();
+        boolean on = prefs.satelliteData() && !prefs.trails();
+        box.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (!on) return;
+        box.addView(text("Satellites", 16, RED, true));
+        final TextView body = text("Working out the passes\u2026", 14, RED_DIM, false);
+        box.addView(body, gap(4));
+        final int tk = ++satToken;
+        final Context app = getApplicationContext();
+        final Locator.Place place = Locator.best(this, prefs);
+        final int sec = prefs.durationMin() * 60;
+        final boolean keep = prefs.keepSatellites();
+        final long stamp = Satellites.data(this).newestFetchMs();
+        final String key = sec + "|" + keep + "|" + stamp + "|" + (place != null ? Math.round(place.latDeg * 100) + "," + Math.round(place.lonDeg * 100) : "-");
+        synchronized (MainActivity.class) {
+            if (lastOutlook != null && key.equals(lastOutlookKey) && System.currentTimeMillis() - lastOutlookMs < 120_000L) {
+                fillSatellites(box, body, lastOutlook, true, true, null);
+                return;
+            }
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                SatPlanner.Outlook o = null;
+                String err = null;
+                SatCatalog cat = null;
+                try {
+                    cat = Satellites.catalogNow(app);
+                    if (cat != null && place != null) {
+                        double hKm = Double.isNaN(place.altM) ? 0 : place.altM / 1000;
+                        SatSky.Site site = new SatSky.Site(Math.toRadians(place.latDeg), Math.toRadians(place.lonDeg), hKm);
+                        o = SatPlanner.outlook(cat, site, System.currentTimeMillis(), sec, keep, TimeZone.getDefault());
+                        synchronized (MainActivity.class) {
+                            lastOutlook = o;
+                            lastOutlookKey = key;
+                            lastOutlookMs = System.currentTimeMillis();
+                        }
+                    }
+                } catch (RuntimeException e) {
+                    err = e.toString();
+                }
+                final SatPlanner.Outlook fo = o;
+                final boolean hasData = cat != null;
+                final String fe = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (tk == satToken && satBox == box) fillSatellites(box, body, fo, hasData, place != null, fe);
+                    }
+                });
+            }
+        }, "satellite-outlook").start();
+    }
+
+    private void fillSatellites(LinearLayout box, TextView body, SatPlanner.Outlook o, boolean hasData, boolean located, String err) {
+        if (err != null) {
+            body.setText("The passes couldn't be worked out (" + err + ").");
+        } else if (!hasData) {
+            body.setText("No satellite data yet. It downloads from CelesTrak when the phone is online (the Starlink lists on Wi-Fi "
+                    + "only), then streaks are named and bright passes waited out.");
+        } else if (!located || o == null) {
+            body.setText("The passes need the phone's place: allow location when you start a session.");
+        } else {
+            String t = "If you start now: " + o.next.text;
+            if (!o.text.isEmpty()) t += "\n\n" + o.text;
+            body.setText(t);
+            if (o.next.offerQuiet) {
+                final long at = o.next.quietStartMs;
+                Button b = button("Start at " + SessionController.clockTime(at) + " (quietest)", false);
+                b.setTextSize(15);
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (at - System.currentTimeMillis() < 60_000L) {
+                            toastish("That stretch has started: tap Start");
+                            return;
+                        }
+                        startSession(at);
+                    }
+                });
+                box.addView(b, gap(8));
+            }
+        }
+        box.addView(text(Satellites.data(this).status(System.currentTimeMillis()), 12, RED_DIM, false), gap(6));
+    }
+
+    private static String keepHelp(boolean keep) {
+        return keep
+                ? "Satellites and meteors stay in the picture at full brightness. A bright pass is counted down aloud "
+                + "so you can watch it go over."
+                : "Their streaks are taken out of the stack, faint edges included, and the session waits for a bright one "
+                + "that's about to cross (the ISS, Tiangong) before starting. The report and a labelled copy name them.";
     }
 
     /** Settings most nights don't need, folded away under one line. */
@@ -500,6 +636,72 @@ public final class MainActivity extends Activity {
         box.addView(r1, gap(8));
         box.addView(r2, gap(6));
         box.addView(help, gap(6));
+
+        // satellites: the orbital data, and whether their streaks stay
+        box.addView(label("Satellites"), gap(20));
+        final TextView status = text(Satellites.data(this).status(System.currentTimeMillis()), 13, RED_DIM, false);
+        final Button update = button("Update the satellite data", false);
+        update.setTextSize(15);
+        update.setEnabled(prefs.satelliteData());
+        CheckBox data = check("Use satellite data: download orbits from CelesTrak (public, nothing is sent) to name streaks "
+                + "and plan around bright passes", prefs.satelliteData());
+        data.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setSatelliteData(on);
+                update.setEnabled(on);
+                showSatellites();
+            }
+        });
+        update.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                update.setEnabled(false);
+                update.setText("Updating\u2026");
+                Satellites.refresh(MainActivity.this, true, new Satellites.Callback() {
+                    @Override
+                    public void done(String log) {
+                        update.setEnabled(prefs.satelliteData());
+                        update.setText("Update the satellite data");
+                        status.setText(Satellites.data(MainActivity.this).status(System.currentTimeMillis()));
+                        if (log.isEmpty()) {
+                            toastish("Nothing newer yet: CelesTrak updates the orbits every 2 hours"
+                                    + (Satellites.metered(MainActivity.this) ? " (Starlink comes over Wi-Fi only)" : ""));
+                        } else {
+                            toastish(log.contains("failed") || log.contains("refused") ? log : "Satellite data updated");
+                        }
+                        showSatellites();
+                    }
+                });
+            }
+        });
+        box.addView(data, gap(6));
+        box.addView(status, gap(2));
+        box.addView(update, gap(6));
+        box.addView(text("Satellite streaks", 14, RED, true), gap(14));
+        final Button out = chip("Take them out", !prefs.keepSatellites());
+        final Button keep = chip("Keep them", prefs.keepSatellites());
+        out.setTextSize(14);
+        keep.setTextSize(14);
+        final TextView keepHelp = text(keepHelp(prefs.keepSatellites()), 13, RED_DIM, false);
+        View.OnClickListener keepClick = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean k = v == keep;
+                prefs.setKeepSatellites(k);
+                styleChip(out, !k);
+                styleChip(keep, k);
+                keepHelp.setText(keepHelp(k));
+                showSatellites();
+            }
+        };
+        out.setOnClickListener(keepClick);
+        keep.setOnClickListener(keepClick);
+        LinearLayout kr = row();
+        kr.addView(out, weight());
+        kr.addView(keep, weight());
+        box.addView(kr, gap(6));
+        box.addView(keepHelp, gap(6));
     }
 
     private static String advancedHead(boolean open) {
@@ -537,7 +739,9 @@ public final class MainActivity extends Activity {
         return Math.round(b * 100) + "%";
     }
 
-    private void startSession() {
+    /** Starts a session; {@code startAtMs}: the capture begins no earlier than this (0: once the phone is ready). */
+    private void startSession(long startAtMs) {
+        pendingStartAt = startAtMs;
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             pendingStart = true;
             askedNotifications = true; // asked together with the camera: don't ask again if it is refused
@@ -568,7 +772,9 @@ public final class MainActivity extends Activity {
                 .putExtra(CaptureService.EXTRA_SOUNDS, prefs.sounds())
                 .putExtra(CaptureService.EXTRA_DNG, prefs.saveDng())
                 .putExtra(CaptureService.EXTRA_PREFLIGHT, prefs.preflight())
-                .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer());
+                .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer())
+                .putExtra(CaptureService.EXTRA_KEEP_SATELLITES, prefs.keepSatellites())
+                .putExtra(CaptureService.EXTRA_START_AT, startAtMs);
         startForegroundService(i);
     }
 
@@ -587,7 +793,7 @@ public final class MainActivity extends Activity {
         if (!pendingStart) return;
         pendingStart = false;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startSession();
+            startSession(pendingStartAt);
         } else {
             new AlertDialog.Builder(this).setMessage("The app needs the camera to take the photo. You can allow it in "
                     + "Settings > Apps > Night Sky > Permissions.").setPositiveButton("OK", null).show();
@@ -728,6 +934,69 @@ public final class MainActivity extends Activity {
         col.addView(headline, gap(8));
         col.addView(detail, gap(2));
         final SessionController.Result r = s.result;
+        if (r != null && r.report != null) {
+            final ReportCard rc = r.report;
+            LinearLayout link = card();
+            link.setPadding(dp(12), dp(8), dp(12), dp(8));
+            link.addView(text(rc.headline, 14, RED, false));
+            link.addView(text(rc.problems.isEmpty() ? "Session report \u203a" : "Session report: " + rc.problems.get(0).title.toLowerCase(Locale.US)
+                    + (rc.problems.size() > 1 ? " and more" : "") + " \u203a", 13, RED_DIM, true));
+            link.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showReport(rc);
+                }
+            });
+            col.addView(link, gap(6));
+        }
+        if (r != null && (!r.tracks.isEmpty() || r.canLabel)) {
+            // satellites' tracks and the sky's names over the picture, and a full-size copy with them
+            LinearLayout tg = row();
+            if (!r.tracks.isEmpty()) {
+                final Button tb = chip("Satellites", prefs.showTracks());
+                tb.setTextSize(14);
+                tb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        boolean on = !prefs.showTracks();
+                        prefs.setShowTracks(on);
+                        styleChip(tb, on);
+                        if (service != null) service.controller().redraw();
+                    }
+                });
+                tg.addView(tb, weight());
+            }
+            if (r.canLabel) {
+                final Button lb = chip("Names", prefs.showLabels());
+                lb.setTextSize(14);
+                lb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        boolean on = !prefs.showLabels();
+                        prefs.setShowLabels(on);
+                        styleChip(lb, on);
+                        if (service != null) service.controller().redraw();
+                    }
+                });
+                tg.addView(lb, weight());
+            }
+            Button copy = button(r.labelled != null ? "Saved \u2713" : "Save this copy", false);
+            copy.setTextSize(14);
+            copy.setPadding(dp(6), dp(8), dp(6), dp(8));
+            copy.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (service == null) return;
+                    if (!(prefs.showTracks() && !r.tracks.isEmpty()) && !(prefs.showLabels() && r.canLabel)) {
+                        toastish("Turn on Satellites or Names first");
+                        return;
+                    }
+                    service.controller().saveLabelled();
+                }
+            });
+            tg.addView(copy, weight());
+            col.addView(tg, gap(6));
+        }
         shownBrightness = r != null ? r.brightness : prefs.brightness();
         final TextView bl = text("Brightness " + Math.round(shownBrightness * 100) + "%  ·  pinch to zoom", 13, RED_DIM, false);
         resultBrightness = seek(Math.round(shownBrightness * 100));
@@ -796,7 +1065,8 @@ public final class MainActivity extends Activity {
         row2.addView(open, weight());
         row2.addView(again, weight());
         col.addView(row2, gap(6));
-        String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG)" : "");
+        String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG" : " (JPEG")
+                + (r != null && r.labelled != null ? ", and a copy with names)" : ")");
         col.addView(text(where, 12, RED_DIM, false), gap(4));
         viewerBox = new LinearLayout(this);
         viewerBox.setOrientation(LinearLayout.VERTICAL);
@@ -804,6 +1074,119 @@ public final class MainActivity extends Activity {
         viewerStoppable = true;
         col.addView(viewerBox, gap(2));
         refreshViewer(true);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Session report
+    // ------------------------------------------------------------------------------------------------
+
+    /** The report card over the result screen, until Close or Back. */
+    private void showReport(ReportCard rc) {
+        if (rc == null || reportOverlay != null) return;
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(BG);
+        ov.setClickable(true);
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        ov.addView(sv, match());
+        col.addView(label("Session report"));
+        col.addView(text(rc.headline, 18, RED, true), gap(6));
+        if (!rc.gain.isEmpty()) col.addView(text(rc.gain, 15, RED, false), gap(6));
+
+        col.addView(label(rc.problems.isEmpty() ? "No problems found" : "What cost light, biggest first"), gap(18));
+        if (rc.problems.isEmpty()) col.addView(text("A clear, steady session.", 14, RED_DIM, false), gap(4));
+        for (ReportCard.Problem p : rc.problems) {
+            LinearLayout c = card();
+            c.addView(text(p.title, 16, RED, true));
+            c.addView(text(String.format(Locale.US, "Cost about %.0f%% of the light", 100 * p.impact), 12, RED_DIM, false), gap(2));
+            c.addView(text(p.evidence, 14, RED, false), gap(6));
+            c.addView(text("Fix: " + p.fix, 14, RED_DIM, false), gap(6));
+            col.addView(c, gap(8));
+        }
+        for (String note : rc.notes) col.addView(text(note, 13, RED_DIM, false), gap(6));
+
+        col.addView(label("Frames"), gap(18));
+        final TextView fcap = text(rc.goodFrames + " of " + rc.frames.length + " frames scored 50 or more. Touch a bar to see "
+                + "a frame's score.", 13, RED_DIM, false);
+        FrameStrip strip = new FrameStrip(this);
+        strip.setFrames(rc.frames, new FrameStrip.Listener() {
+            @Override
+            public void onFrame(ReportCard.Frame f) {
+                String what = !f.used ? "left out: " + f.reason
+                        : "score " + f.score + (f.partly ? ", used partly" : "") + (f.reason.isEmpty() ? "" : ": " + f.reason);
+                fcap.setText(String.format(Locale.US, "Frame %d (%s), %s", f.index, f.time, what));
+            }
+        });
+        LinearLayout.LayoutParams slp = gap(8);
+        slp.height = dp(64);
+        col.addView(strip, slp);
+        col.addView(fcap, gap(4));
+
+        if (!rc.registration.isEmpty()) {
+            col.addView(label("Lining up"), gap(18));
+            col.addView(text(rc.registration + " Confidence: " + rc.confidence + ".", 14, RED, false), gap(4));
+        }
+        if (rc.sky != null && !rc.sky.lines.isEmpty()) {
+            col.addView(label("What you're looking at"), gap(18));
+            for (String l : rc.sky.lines) col.addView(text(l, 14, RED, false), gap(4));
+        }
+        if (!rc.streaks.isEmpty()) {
+            col.addView(label("Satellites and streaks"), gap(18));
+            col.addView(text(rc.streaks, 14, RED, false), gap(4));
+            List<String> named = new java.util.ArrayList<String>();
+            for (ReportCard.Streak k : rc.streakList) {
+                if (k.norad == 0) continue;
+                named.add(String.format(Locale.US, "%s%s, %d frame%s%s", SatPlanner.the(k.name), k.time.isEmpty() ? "" : " at " + k.time,
+                        k.frames, k.frames == 1 ? "" : "s", Double.isNaN(k.mag) ? "" : String.format(Locale.US, ", magnitude %.1f", k.mag)));
+            }
+            if (named.size() > 5) col.addView(text("All of them: " + TextUtils.join("; ", named) + ".", 13, RED_DIM, false), gap(6));
+        }
+        if (!rc.conditions.isEmpty()) col.addView(text(rc.conditions, 13, RED_DIM, false), gap(6));
+        col.addView(label("Next time"), gap(18));
+        col.addView(text(rc.tip, 14, RED, false), gap(4));
+        Button close = button("Close", true);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeReport();
+            }
+        });
+        col.addView(close, gap(20));
+        root.addView(ov, match());
+        reportOverlay = ov;
+        if (Build.VERSION.SDK_INT >= 33) {
+            OnBackInvokedCallback cb = new OnBackInvokedCallback() {
+                @Override
+                public void onBackInvoked() {
+                    closeReport();
+                }
+            };
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, cb);
+            reportBack = cb;
+        }
+    }
+
+    private void closeReport() {
+        if (reportOverlay != null) {
+            root.removeView(reportOverlay);
+            reportOverlay = null;
+        }
+        if (reportBack != null && Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) reportBack);
+        }
+        reportBack = null;
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        // before Android 13 (from 13 on, the callback above takes Back)
+        if (reportOverlay != null) {
+            closeReport();
+            return;
+        }
+        super.onBackPressed();
     }
 
     // ------------------------------------------------------------------------------------------------

@@ -21,6 +21,8 @@ import java.util.concurrent.Executor;
 final class Locator {
     static final class Place {
         double latDeg, lonDeg, altM = Double.NaN;
+        /** How far off the fix may be (metres, NaN if the provider didn't say). */
+        double accuracyM = Double.NaN;
         String source = "";
         /** When the fix was taken (Unix ms). */
         long timeMs;
@@ -33,7 +35,8 @@ final class Locator {
             double age = ageMinutes();
             String a = age < 2 ? "just now" : age < 120 ? Math.round(age) + " min old"
                     : age < 48 * 60 ? Math.round(age / 60) + " h old" : Math.round(age / 1440) + " days old";
-            return String.format(Locale.US, "%.3f, %.3f (%s, %s)", latDeg, lonDeg, source, a);
+            return String.format(Locale.US, "%.3f, %.3f (%s, %s%s)", latDeg, lonDeg, source, a,
+                    Double.isNaN(accuracyM) ? "" : String.format(Locale.US, ", within %.0f m", accuracyM));
         }
     }
 
@@ -129,6 +132,7 @@ final class Locator {
         p.latDeg = l.getLatitude();
         p.lonDeg = l.getLongitude();
         if (l.hasAltitude()) p.altM = l.getAltitude();
+        if (l.hasAccuracy()) p.accuracyM = l.getAccuracy();
         p.source = source;
         // a fix's age by the realtime clock, which a wrong wall clock doesn't upset
         long ageMs = Math.max(0, (SystemClock.elapsedRealtimeNanos() - l.getElapsedRealtimeNanos()) / 1_000_000L);

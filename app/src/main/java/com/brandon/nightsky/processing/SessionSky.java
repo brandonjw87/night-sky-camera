@@ -14,6 +14,8 @@ public final class SessionSky {
     /** Where the place came from ("gps", "network", "last known", "saved"), and how old it was (minutes). */
     public String locationSource = "";
     public double locationAgeMin = Double.NaN;
+    /** How far off the place may be (metres, NaN if unknown): an approximate fix is good to a few kilometres. */
+    public double accuracyM = Double.NaN;
     /** A wall-clock time (Unix ms) and the camera timestamp (ns) of the same instant. */
     public long clockWallMs, clockTimestampNs;
     public boolean clockValid;
@@ -29,6 +31,7 @@ public final class SessionSky {
         s.altM = altM;
         s.locationSource = locationSource;
         s.locationAgeMin = locationAgeMin;
+        s.accuracyM = accuracyM;
         s.clockWallMs = clockWallMs;
         s.clockTimestampNs = clockTimestampNs;
         s.clockValid = clockValid;
@@ -58,6 +61,7 @@ public final class SessionSky {
             if (!Double.isNaN(altM)) p.setProperty("alt", Double.toString(altM));
             p.setProperty("locationSource", locationSource);
             if (!Double.isNaN(locationAgeMin)) p.setProperty("locationAgeMin", Double.toString(locationAgeMin));
+            if (!Double.isNaN(accuracyM)) p.setProperty("accuracyM", Double.toString(accuracyM));
         }
         if (clockValid) {
             p.setProperty("clockWallMs", Long.toString(clockWallMs));
@@ -73,6 +77,7 @@ public final class SessionSky {
         s.altM = num(p, "alt");
         s.locationSource = p.getProperty("locationSource", "");
         s.locationAgeMin = num(p, "locationAgeMin");
+        s.accuracyM = num(p, "accuracyM");
         s.headingTopDeg = num(p, "headingTopDeg");
         try {
             String w = p.getProperty("clockWallMs"), t = p.getProperty("clockTimestampNs");

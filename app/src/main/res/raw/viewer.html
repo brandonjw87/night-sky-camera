@@ -57,6 +57,18 @@ canvas{width:100%;display:block;background:#0b0202;border-radius:8px}
 #checks li.warn::before,#checks li.stop::before{content:"!";font-weight:700;color:var(--pale)}
 #checks li.ok,#checks li.note{color:var(--dim)}
 footer{margin-top:22px;font-size:12px;color:var(--dim)}
+#reportCard p{margin:0}
+.prob{border-top:1px solid var(--sel);padding:8px 0 6px}
+.prob:first-child{border-top:0}
+.prob .t{font-weight:700;color:var(--pale)}
+.prob .c{font-size:12px;color:var(--dim)}
+.prob .f{color:var(--dim);margin-top:4px}
+.strip{display:flex;align-items:flex-end;height:64px;gap:2px;background:#0b0202;border-radius:8px;padding:4px;touch-action:none}
+.strip span{flex:1;min-width:2px;background:var(--red);min-height:3px;border-radius:2px 2px 0 0;cursor:pointer}
+.strip span.weak{background:var(--dim)}
+.strip span.out{background:transparent;border:1px solid var(--dim);border-bottom:0}
+.strip span.sel{box-shadow:0 0 0 2px var(--pale)}
+#rSky p{margin:0 0 4px}
 </style>
 </head>
 <body>
@@ -97,6 +109,28 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
       <div class="card" style="margin-top:16px" id="filesCard" hidden>
         <h2 style="margin-top:0">Download</h2>
         <div id="files"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px" id="reportCard" hidden>
+        <h2 style="margin-top:0">Session report</h2>
+        <p id="rHead" style="font-weight:700;font-size:17px"></p>
+        <p id="rGain" style="margin-top:4px"></p>
+        <h2 id="rProbHead">What cost light, biggest first</h2>
+        <div id="rProblems"></div>
+        <div id="rNotes" class="muted" style="font-size:13px"></div>
+        <h2>Frames</h2>
+        <div id="rStrip" class="strip"></div>
+        <div id="rFrame" class="muted" style="font-size:13px;margin-top:4px"></div>
+        <h2>Lining up</h2>
+        <p id="rReg"></p>
+        <h2 id="rSkyHead">What you're looking at</h2>
+        <div id="rSky"></div>
+        <h2 id="rSatHead">Satellites and streaks</h2>
+        <p id="rSat"></p>
+        <p id="rSatAll" class="muted" style="font-size:13px"></p>
+        <p id="rCond" class="muted" style="font-size:13px"></p>
+        <h2>Next time</h2>
+        <p id="rTip"></p>
       </div>
     </section>
 
@@ -208,6 +242,7 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
     $("reject").textContent = s.rejected ? (s.rejected + " left out so far" + (s.lastReject ? ", the last because of " + s.lastReject : "") + ".") : "";
 
     renderChecks(s.preflight);
+    renderReport(s.state === "done" && s.result ? s.result.report : null);
 
     var clip = s.clip;
     $("clip").textContent = clip ? ("Clipped in the last frame: red " + pct(clip[0]) + ", green " + pct(clip[1]) + ", blue " + pct(clip[2])) : "";
@@ -250,6 +285,72 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
       li.textContent = it.text;
       ul.appendChild(li);
     });
+  }
+
+  // the session report: headline, gain, problems ranked by cost, a strip of frame scores, the sky, a tip
+  var reportKey = null;
+  function renderReport(r) {
+    var key = r ? JSON.stringify(r) : "";
+    if (key === reportKey) return;
+    reportKey = key;
+    show("reportCard", !!r);
+    if (!r) return;
+    var el = function (tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    var clear = function (n) { while (n.firstChild) n.removeChild(n.firstChild); return n; };
+    $("rHead").textContent = r.headline || "";
+    $("rGain").textContent = r.gain ? r.gain.text || "" : "";
+    var probs = r.problems || [];
+    $("rProbHead").textContent = probs.length ? "What cost light, biggest first" : "No problems found";
+    var pb = clear($("rProblems"));
+    if (!probs.length) pb.appendChild(el("p", "muted", "A clear, steady session."));
+    probs.forEach(function (p) {
+      var d = el("div", "prob");
+      d.appendChild(el("div", "t", p.title));
+      d.appendChild(el("div", "c", "Cost about " + Math.round(100 * p.impact) + "% of the light"));
+      d.appendChild(el("div", null, p.evidence));
+      d.appendChild(el("div", "f", "Fix: " + p.fix));
+      pb.appendChild(d);
+    });
+    var nb = clear($("rNotes"));
+    (r.notes || []).forEach(function (t) { nb.appendChild(el("p", null, t)); });
+    var frames = r.frames || [], strip = clear($("rStrip"));
+    var cap = $("rFrame");
+    cap.textContent = (r.goodFrames != null ? r.goodFrames + " of " + frames.length + " frames scored 50 or more. " : "") + "Touch a bar to see a frame's score.";
+    var bars = [];
+    var pick = function (i) {
+      bars.forEach(function (b, k) { b.classList.toggle("sel", k === i); });
+      var f = frames[i];
+      var what = !f.used ? "left out: " + (f.reason || "") : "score " + f.score + (f.partly ? ", used partly" : "") + (f.reason ? ": " + f.reason : "");
+      cap.textContent = "Frame " + f.index + " (" + f.time + "), " + what;
+    };
+    frames.forEach(function (f, i) {
+      var b = el("span", !f.used ? "out" : (f.score >= 50 ? null : "weak"));
+      b.style.height = (!f.used ? 25 : Math.max(4, f.score)) + "%";
+      b.title = "Frame " + f.index + ": " + (f.used ? f.score : "left out");
+      b.addEventListener("click", function () { pick(i); });
+      bars.push(b);
+      strip.appendChild(b);
+    });
+    strip.onpointermove = function (e) {
+      if (!e.buttons || !frames.length) return;
+      var rc = strip.getBoundingClientRect();
+      pick(Math.max(0, Math.min(frames.length - 1, Math.floor((e.clientX - rc.left) / rc.width * frames.length))));
+    };
+    var reg = r.registration || {};
+    $("rReg").textContent = (reg.text || "") + (reg.confidence ? " Confidence: " + reg.confidence + "." : "");
+    var sky = r.sky || {}, sb = clear($("rSky"));
+    (sky.lines || []).forEach(function (t) { sb.appendChild(el("p", null, t)); });
+    show("rSkyHead", !!(sky.lines && sky.lines.length));
+    var st = r.streaks || {}, named = (st.items || []).filter(function (k) { return k.norad; });
+    $("rSat").textContent = st.text || "";
+    $("rSatAll").textContent = named.length > 5 ? "All of them: " + named.map(function (k) {
+      return k.name + (k.time ? " at " + k.time : "") + ", " + k.frames + (k.frames === 1 ? " frame" : " frames") + (k.mag != null ? ", magnitude " + k.mag : "");
+    }).join("; ") + "." : "";
+    show("rSatHead", !!st.text);
+    show("rSat", !!st.text);
+    show("rSatAll", named.length > 5);
+    $("rCond").textContent = r.conditions || "";
+    $("rTip").textContent = r.tip || "";
   }
 
   function stateName(x) {

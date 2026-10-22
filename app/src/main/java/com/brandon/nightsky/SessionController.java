@@ -12,12 +12,14 @@ import android.net.Uri;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
 import android.util.Range;
 import android.util.Size;
 
 import com.brandon.nightsky.processing.Aligner;
+import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
@@ -25,11 +27,17 @@ import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Rejection;
+import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.RgbImage;
+import com.brandon.nightsky.processing.SatCatalog;
+import com.brandon.nightsky.processing.SatOverlay;
+import com.brandon.nightsky.processing.SatPlanner;
+import com.brandon.nightsky.processing.SatPredict;
 import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SessionStore;
+import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
 
@@ -48,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -82,6 +91,10 @@ final class SessionController {
         boolean preflight = true;
         /** Started from the remote viewer: keep the viewer's mute setting. */
         boolean fromViewer;
+        /** Keep satellite streaks (and meteors) in the picture, and count bright passes down aloud. */
+        boolean keepSatellites;
+        /** Start no earlier than this (Unix ms; 0 for as soon as it's ready): the quietest stretch, chosen on the home screen. */
+        long startAtMs;
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -114,6 +127,21 @@ final class SessionController {
         Uri jpeg, dng, log;
         boolean canAdjust;
         float brightness;
+        /** The session's report card (null if it couldn't be made), and the same as JSON for the viewer. */
+        ReportCard report;
+        String reportJson;
+        /** Satellite tracks over the picture (empty if none), and whether the sky's names can be drawn. */
+        List<SatOverlay.Line> tracks = new ArrayList<SatOverlay.Line>();
+        boolean canLabel;
+        /** The full-size copy with the tracks and names, once saved. */
+        volatile Uri labelled;
+    }
+
+    /** What to draw over a saved photo. */
+    private static final class Decor {
+        List<SatOverlay.Line> tracks;
+        SkyGuide sky;
+        boolean showTracks, showLabels;
     }
 
     interface Host {
@@ -142,7 +170,7 @@ final class SessionController {
     /** After a pre-flight warning: time to pick the phone up before the countdown starts. */
     private static final long GRACE_MS = 10_000L;
     /** Pre-flight steps: waiting for the probe, the test frame, reading it, speaking, waiting after a warning. */
-    private static final int PF_PROBE = 1, PF_TEST = 2, PF_READ = 3, PF_SPEAK = 4, PF_GRACE = 5;
+    private static final int PF_PROBE = 1, PF_TEST = 2, PF_READ = 3, PF_SPEAK = 4, PF_GRACE = 5, PF_WAIT = 6;
 
     private static final class Req {
         final int seq, kind;
@@ -169,6 +197,8 @@ final class SessionController {
 
     private volatile Status status = new Status();
     private volatile Bitmap preview;
+    /** The result's preview without the tracks and names drawn on it. */
+    private Bitmap previewBase;
     private int previewVersion;
     private long statusVersion;
 
@@ -210,6 +240,18 @@ final class SessionController {
     private long testSentMs, graceUntilMs;
     private Preflight.Report preflightReport;
     private boolean startedAfterWarnings, storageShort;
+    /**
+     * Waiting to start (a bright satellite to let pass, or the stretch chosen on the home screen): the countdown
+     * begins at this time (Unix ms), so that the capture starts when planned; why, for the screen.
+     */
+    private long waitUntilWallMs;
+    private String waitWhy = "";
+    /** For the session's log: the wait, and the satellite data's state when the session started. */
+    private String waitLog = "", satDataLog = "";
+    /** The satellite data for this session (null until read, or none), and the passes to count down when kept. */
+    private SatCatalog satCatalog;
+    private final List<SatPredict.Pass> countdownPasses = new ArrayList<SatPredict.Pass>();
+    private int countdownNext, countdownSaid = Integer.MAX_VALUE;
     /** Place, clock and compass of this session. */
     private SessionSky sky = new SessionSky();
     private Locator.Place place;
@@ -225,6 +267,10 @@ final class SessionController {
     private int inFlight, framesDone, framesDropped, consecutiveFailures, restarts, awayTicks;
     private boolean firstFrameChecked;
     private long captureStartMs, lastProgressMs, pausedAtMs, pausedTotalMs;
+    /** The hottest the phone said it got during the capture (PowerManager thermal status), and when it first
+     *  got severely hot (Unix ms, 0 if never). */
+    private int thermalMax;
+    private long thermalSevereAtMs, thermalCheckedMs;
     private volatile int liveStars;
     private volatile boolean liveAligned;
 
@@ -334,7 +380,8 @@ final class SessionController {
                 Renderer.Params p = new Renderer.Params();
                 p.brightness = brightness;
                 int[] px = Renderer.renderSmall(small, output.analysis, p, smallFactor);
-                preview = Bitmap.createBitmap(px, small.cropWidth(), small.cropHeight(), Bitmap.Config.ARGB_8888);
+                previewBase = Bitmap.createBitmap(px, small.cropWidth(), small.cropHeight(), Bitmap.Config.ARGB_8888);
+                preview = decorate(previewBase);
                 previewVersion++;
                 if (result != null) result.brightness = brightness;
                 Status cur = status;
@@ -360,7 +407,7 @@ final class SessionController {
                         String err = null;
                         try {
                             String name = r.name + "_b" + Math.round(brightness * 100);
-                            r.jpeg = saveJpeg(o, sp, brightness, name);
+                            r.jpeg = saveJpeg(o, sp, brightness, name, null);
                             r.brightness = brightness;
                             prefs.setLastResultUri(r.jpeg.toString());
                         } catch (Throwable t) {
@@ -380,6 +427,78 @@ final class SessionController {
         });
     }
 
+    /** Draws the preview again with the tracks and names as the switches now say. */
+    void redraw() {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (previewBase == null || result == null) return;
+                preview = decorate(previewBase);
+                previewVersion++;
+                Status cur = status;
+                publish(cur.headline, cur.detail, -1);
+            }
+        });
+    }
+
+    /**
+     * Saves a full-size copy with the satellites' tracks and the sky's names drawn on it (as the switches say),
+     * beside the photo, at the brightness shown.
+     */
+    void saveLabelled() {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (output == null || result == null || phase != Phase.DONE) return;
+                final Result r = result;
+                final Decor d = new Decor();
+                d.tracks = r.tracks;
+                d.sky = r.report != null ? r.report.sky : null;
+                d.showTracks = prefs.showTracks();
+                d.showLabels = prefs.showLabels();
+                if (!TrackPainter.anything(d.tracks, d.sky, d.showTracks, d.showLabels)) return;
+                phase = Phase.DEVELOPING;
+                publish("Saving", "Full-size copy with the names", -1);
+                final PostProcessor.Output o = output;
+                final SensorSpec sp = outSpec;
+                final float brightness = r.brightness;
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        String err = null;
+                        try {
+                            r.labelled = saveJpeg(o, sp, brightness, r.name + "_labelled", d);
+                        } catch (Throwable t) {
+                            err = "Could not save: " + (t instanceof OutOfMemoryError ? "out of memory" : t.getMessage());
+                        }
+                        final String e = err;
+                        h.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                phase = Phase.DONE;
+                                publish(e == null ? "Saved the copy with names" : "Not saved", e == null ? r.summary : e, -1);
+                            }
+                        });
+                    }
+                }, "save").start();
+            }
+        });
+    }
+
+    /** The preview with the satellites' tracks and the sky's names, as the result screen's switches say. */
+    private Bitmap decorate(Bitmap base) {
+        Result r = result;
+        PostProcessor.Output o = output;
+        if (base == null || r == null || o == null) return base;
+        try {
+            return TrackPainter.paint(base, o.analysis.cx0, o.analysis.cy0, smallFactor, r.tracks,
+                    r.report != null ? r.report.sky : null, prefs.showTracks(), prefs.showLabels());
+        } catch (RuntimeException | OutOfMemoryError e) {
+            android.util.Log.w("NightSky", "could not draw the tracks and names: " + e);
+            return base;
+        }
+    }
+
     /** Forget the developed result (frees memory). */
     void clearResult() {
         h.post(new Runnable() {
@@ -390,6 +509,7 @@ final class SessionController {
                     small = null;
                     result = null;
                     preview = null;
+                    previewBase = null;
                     phase = Phase.IDLE;
                     publish("", "", -1);
                 }
@@ -586,6 +706,7 @@ final class SessionController {
         small = null;
         result = null;
         preview = null;
+        previewBase = null;
         if (up != null) up.abort();
         up = null;
         store = null;
@@ -642,6 +763,9 @@ final class SessionController {
                 }
             });
             cleanupOldSessions();
+            satCatalog = null;
+            satDataLog = "";
+            if (!s.trails) loadSatellites(tk);
             motion = new MotionMonitor(ctx);
             motion.start();
             sounds = new Sounds(ctx, s.sounds);
@@ -656,6 +780,52 @@ final class SessionController {
             return;
         }
         scheduleTick();
+    }
+
+    /**
+     * Reads the satellite data for the check before the session (thousands of Starlinks take a moment, so on
+     * a thread of its own), then fetches newer data if it is due and reads that.
+     */
+    private void loadSatellites(final int tk) {
+        if (!prefs.satelliteData()) {
+            satDataLog = "satellite data: off in the settings";
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long t0 = SystemClock.elapsedRealtime();
+                SatCatalog cat = null;
+                String line;
+                try {
+                    cat = Satellites.catalogNow(ctx);
+                    line = Satellites.data(ctx).status(System.currentTimeMillis());
+                } catch (RuntimeException e) {
+                    line = "could not be read (" + e + ")";
+                }
+                handOver(tk, cat, String.format(Locale.US, "satellite data: %s (read in %d ms)", line, SystemClock.elapsedRealtime() - t0));
+                String fetched = Satellites.refreshNow(ctx, false);
+                if (fetched.isEmpty()) return;
+                try {
+                    cat = Satellites.catalogNow(ctx);
+                } catch (RuntimeException e) {
+                    fetched += "; could not be read (" + e + ")";
+                }
+                handOver(tk, cat, fetched);
+            }
+        }, "satellites").start();
+    }
+
+    private void handOver(final int tk, final SatCatalog cat, final String line) {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (tk != token) return;
+                if (cat != null) satCatalog = cat;
+                satDataLog = satDataLog.isEmpty() ? line : satDataLog + "\n" + line;
+                android.util.Log.i("NightSky", line);
+            }
+        });
     }
 
     /** Storage the session's frames need (bytes): its units, two spare, and room to develop. */
@@ -704,6 +874,9 @@ final class SessionController {
         inFlight = 0;
         framesDone = 0;
         framesDropped = 0;
+        thermalMax = 0;
+        thermalSevereAtMs = 0;
+        thermalCheckedMs = 0;
         consecutiveFailures = 0;
         restarts = 0;
         awayTicks = 0;
@@ -721,6 +894,12 @@ final class SessionController {
         preflightReport = null;
         startedAfterWarnings = false;
         storageShort = false;
+        waitUntilWallMs = 0;
+        waitWhy = "";
+        waitLog = "";
+        countdownPasses.clear();
+        countdownNext = 0;
+        countdownSaid = Integer.MAX_VALUE;
         batteryAtStart = -1;
         pausedTotalMs = 0;
         liveStars = 0;
@@ -766,13 +945,14 @@ final class SessionController {
                     publishPlace();
                 } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
                     if (settings.preflight && !forced) startPreflight(now);
-                    else startCountdown(now);
+                    else proceed(now);
                 }
                 break;
             case PREFLIGHT:
                 if (forced) {
-                    // "Start now" from the viewer: no more checking
-                    skipPreflight(now, "skipped the rest of the check: start now from the viewer");
+                    // "Start now" from the viewer: no more checking or waiting
+                    skipPreflight(now, pfStep == PF_WAIT ? "start now from the viewer, without waiting"
+                            : "skipped the rest of the check: start now from the viewer");
                     break;
                 }
                 if (!motion.faceDown() || motion.rate() > 0.15f) {
@@ -796,7 +976,14 @@ final class SessionController {
                 } else if (pfStep == PF_GRACE && now >= graceUntilMs) {
                     startedAfterWarnings = true;
                     log("decision: started after the pre-flight warnings (the phone was left down)");
-                    startCountdown(now);
+                    proceed(now);
+                } else if (pfStep == PF_WAIT) {
+                    if (System.currentTimeMillis() >= waitUntilWallMs) {
+                        pfStep = 0;
+                        startCountdown(now);
+                    } else if (now - lastPublishMs >= 1000) {
+                        publishWait();
+                    }
                 }
                 break;
             case COUNTDOWN:
@@ -850,6 +1037,8 @@ final class SessionController {
                     finishCapture("it was taking far longer than planned");
                 }
                 if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
+                noteThermal(now);
+                if (phase == Phase.CAPTURING) satCountdown();
                 break;
             case PAUSED:
                 if (forced ? motion.quietNs() >= STILL_NS : motion.stillNs() >= STILL_NS) resume();
@@ -872,6 +1061,117 @@ final class SessionController {
         countdownLeft = forced ? 0 : Math.max(1, settings.countdownSec);
         nextBeepMs = now;
         if (!probeSent) sendProbe();
+    }
+
+    /** From the start of the countdown to the first exposure (ms). */
+    private long countdownLeadMs() {
+        return Math.max(1, settings.countdownSec) * 1000L + SETTLE_MS;
+    }
+
+    /**
+     * After the check (or once the phone is still, without one): the countdown now, or first a wait, so that the
+     * capture starts after a bright satellite has crossed (its streak would cost the stack) or at the time picked
+     * on the home screen.
+     */
+    private void proceed(long now) {
+        long wall = System.currentTimeMillis(), at = 0;
+        String why = "", reason = "";
+        SatPlanner.Plan p = preflightReport != null ? preflightReport.satellites : null;
+        if (p != null && p.waits()) {
+            at = p.startMs;
+            String name = SatPlanner.the(p.waitFor.sat.displayName()), when = clockTime(SatPlanner.ms(p.waitFor.jdIn));
+            why = SatPlanner.capital(name) + " crosses the frame at " + when + ", so it starts after it";
+            reason = String.format(Locale.US, "%s (magnitude %.1f) crossing the frame at %s would have left a streak", name,
+                    p.waitFor.magBest, when);
+        }
+        if (settings.startAtMs > at) {
+            at = settings.startAtMs;
+            why = "Starts at " + clockTime(at) + ", the quietest stretch for satellites";
+            reason = "the quietest stretch for satellites, picked on the home screen";
+        }
+        long lead = countdownLeadMs();
+        if (forced || at - lead - wall < 2000) {
+            startCountdown(now);
+            return;
+        }
+        phase = Phase.PREFLIGHT;
+        pfStep = PF_WAIT;
+        waitUntilWallMs = at - lead;
+        waitWhy = why;
+        waitLog = String.format(Locale.US, "decision: waited %s to start at %s: %s", clock(waitUntilWallMs - wall), clockTime(at), reason);
+        log(waitLog);
+        publishWait();
+    }
+
+    private void publishWait() {
+        long left = Math.max(0, waitUntilWallMs - System.currentTimeMillis());
+        publish("Waiting to start", waitWhy + ". The countdown begins in " + clock(left) + ".", -1);
+        lastPublishMs = SystemClock.elapsedRealtime();
+    }
+
+    /** "10:14 PM" in the phone's time zone. */
+    static String clockTime(long wallMs) {
+        java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("h:mm a", Locale.US);
+        f.setTimeZone(TimeZone.getDefault());
+        return f.format(new Date(wallMs));
+    }
+
+    /** "10:14", for speaking. */
+    private static String sayTime(long wallMs) {
+        java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("h:mm", Locale.US);
+        f.setTimeZone(TimeZone.getDefault());
+        return f.format(new Date(wallMs));
+    }
+
+    /**
+     * What to say about when the capture starts, if not right after the countdown, and about a bright pass to
+     * count down; "" if nothing.
+     */
+    private String startWords(Preflight.Report rep) {
+        SatPlanner.Plan p = rep.satellites;
+        StringBuilder w = new StringBuilder();
+        boolean satWait = p != null && p.waits();
+        if (!satWait && settings.startAtMs - System.currentTimeMillis() > countdownLeadMs() + 15_000L) {
+            w.append("I'll start at ").append(sayTime(settings.startAtMs)).append(", the quietest few minutes for satellites.");
+        }
+        if (p != null && !p.spoken.isEmpty()) w.append(w.length() > 0 ? " " : "").append(p.spoken);
+        return w.toString();
+    }
+
+    private static final String[] COUNT_WORDS = {"Now", "One", "Two", "Three", "Four", "Five"};
+
+    /**
+     * Keeping satellites: a bright pass about to cross is counted down aloud ("The ISS in ten seconds", five to
+     * one, "now"), so it can be watched going over. Speech is far too weak to shake the phone.
+     */
+    private void satCountdown() {
+        if (countdownNext >= countdownPasses.size() || sounds == null) return;
+        SatPredict.Pass p = countdownPasses.get(countdownNext);
+        long left = SatPlanner.ms(p.jdIn) - System.currentTimeMillis();
+        if (left < -3000) {
+            // missed (the capture was paused, or started late)
+            countdownNext++;
+            countdownSaid = Integer.MAX_VALUE;
+            return;
+        }
+        int step = left > 10_500 ? -1 : left > 5_500 ? 10 : (int) Math.max(0, Math.ceil((left - 500) / 1000.0));
+        if (step < 0 || step >= countdownSaid) return;
+        boolean first = countdownSaid == Integer.MAX_VALUE;
+        countdownSaid = step;
+        String name = SatPlanner.capital(SatPlanner.the(p.sat.displayName()));
+        String text;
+        if (step == 10) text = String.format(Locale.US, "%s in %d seconds.", name, Math.round(left / 1000.0));
+        else if (first) text = name + (step == 0 ? " now." : ", " + COUNT_WORDS[step].toLowerCase(Locale.US) + ".");
+        else text = COUNT_WORDS[step] + ".";
+        sounds.say(text, null);
+        if (first) {
+            log(String.format(Locale.US, "counting down %s: in the picture from %s, magnitude %.1f", SatPlanner.the(p.sat.displayName()),
+                    clockTime(SatPlanner.ms(p.jdIn)), p.magBest));
+        }
+        if (step == 0) {
+            countdownNext++;
+            countdownSaid = Integer.MAX_VALUE;
+        }
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -999,6 +1299,13 @@ final class SessionController {
         in.batteryTempC = b.tempC;
         in.charging = b.charging;
         in.drainPctPerHour = prefs.drainPctPerHour();
+        in.satellites = satCatalog;
+        in.keepSatellites = settings.keepSatellites;
+        in.zone = TimeZone.getDefault();
+        // from the middle of the test frame to the first exposure: reading it, the summary, the countdown
+        in.startDelayMs = exp / 2_000_000L + 8000L + countdownLeadMs();
+        long middle = System.currentTimeMillis() - exp / 2_000_000L;
+        if (settings.startAtMs > 0) in.startDelayMs = Math.max(in.startDelayMs, settings.startAtMs - middle);
         pfStep = PF_READ;
         publish("Checking the sky", "Reading the test frame", -1);
         final int tk = preflightToken;
@@ -1038,14 +1345,16 @@ final class SessionController {
         final boolean warn = rep.hasWarnings();
         pfStep = PF_SPEAK;
         String say = rep.spoken();
+        String later = stop != null ? "" : startWords(rep);
         if (stop != null) {
             publish("Can't start", stop.text, -1);
         } else if (warn) {
             say += " Pick up the phone to fix it, or it starts by itself in ten seconds.";
             publish("Check before starting", "Pick up the phone to fix it, or it starts by itself", -1);
         } else {
-            publish("Ready", "Starting soon", -1);
+            publish("Ready", later.isEmpty() ? "Starting soon" : later, -1);
         }
+        if (!later.isEmpty()) say += " " + later;
         sounds.say(say, new Runnable() {
             @Override
             public void run() {
@@ -1062,7 +1371,7 @@ final class SessionController {
                             graceUntilMs = t + GRACE_MS;
                             publish("Check before starting", "Pick up the phone to fix it, or it starts by itself in a few seconds", -1);
                         } else {
-                            startCountdown(t);
+                            proceed(t);
                         }
                     }
                 });
@@ -1076,6 +1385,7 @@ final class SessionController {
         sky.latDeg = p.latDeg;
         sky.lonDeg = p.lonDeg;
         sky.altM = p.altM;
+        sky.accuracyM = p.accuracyM;
         sky.locationSource = p.source;
         sky.locationAgeMin = p.ageMinutes();
     }
@@ -1193,6 +1503,11 @@ final class SessionController {
         BatteryInfo b = BatteryInfo.read(ctx);
         batteryAtStart = b.charging ? -1 : b.pct;
         batteryAtStartMs = SystemClock.elapsedRealtime();
+        countdownPasses.clear();
+        countdownNext = 0;
+        countdownSaid = Integer.MAX_VALUE;
+        SatPlanner.Plan sp = preflightReport != null ? preflightReport.satellites : null;
+        if (settings.keepSatellites && sp != null) countdownPasses.addAll(sp.countdown);
         phase = Phase.CAPTURING;
         captureStartMs = SystemClock.elapsedRealtime();
         lastProgressMs = captureStartMs;
@@ -1212,12 +1527,14 @@ final class SessionController {
         p.setProperty("durationSec", Integer.toString(settings.durationSec));
         p.setProperty("plan", plan.describe());
         p.setProperty("rejection", Rejection.Method.parse(prefs.rejection()).name());
+        p.setProperty("keepSatellites", Boolean.toString(settings.keepSatellites));
         p.setProperty("state", "capturing");
         sky.toProperties(p);
         Preflight.Report pf = preflightReport;
         if (pf != null) {
             p.setProperty("preflight.summary", pf.spoken());
             if (!Double.isNaN(pf.haloRatio)) p.setProperty("preflight.haloRatio", Double.toString(pf.haloRatio));
+            if (!Double.isNaN(pf.haloLimit)) p.setProperty("preflight.haloLimit", Double.toString(pf.haloLimit));
             if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
             Preflight.Item lens = pf.item("lens");
             p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
@@ -1253,6 +1570,12 @@ final class SessionController {
         } else if (!settings.preflight) {
             store.log("pre-flight: off in the settings");
         }
+        if (!settings.trails) {
+            for (String l : satDataLog.split("\n")) if (!l.isEmpty()) store.log(l);
+            store.log(settings.keepSatellites ? "satellites: kept in the picture (as set), bright passes counted down"
+                    : "satellites: their streaks are taken out of the stack");
+        }
+        if (!waitLog.isEmpty()) store.log(waitLog);
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
         liveSpec = spec;
@@ -1616,6 +1939,7 @@ final class SessionController {
         releaseCamera();
         host.onCaptureEnded();
         noteBatteryUse();
+        if (frames > 0 && store != null) recordCapture(store);
         if (frames == 0 || up == null || store == null) {
             if (up != null) up.abort();
             if (store != null) store.deleteAll();
@@ -1649,6 +1973,34 @@ final class SessionController {
         }, "develop").start();
     }
 
+    /** Every two seconds while capturing: how hot the phone says it is (for the report). */
+    private void noteThermal(long now) {
+        if (now - thermalCheckedMs < 2000) return;
+        thermalCheckedMs = now;
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm == null) return;
+        int st = pm.getCurrentThermalStatus();
+        if (st > thermalMax) {
+            thermalMax = st;
+            log("thermal status " + st);
+        }
+        if (st >= PowerManager.THERMAL_STATUS_SEVERE && thermalSevereAtMs == 0) thermalSevereAtMs = System.currentTimeMillis();
+    }
+
+    /** What the capture saw that the frames don't show, into the session's settings for the report. */
+    private void recordCapture(SessionStore st) {
+        try {
+            Properties p = st.readSettings();
+            p.setProperty("capture.framesDone", Integer.toString(framesDone));
+            p.setProperty("capture.framesDropped", Integer.toString(framesDropped));
+            p.setProperty("capture.thermalMax", Integer.toString(thermalMax));
+            if (thermalSevereAtMs > 0) p.setProperty("capture.thermalSevereAtMs", Long.toString(thermalSevereAtMs));
+            st.writeSettings(p);
+        } catch (IOException e) {
+            st.log("could not note the capture's details: " + e.getMessage());
+        }
+    }
+
     /** How fast this session used the battery, for the next pre-flight's estimate (only when not charging). */
     private void noteBatteryUse() {
         if (batteryAtStart < 0) return;
@@ -1680,6 +2032,7 @@ final class SessionController {
         small = null;
         result = null;
         preview = null;
+        previewBase = null;
         resetCapture();
         settings = new Settings();
         settings.trails = "trails".equals(p.getProperty("mode"));
@@ -1745,11 +2098,29 @@ final class SessionController {
             SessionSky sk = SessionSky.fromProperties(props);
             sk.catalog = SkyCatalog.get(ctx);
             pp.sky = sk;
+            // the satellites: named where they crossed, and taken out (or kept, as set when it started)
+            pp.keepSatellites = "true".equals(props.getProperty("keepSatellites"));
+            if (!trails) {
+                if (!prefs.satelliteData()) {
+                    pp.satellitesMissing = "satellite data is off in the settings";
+                } else {
+                    try {
+                        long ms = sk.clockValid ? sk.clockWallMs : System.currentTimeMillis();
+                        pp.satellites = Satellites.catalog(ctx, Astro.jdUtc(ms / 1000.0));
+                    } catch (RuntimeException e) {
+                        pp.satellitesMissing = "the satellite data couldn't be read";
+                        st.log("satellites: the data couldn't be read: " + e);
+                    }
+                }
+            }
             PostProcessor.Output o = pp.run(trails, progress);
             learnFromSession(props, o, sp, st);
+            ReportCard card = report(o, sk, props, st);
+            List<SatOverlay.Line> tracks = SatOverlay.lines(o.satTracks, o.streaks, o.analysis.cx0, o.analysis.cy0, o.analysis.cw,
+                    o.analysis.ch);
             String name = "NightSky_" + st.id() + (trails ? "_trails" : "");
             post(Phase.DEVELOPING, "Saving", "Full-size photo", -1f);
-            Uri jpeg = saveJpeg(o, sp, brightness, name);
+            Uri jpeg = saveJpeg(o, sp, brightness, name, null);
             Uri dng = null;
             if (saveDng) {
                 post(Phase.DEVELOPING, "Saving", "RAW (DNG) copy", -1f);
@@ -1779,6 +2150,10 @@ final class SessionController {
             r.log = log;
             r.canAdjust = true;
             r.brightness = brightness;
+            r.report = card;
+            r.reportJson = card != null ? card.toJson() : null;
+            r.tracks = tracks;
+            r.canLabel = card != null && card.sky != null && !card.sky.items.isEmpty();
             prefs.setLastResultUri(jpeg.toString());
             final PostProcessor.Output out = o;
             final RgbImage smf = sm;
@@ -1791,12 +2166,13 @@ final class SessionController {
                     small = smf;
                     smallFactor = ff;
                     result = r;
-                    preview = bmp;
+                    previewBase = bmp;
+                    preview = decorate(bmp);
                     previewVersion++;
                     phase = Phase.DONE;
                     publish(trails ? "Your star trails are ready" : "Your photo is ready", r.summary, -1);
                     if (snd != null) {
-                        snd.say(spoken(out), new Runnable() {
+                        snd.say(r.report != null ? r.report.spoken : spoken(out), new Runnable() {
                             @Override
                             public void run() {
                                 snd.release();
@@ -1828,6 +2204,30 @@ final class SessionController {
                             + ". The frames are kept; try again from the start screen.");
                 }
             });
+        }
+    }
+
+    /** The session's report card, saved with the session and in its log; null if it couldn't be made. */
+    private ReportCard report(PostProcessor.Output o, SessionSky sk, Properties props, SessionStore st) {
+        try {
+            ReportCard.Input in = new ReportCard.Input();
+            in.out = o;
+            in.sky = sk;
+            in.props = props;
+            in.zone = TimeZone.getDefault();
+            in.catalog = sk.catalog;
+            ReportCard card = ReportCard.build(in);
+            st.log("report:\n" + card.describe());
+            try {
+                st.writeText("report.json", card.toJson());
+            } catch (IOException e) {
+                st.log("could not save the report: " + e.getMessage());
+            }
+            return card;
+        } catch (RuntimeException e) {
+            st.log("report failed: " + e);
+            for (StackTraceElement el : e.getStackTrace()) st.log("  at " + el);
+            return null;
         }
     }
 
@@ -1863,7 +2263,7 @@ final class SessionController {
         return "Done. Your photo is ready.";
     }
 
-    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name) throws IOException {
+    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d) throws IOException {
         final int cw = o.analysis.cw, ch = o.analysis.ch;
         final Bitmap bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
         try {
@@ -1877,6 +2277,7 @@ final class SessionController {
                     }
                 }
             }, null);
+            if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, 1, d.tracks, d.sky, d.showTracks, d.showLabels);
             MediaSaver.Exif ex = new MediaSaver.Exif();
             ex.make = sp.deviceMake;
             ex.model = sp.deviceModel;
