@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
+import java.util.TimeZone;
 
 /**
  * The check before a session starts: one test frame at the session's settings, read for what would spoil the
@@ -75,6 +76,12 @@ public final class Preflight {
         public boolean charging;
         /** Battery used per hour of capture (%), NaN for the default. */
         public double drainPctPerHour = Double.NaN;
+        /** Satellites' orbital elements (null: none on the phone), and whether their streaks stay in the picture. */
+        public SatCatalog satellites;
+        public boolean keepSatellites;
+        /** From the test frame to the session's start (ms): the summary, the countdown and settling. */
+        public long startDelayMs = 15000;
+        public TimeZone zone = TimeZone.getDefault();
     }
 
     public static final class Report {
@@ -112,6 +119,8 @@ public final class Preflight {
         public String placeSource = "";
         /** The place the stars and "up" give (NaN if they don't), whether or not it was used. */
         public double starLatDeg = Double.NaN, starLonDeg = Double.NaN;
+        /** The satellites crossing the picture, and whether to start after a bright one; null if not checked. */
+        public SatPlanner.Plan satellites;
         public long millis;
 
         public boolean hasWarnings() {
@@ -211,6 +220,19 @@ public final class Preflight {
             }
             j.put("latDeg", latDeg).put("lonDeg", lonDeg).put("placeSource", placeSource);
             j.put("starLatDeg", starLatDeg).put("starLonDeg", starLonDeg);
+            if (satellites != null) {
+                SatPlanner.Plan p = satellites;
+                j.obj("satellites").put("text", p.text).put("askedStartMs", p.askedStartMs).put("startMs", p.startMs)
+                        .put("keep", p.keep).put("startCost", p.startCost).put("millis", p.millis);
+                if (p.waitFor != null) j.put("waitFor", p.waitFor.sat.displayName());
+                if (p.quietStartMs != 0) j.put("quietStartMs", p.quietStartMs).put("quietCost", p.quietCost).put("offerQuiet", p.offerQuiet);
+                j.arr("passes");
+                for (SatPredict.Pass q : p.passes) {
+                    j.obj().put("name", q.sat.displayName()).put("norad", q.sat.norad).put("inMs", SatPlanner.ms(q.jdIn))
+                            .put("outMs", SatPlanner.ms(q.jdOut)).put("mag", Math.round(q.magBest * 10) / 10.0).end();
+                }
+                j.end().end();
+            }
             return j.end().toString();
         }
     }
@@ -327,9 +349,35 @@ public final class Preflight {
         checkMoon(in, rep, utcMs, lat, lon, located, model, camToEnu);
         checkClipping(in, rep, stars, black, scale);
         checkBattery(in, rep);
+        checkSatellites(in, rep, utcMs, lat, lon, located, model, camToEnu);
         suggestMode(in, rep);
         rep.millis = System.currentTimeMillis() - t0;
         return rep;
+    }
+
+    /**
+     * The satellites that will cross the picture during the session ({@link SatPlanner}): a bright one about to
+     * cross means starting after it (unless they're kept), and when kept, the bright ones are counted down.
+     */
+    static void checkSatellites(Input in, Report rep, long utcMs, double lat, double lon, boolean located, CameraModel model,
+                                double[] camToEnu) {
+        if (in.satellites == null || in.satellites.size() == 0 || !located || utcMs == 0 || camToEnu == null || in.trails) return;
+        double[] axis = new double[3], b = new double[3];
+        Rot.apply(camToEnu, 0, 0, 1, axis);
+        // the picture as a circle: the axis to the farthest corner
+        double radius = 0;
+        int W = in.spec.width, H = in.spec.height;
+        double[][] corners = {{0, 0}, {W, 0}, {0, H}, {W, H}};
+        for (double[] c : corners) {
+            model.unproject(c[0], c[1], b);
+            double n = Math.sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
+            radius = Math.max(radius, Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, b[2] / n)))));
+        }
+        double hKm = in.sky != null && !Double.isNaN(in.sky.altM) ? in.sky.altM / 1000 : 0;
+        SatPlanner.Plan p = SatPlanner.plan(in.satellites, new SatSky.Site(lat, lon, hKm), axis, radius, utcMs + in.startDelayMs,
+                in.sessionSeconds, in.keepSatellites, in.zone);
+        rep.satellites = p;
+        rep.items.add(new Item("satellites", p.waits() ? Level.NOTE : Level.OK, p.text, p.spoken));
     }
 
     // ------------------------------------------------------------------------------------------------

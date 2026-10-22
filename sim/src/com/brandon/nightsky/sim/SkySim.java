@@ -5,7 +5,9 @@ import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.Parallel;
 import com.brandon.nightsky.processing.Rot;
+import com.brandon.nightsky.processing.SatSky;
 import com.brandon.nightsky.processing.SensorSpec;
+import com.brandon.nightsky.processing.Sgp4;
 import com.brandon.nightsky.processing.ShadingMap;
 import com.brandon.nightsky.processing.UnitProcessor;
 
@@ -35,8 +37,31 @@ public final class SkySim {
     public double magLimit = 10.3;
     public int substeps = 4;
 
+    /**
+     * Satellites from orbital elements (real sky only): drawn wherever SGP4 puts them while the Sun lights them,
+     * as bright as {@link SatSky#magnitude} makes them.
+     */
+    public static final class OrbitSat {
+        public final Sgp4 orbit;
+        /** Magnitude at 1000 km, half lit. */
+        public final double stdMag;
+        /** Debug: per frame, how far it travelled across the picture (pixels) and its brightest line density (signal per pixel of length). */
+        public final double[] pathPx, peakDensity;
+
+        public OrbitSat(Sgp4 orbit, double stdMag, int frames) {
+            this.orbit = orbit;
+            this.stdMag = stdMag;
+            pathPx = new double[frames];
+            peakDensity = new double[frames];
+        }
+    }
+
+    public final java.util.List<OrbitSat> orbitSats = new java.util.ArrayList<OrbitSat>();
+
     // events
     public int satelliteFrame = -1, planeFrame = -1, meteorFrame = -1;
+    /** Noise that stays the same where the picture changes (for comparing two renders of one sky). */
+    public boolean steadyNoise;
     public int cloudFrom = -1, cloudTo = -1;
     public double cloudT = 0.25;
     public int partialFrom = -1, partialTo = -1;
@@ -226,6 +251,13 @@ public final class SkySim {
         if (m0 == null) return null;
         double[] C = Rot.mul(camera(i, 0.5), sky(frameStart(i) + 0.5 * frameExp));
         return Rot.transpose(Rot.mul(C, m0));
+    }
+
+    /** The plane's dashed line in frame i, sensor pixels {xa, ya, xb, yb}; null if it isn't in that frame. */
+    public double[] planeSegment(int i) {
+        if (planeFrame < 0 || (i != planeFrame && i != planeFrame + 1)) return null;
+        double fr = i == planeFrame ? 0 : 0.5;
+        return new double[]{W * (0.1 + fr * 0.8), H * (0.9 - fr * 0.7), W * (0.1 + (fr + 0.5) * 0.8), H * (0.9 - (fr + 0.5) * 0.7)};
     }
 
     /** Real sky: J2000 to ENU at time t seconds after the start of frame 0 (the sim's own turning sky). */
@@ -471,11 +503,10 @@ public final class SkySim {
         }
         // transients
         if (i == satelliteFrame) addLine(img, W * 0.08, H * 0.1, W * 0.9, H * 0.85, 1.0, 140 * exp / 8, 0);
-        if (planeFrame >= 0 && (i == planeFrame || i == planeFrame + 1)) {
-            double fr = i == planeFrame ? 0 : 0.5;
-            addLine(img, W * (0.1 + fr * 0.8), H * (0.9 - fr * 0.7), W * (0.1 + (fr + 0.5) * 0.8), H * (0.9 - (fr + 0.5) * 0.7), 1.2, 400, 28);
-        }
+        double[] plane = planeSegment(i);
+        if (plane != null) addLine(img, plane[0], plane[1], plane[2], plane[3], 1.2, 400, 28);
         if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
+        for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
         // the branch's lit leaves: fixed bright spots
         if (branchT != null) {
             for (int g : glints) {
@@ -506,7 +537,7 @@ public final class SkySim {
                     for (int x = 0; x < W; x++) {
                         int k = y * W + x;
                         double lam = Math.max(0, img[k]);
-                        double v = poisson(r, lam) + readNoise * gauss(r) + black + rowBand[y];
+                        double v = (steadyNoise ? poissonOneDraw(r, lam) : poisson(r, lam)) + readNoise * gauss(r) + black + rowBand[y];
                         if (fpn != null) v += fpn[k] + rowFixed[y] + colFixed[x];
                         long q = Math.round(v);
                         if (q < 0) q = 0;
@@ -591,6 +622,90 @@ public final class SkySim {
         }
     }
 
+    /** Sunlight's colour on the sensor (red, green, blue relative to their mean), for satellites. */
+    private float[] sunTint;
+
+    /**
+     * A satellite's streak in frame i: its place every 50 ms from SGP4 (topocentric J2000, then the sim's own
+     * turning sky and the camera), and its light spread evenly along the straight line between those places.
+     */
+    private void drawOrbitSat(float[] img, int i, OrbitSat o, double psf, double halo) {
+        if (m0 == null) return;
+        if (sunTint == null) {
+            double[] rgb = tint(5800);
+            double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
+            double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
+            double bb = A[6] * rgb[0] + A[7] * rgb[1] + A[8] * rgb[2];
+            double mean = (rr + 2 * gg + bb) / 4;
+            sunTint = new float[]{(float) (rr / mean), (float) (gg / mean), (float) (bb / mean)};
+        }
+        SatSky.Site site = new SatSky.Site(Math.toRadians(latitudeDeg), Math.toRadians(longitudeDeg), 0);
+        SatSky.Look look = new SatSky.Look();
+        double t0 = frameStart(i), dt = 0.05;
+        int steps = (int) Math.round(frameExp / dt);
+        double px0 = Double.NaN, py0 = 0, f0 = 0;
+        double[] enu = new double[3], b = new double[3], p = new double[2];
+        int[] cfa = {0, 1, 1, 2};
+        for (int k = 0; k <= steps; k++) {
+            double t = t0 + k * dt;
+            SatSky.Moment m = site.moment(Astro.jdUtc(startUnixMs / 1000.0 + t));
+            boolean seen = SatSky.look(o.orbit, o.stdMag, m, look) && look.sunlit && look.altDeg > 0;
+            double px = Double.NaN, py = 0, f = 0;
+            if (seen) {
+                Rot.apply(j2000ToEnu(t), look.j2000[0], look.j2000[1], look.j2000[2], enu);
+                Rot.apply(camera(i, k / (double) steps), enu[0], enu[1], enu[2], b);
+                if (b[2] > 0.05 && truth.project(b[0], b[1], b[2], p)) {
+                    px = p[0];
+                    py = p[1];
+                    f = fluxZero * Math.pow(10, -0.4 * look.mag) * starGain;
+                }
+            }
+            if (!Double.isNaN(px) && !Double.isNaN(px0)) {
+                double len = Math.hypot(px - px0, py - py0);
+                double flux = 0.5 * (f + f0) * dt;
+                boolean inside = px > 0 && py > 0 && px < W && py < H;
+                if (inside) {
+                    o.pathPx[i] += len;
+                    if (len > 1e-6) o.peakDensity[i] = Math.max(o.peakDensity[i], flux / len * transparency(i, px) * vignetting(px, py));
+                }
+                if (len < 4000 && (inside || px0 > 0 && py0 > 0 && px0 < W && py0 < H)) {
+                    // the core in steps of 0.3 px; the lens's glow (as the stars have it) in steps of a pixel
+                    for (int part = 0; part < (halo > 0 ? 2 : 1); part++) {
+                        double share = part == 0 ? 1 - halo : halo, sg = part == 0 ? psf : haloSigma;
+                        int n = Math.max(1, (int) Math.ceil(len / (part == 0 ? 0.3 : 1.0)));
+                        for (int q = 0; q < n; q++) {
+                            double u = (q + 0.5) / n, x = px0 + (px - px0) * u, y = py0 + (py - py0) * u;
+                            if (x < -4 * sg || y < -4 * sg || x > W + 4 * sg || y > H + 4 * sg) continue;
+                            double amp = flux * share / n * transparency(i, x) * vignetting(x, y);
+                            if (branchT != null && x >= 0 && y >= 0 && x < W && y < H) amp *= branchT[(int) y * W + (int) x];
+                            addSpotTint(img, x, y, sg, amp, cfa, sunTint);
+                        }
+                    }
+                }
+            }
+            px0 = px;
+            py0 = py;
+            f0 = f;
+        }
+    }
+
+    private void addSpotTint(float[] img, double px, double py, double sg, double amp, int[] cfa, float[] tint) {
+        int r = (int) Math.ceil(4 * sg);
+        int x0 = (int) Math.floor(px) - r, y0 = (int) Math.floor(py) - r;
+        double inv = 1 / (Math.sqrt(2) * sg);
+        for (int yy = 0; yy <= 2 * r; yy++) {
+            int y = y0 + yy;
+            if (y < 0 || y >= H) continue;
+            double fy = 0.5 * (erf((y + 1 - py) * inv) - erf((y - py) * inv));
+            for (int xx = 0; xx <= 2 * r; xx++) {
+                int x = x0 + xx;
+                if (x < 0 || x >= W) continue;
+                double fx = 0.5 * (erf((x + 1 - px) * inv) - erf((x - px) * inv));
+                img[y * W + x] += (float) (amp * fx * fy * tint[cfa[((y & 1) << 1) | (x & 1)]]);
+            }
+        }
+    }
+
     /** Streak with peak brightness per pixel {@code amp}; dash > 0 makes it dotted (blinking lights). */
     private void addLine(float[] img, double xa, double ya, double xb, double yb, double sg, double amp, double dash) {
         double len = Math.hypot(xb - xa, yb - ya);
@@ -623,6 +738,20 @@ public final class SkySim {
     static double gauss(SplittableRandom r) {
         double u1 = r.nextDouble(), u2 = r.nextDouble();
         return Math.sqrt(-2 * Math.log(Math.max(u1, 1e-300))) * Math.cos(2 * Math.PI * u2);
+    }
+
+    /** Poisson by its inverse distribution: one draw whatever the level, so two renders differing in a few spots share all other noise. */
+    static double poissonOneDraw(SplittableRandom r, double lam) {
+        if (lam <= 0) return 0;
+        if (lam > 40) return lam + Math.sqrt(lam) * gauss(r);
+        double u = r.nextDouble(), p = Math.exp(-lam), F = p;
+        int k = 0;
+        while (u > F && k < 200) {
+            k++;
+            p *= lam / k;
+            F += p;
+        }
+        return k;
     }
 
     static double poisson(SplittableRandom r, double lam) {

@@ -142,8 +142,12 @@ public final class PostProcessor {
     public float clipHigh = 3f, clipLow = 4f;
     /** Satellites to name the streaks after (null: streaks are still found and taken out, but not named). */
     public SatCatalog satellites;
+    /** Why {@link #satellites} is null, for the report (when it is). */
+    public String satellitesMissing = "no satellite data on the phone";
     /** Keep the named satellites' streaks (and meteors) in the picture, at full brightness, instead of taking them out. */
     public boolean keepSatellites;
+    /** Whether streaks get corridors in the next stack (tests switch it off to compare; they're still named). */
+    public boolean streakCorridors = true;
     /** Faintest satellite looked for (magnitude), and how far outside the picture a track may start (pixels). */
     static final double SAT_MAG_LIMIT = 7;
     static final float SAT_PAD = 64;
@@ -151,6 +155,19 @@ public final class PostProcessor {
     static final int MIN_STREAK_FRAMES = 3;
     /** The reference frame's stars as detected for photometry (the deepest list of it). */
     private StarList refDetections;
+    /**
+     * The session's average on the sensor, green, lens shading taken out, per {@link StreakEvidence#CELL}-px cell
+     * (row by row, {@link #skyCellsX} wide), and its median: where a branch or a roof sits in every frame. Null
+     * if not made.
+     */
+    private float[] sensorSky;
+    private int skyCellsX;
+    /** Its median, and its noise from cell to cell. */
+    private float sensorSkyLevel, sensorSkyNoise;
+    /** On the sensor's average, a cell this far below the sky's median (or above it, times) isn't sky. */
+    static final float OBSTRUCTION_DARK = 0.35f, OBSTRUCTION_BRIGHT = 3f;
+    /** Share of an unexplained streak's length beside something that isn't sky, at which it's that thing's edge. */
+    static final double OBSTRUCTION_SHARE = 0.5;
 
     public PostProcessor(SessionStore store, SensorSpec spec) {
         this.store = store;
@@ -585,6 +602,11 @@ public final class PostProcessor {
      */
     private boolean streaks(Output out, StreakEvidence ev, List<Unit> stacked, List<SharpStacker.Plan> plans,
                             List<UnitRecord> recs, CameraModel model) {
+        int fixedCells = clearSensorFixed(ev, plans, model);
+        if (fixedCells > 0) {
+            store.log(String.format(Locale.US, "streaks: %d cells of rejections stayed put on the sensor (a branch's edge, a lit "
+                    + "leaf, a warm patch), so they're not counted as streaks", fixedCells));
+        }
         List<SatPredict.Track> tracks = predictSatellites(out, stacked, recs);
         int maxIndex = 0;
         for (SharpStacker.Plan p : plans) maxIndex = Math.max(maxIndex, p.unit);
@@ -594,6 +616,19 @@ public final class PostProcessor {
         double degPerPx = Math.toDegrees(1 / (out.solution != null ? out.solution.model.fx : model.fx));
         long t0 = System.currentTimeMillis();
         SatMatch.Result r = SatMatch.match(tracks != null ? tracks : new ArrayList<SatPredict.Track>(), planOf, ev, degPerPx, W);
+        int edges = 0;
+        for (java.util.Iterator<SatMatch.Streak> it = r.streaks.iterator(); it.hasNext(); ) {
+            SatMatch.Streak s = it.next();
+            if (s.sat != null || s.plan < 0 || s.plan >= plans.size()) continue;
+            if (besideObstruction(s, plans.get(s.plan), model) >= OBSTRUCTION_SHARE) {
+                it.remove();
+                edges++;
+            }
+        }
+        if (edges > 0) {
+            store.log(String.format(Locale.US, "streaks: %d along the edge of something on the sensor that isn't sky (a branch, "
+                    + "a roof), so they're not counted", edges));
+        }
         out.streaks = r;
         out.satTracks = tracks;
         out.satellitesKept = keepSatellites;
@@ -616,6 +651,10 @@ public final class PostProcessor {
                     s.sat != null ? String.format(Locale.US, " of %d, %.1f px across, %+.1f s along, mag %.1f, elements %.1f days old",
                             s.expected, s.across, s.alongSec, s.mag, s.track.ageDays) : "",
                     keep ? ", kept" : ", masked"));
+        }
+        if (!streakCorridors) {
+            store.log("streaks: corridors switched off, the stack keeps what the rejection left");
+            return false;
         }
         for (int i = 0; i < plans.size(); i++) {
             plans.get(i).masks = flat(masks.get(i));
@@ -647,6 +686,72 @@ public final class PostProcessor {
         return masked > 0 || kept > 0;
     }
 
+    /**
+     * Clears the rejections that stay put on the sensor rather than on the sky: a branch's edges, a lit leaf, a
+     * warm patch, which drift through the stack with the frames. Each frame's cells are taken back to where they
+     * were on its sensor; a sensor cell (or its neighbour) with rejections in at least half the frames, and three,
+     * is fixed, and its cells go from every frame, unless the same cells of the sky had them as often (a train of
+     * satellites along one line, or stars: when the sky hardly drifted, the two can't be told apart, and nothing
+     * goes). A satellite, a plane or a meteor crosses a cell of the sensor in one frame. Returns the cells cleared.
+     */
+    private int clearSensorFixed(StreakEvidence ev, List<SharpStacker.Plan> plans, CameraModel model) {
+        int nf = plans.size();
+        if (nf < 4) return 0;
+        int cw = ev.cellsX, chh = ev.cellsY, c = StreakEvidence.CELL;
+        if (drift(plans, model)[0] < 3 * c) return 0;
+        short[] count = new short[cw * chh], sky = new short[cw * chh];
+        for (int f = 0; f < nf; f++) for (int q : ev.cells(f)) if (sky[q] < Short.MAX_VALUE) sky[q]++;
+        int[] stamp = new int[cw * chh];
+        int[][] where = new int[nf][];
+        double[] b = new double[3], r = new double[3], p = new double[2];
+        for (int f = 0; f < nf; f++) {
+            double[] R = plans.get(f).R;
+            int[] cells = ev.cells(f);
+            where[f] = new int[cells.length];
+            for (int k = 0; k < cells.length; k++) {
+                int cx = cells[k] % cw, cy = cells[k] / cw;
+                where[f][k] = -1;
+                model.unproject((cx + 0.5) * c, (cy + 0.5) * c, b);
+                Rot.apply(R, b[0], b[1], b[2], r);
+                if (!model.project(r[0], r[1], r[2], p)) continue;
+                int sx = (int) Math.floor(p[0] / c), sy = (int) Math.floor(p[1] / c);
+                if (sx < 0 || sy < 0 || sx >= cw || sy >= chh) continue;
+                int q = sy * cw + sx;
+                where[f][k] = q;
+                if (stamp[q] != f + 1) {
+                    stamp[q] = f + 1;
+                    if (count[q] < Short.MAX_VALUE) count[q]++;
+                }
+            }
+        }
+        int need = Math.max(3, (nf + 1) / 2), cleared = 0;
+        for (int f = 0; f < nf; f++) {
+            int[] cells = ev.cells(f);
+            for (int k = 0; k < cells.length; k++) {
+                int q = where[f][k];
+                if (q < 0) continue;
+                // positions are good to a cell: the cell or its neighbours, on the sensor and on the sky
+                int most = max3x3(count, q % cw, q / cw, cw, chh), onSky = max3x3(sky, cells[k] % cw, cells[k] / cw, cw, chh);
+                if (most >= need && onSky < need) {
+                    ev.clear(f, cells[k] % cw, cells[k] / cw);
+                    cleared++;
+                }
+            }
+        }
+        return cleared;
+    }
+
+    private static int max3x3(short[] a, int cx, int cy, int cw, int ch) {
+        int m = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int x = cx + dx, y = cy + dy;
+                if (x >= 0 && y >= 0 && x < cw && y < ch) m = Math.max(m, a[y * cw + x]);
+            }
+        }
+        return m;
+    }
+
     private static int framesWith(SatMatch.Result r) {
         java.util.Set<Integer> f = new java.util.HashSet<Integer>();
         for (SatMatch.Streak s : r.streaks) f.add(s.plan);
@@ -666,8 +771,8 @@ public final class PostProcessor {
      */
     private List<SatPredict.Track> predictSatellites(Output out, List<Unit> stacked, List<UnitRecord> recs) {
         if (satellites == null || satellites.size() == 0) {
-            out.satellitesNote = "no satellite data on the phone";
-            store.log("satellites: no orbital elements, so streaks aren't named");
+            out.satellitesNote = satellitesMissing;
+            store.log("satellites: no orbital elements (" + satellitesMissing + "), so streaks aren't named");
             return null;
         }
         if (out.solution == null) {
@@ -827,10 +932,96 @@ public final class PostProcessor {
         }
         float inv = 1f / Math.max(1, n);
         for (int i = 0; i < sum.length; i++) sum[i] *= inv;
+        sensorSky(sum);
         if (n < 2) return HotPixels.empty(W, H);
         // with few frames stars barely move on the sensor, so be stricter
         float k = n >= 8 ? 8f : 12f;
         return HotPixels.detect(sum, W, H, spec.cfa, k);
+    }
+
+    /** Makes {@link #sensorSky} from the session's average on the sensor (black taken off). */
+    private void sensorSky(final float[] avg) {
+        final int c = StreakEvidence.CELL, cw = (W + c - 1) / c, ch = (H + c - 1) / c;
+        final int gq = Preflight.greenSite(spec);
+        final float[] map = new float[cw * ch];
+        final ShadingMap sh = spec.shading;
+        Parallel.forRange(ch, 8, new Parallel.Range() {
+            @Override
+            public void run(int r0, int r1) {
+                for (int cy = r0; cy < r1; cy++) {
+                    for (int cx = 0; cx < cw; cx++) {
+                        double sum = 0;
+                        int n = 0;
+                        for (int y = cy * c; y < Math.min(H, (cy + 1) * c); y++) {
+                            for (int x = cx * c; x < Math.min(W, (cx + 1) * c); x++) {
+                                if (spec.cfa[((y & 1) << 1) | (x & 1)] != 1) continue;
+                                sum += avg[y * W + x];
+                                n++;
+                            }
+                        }
+                        float gain = sh != null ? sh.gain(gq, (cx + 0.5) * c, (cy + 0.5) * c) : 1f;
+                        map[cy * cw + cx] = n > 0 ? (float) (sum / n) * gain : 0f;
+                    }
+                }
+            }
+        });
+        // the median from every 7th cell
+        float[] some = new float[(map.length + 6) / 7];
+        for (int i = 0, k = 0; i < map.length && k < some.length; i += 7) some[k++] = map[i];
+        java.util.Arrays.sort(some);
+        float level = some[some.length / 2];
+        // noise: the median step between neighbouring cells, as a sigma
+        float[] steps = new float[some.length];
+        int k = 0;
+        for (int i = 0; i + 1 < map.length && k < steps.length; i += 7) {
+            if ((i + 1) % cw == 0) continue;
+            steps[k++] = Math.abs(map[i + 1] - map[i]);
+        }
+        java.util.Arrays.sort(steps, 0, k);
+        float noise = k > 0 ? (float) (1.4826 * steps[k / 2] / Math.sqrt(2)) : 0f;
+        if (!(level > 0)) {
+            sensorSky = null;
+            return;
+        }
+        sensorSky = map;
+        skyCellsX = cw;
+        sensorSkyLevel = level;
+        sensorSkyNoise = noise;
+    }
+
+    /**
+     * Share of a streak's length that runs beside something on the sensor that isn't sky: a cell within its
+     * corridor (and two cells more) that the session's average shows far darker than the sky (a branch, a
+     * roof) or far brighter (a lit wall). An obstruction's edge leaves rejections along it in the frames at
+     * either end of a session, as the sky drifts past it; a satellite crosses open sky. Stack coordinates are
+     * taken to the streak's frame's sensor through its rotation.
+     */
+    private double besideObstruction(SatMatch.Streak s, SharpStacker.Plan plan, CameraModel model) {
+        if (sensorSky == null || plan.R == null) return 0;
+        int c = StreakEvidence.CELL, cw = skyCellsX, ch = sensorSky.length / cw;
+        double dx = s.x1 - s.x0, dy = s.y1 - s.y0, len = Math.hypot(dx, dy);
+        if (len < c) return 0;
+        double ux = dx / len, uy = dy / len, reach = s.halfWidth + 2 * c;
+        double[] b = new double[3], r = new double[3], p = new double[2];
+        int samples = 0, beside = 0;
+        for (double u = 0; u <= len; u += c) {
+            boolean seen = false, odd = false;
+            for (double o = -reach; o <= reach + 1e-9 && !odd; o += c) {
+                double x = s.x0 + ux * u - uy * o, y = s.y0 + uy * u + ux * o;
+                model.unproject(x, y, b);
+                Rot.apply(plan.R, b[0], b[1], b[2], r);
+                if (!model.project(r[0], r[1], r[2], p)) continue;
+                int sx = (int) Math.floor(p[0] / c), sy = (int) Math.floor(p[1] / c);
+                if (sx < 0 || sy < 0 || sx >= cw || sy >= ch) continue;
+                seen = true;
+                float v = sensorSky[sy * cw + sx], L = sensorSkyLevel, clear = 6 * sensorSkyNoise;
+                odd = (v < OBSTRUCTION_DARK * L && L - v > clear) || (v > OBSTRUCTION_BRIGHT * L && v - L > clear);
+            }
+            if (!seen) continue;
+            samples++;
+            if (odd) beside++;
+        }
+        return samples > 0 ? beside / (double) samples : 0;
     }
 
     /** A clear frame near the middle of the session: most star light, with a mild preference for the middle. */

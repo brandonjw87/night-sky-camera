@@ -124,6 +124,41 @@ final class Prefs {
         sp.edit().putBoolean("preflight", v).apply();
     }
 
+    /** Download satellites' orbits from CelesTrak (to name streaks and warn of passes); nothing is sent but the request. */
+    boolean satelliteData() {
+        return sp.getBoolean("satelliteData", true);
+    }
+
+    void setSatelliteData(boolean v) {
+        sp.edit().putBoolean("satelliteData", v).apply();
+    }
+
+    /** Keep satellite streaks (and meteors) in the picture instead of taking them out; bright passes are counted down. */
+    boolean keepSatellites() {
+        return sp.getBoolean("keepSatellites", false);
+    }
+
+    void setKeepSatellites(boolean v) {
+        sp.edit().putBoolean("keepSatellites", v).apply();
+    }
+
+    /** On the result: dashed satellite tracks, and names of stars, planets and constellations. */
+    boolean showTracks() {
+        return sp.getBoolean("showTracks", true);
+    }
+
+    void setShowTracks(boolean v) {
+        sp.edit().putBoolean("showTracks", v).apply();
+    }
+
+    boolean showLabels() {
+        return sp.getBoolean("showLabels", false);
+    }
+
+    void setShowLabels(boolean v) {
+        sp.edit().putBoolean("showLabels", v).apply();
+    }
+
     /** Whether the app has asked for the (approximate) location once already. */
     boolean askedLocation() {
         return sp.getBoolean("askedLocation", false);
@@ -216,6 +251,7 @@ final class Prefs {
         p.latDeg = sp.getFloat("placeLat", 0f);
         p.lonDeg = sp.getFloat("placeLon", 0f);
         p.altM = sp.getFloat("placeAlt", Float.NaN);
+        p.accuracyM = sp.getFloat("placeAccuracy", Float.NaN);
         p.timeMs = sp.getLong("placeTime", 0L);
         p.source = "saved";
         return p;
@@ -224,7 +260,7 @@ final class Prefs {
     void savePlace(Locator.Place p) {
         if (p == null) return;
         sp.edit().putFloat("placeLat", (float) p.latDeg).putFloat("placeLon", (float) p.lonDeg)
-                .putFloat("placeAlt", (float) p.altM).putLong("placeTime", p.timeMs).apply();
+                .putFloat("placeAlt", (float) p.altM).putFloat("placeAccuracy", (float) p.accuracyM).putLong("placeTime", p.timeMs).apply();
     }
 
     /** Last session that was developed, for the home screen. */

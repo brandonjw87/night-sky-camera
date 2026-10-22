@@ -96,6 +96,22 @@ public final class StreakEvidence {
         bits[f][(int) (p >> 6)] &= ~(1L << (p & 63));
     }
 
+    /** The set cells of plan f, as indices (row by row). */
+    public int[] cells(int f) {
+        int[] out = new int[count(f)];
+        int k = 0;
+        long[] b = bits[f];
+        for (int w = 0; w < b.length; w++) {
+            long v = b[w];
+            while (v != 0) {
+                int i = Long.numberOfTrailingZeros(v);
+                v &= v - 1;
+                out[k++] = (w << 6) + i;
+            }
+        }
+        return out;
+    }
+
     /** Set cells of plan f. */
     public int count(int f) {
         int n = 0;

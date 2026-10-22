@@ -78,6 +78,8 @@ public final class SatMatch {
     static final float MIN_SHARE = 0.25f;
     /** Cells either side of a path that count as on it. */
     static final int WIDTH_CELLS = 1;
+    /** Farthest either side of the fitted offset that the band of equally good offsets is followed (pixels). */
+    static final int MAX_BAND_PX = 64;
     /** Fewest cells an unidentified streak needs, and the largest gap (cells) inside one. */
     static final int MIN_FREE_CELLS = 14, MAX_GAP = 4;
 
@@ -167,16 +169,33 @@ public final class SatMatch {
             }
         }
         if (bestScore < MIN_CELLS || bestScore < MIN_SHARE * bestExp) return null;
-        // refine across to the pixel around the best cell offset
-        double bestPx = bestOff * c;
+        // refine across to the pixel: the hit test takes the path's neighbours too, and a bright streak lights a
+        // band of cells, so a range of offsets fits (almost) equally well; the streak's centre is its middle
         int a = t.in0 + bestShift, b = t.in1 + bestShift;
-        for (double d = bestOff * c - c; d <= bestOff * c + c + 1e-9; d += 1) {
-            int sc = walk(t, f, ev, a, b, d, null, null, null)[0];
-            if (sc > bestScore) {
-                bestScore = sc;
-                bestPx = d;
+        int span = (WIDTH_CELLS + 1) * (int) c, reach = MAX_BAND_PX;
+        int[] sc = new int[2 * reach + 1];
+        Arrays.fill(sc, -1);
+        int top = -1, at = reach;
+        for (int k = reach - span; k <= reach + span; k++) {
+            sc[k] = walk(t, f, ev, a, b, bestOff * c - reach + k, null, null, null)[0];
+            if (sc[k] > top || sc[k] == top && Math.abs(k - reach) < Math.abs(at - reach)) {
+                top = sc[k];
+                at = k;
             }
         }
+        int near = top - Math.max(1, Math.round(0.03f * top)), lo = at, hi = at;
+        while (lo > 0) {
+            if (sc[lo - 1] < 0) sc[lo - 1] = walk(t, f, ev, a, b, bestOff * c - reach + lo - 1, null, null, null)[0];
+            if (sc[lo - 1] < near) break;
+            lo--;
+        }
+        while (hi < 2 * reach) {
+            if (sc[hi + 1] < 0) sc[hi + 1] = walk(t, f, ev, a, b, bestOff * c - reach + hi + 1, null, null, null)[0];
+            if (sc[hi + 1] < near) break;
+            hi++;
+        }
+        double bestPx = bestOff * c - reach + (lo + hi) / 2.0;
+        bestScore = Math.max(bestScore, top);
         float[] ends = new float[4];
         double[] times = new double[2];
         float[] width = new float[1];
@@ -402,23 +421,57 @@ public final class SatMatch {
             s.x1 = (float) ((ox + ux * (t1 + ext)) * c);
             s.y1 = (float) ((oy + uy * (t1 + ext)) * c);
             s.cells = cells;
-            // width: how far the run's cells spread across the line
+            // width: how far the cells near the line spread across it (a bright trail is several cells wide)
             double spread = 0;
-            for (int i = bestA; i <= bestB; i++) spread = Math.max(spread, Math.abs(on.get(i)[2]));
-            s.halfWidth = (float) ((spread + 2) * c + 2);
-            s.kind = "";
-            // gaps: a blinking light leaves regular gaps
-            int gaps = 0;
-            for (int i = bestA + 1; i <= bestB; i++) if (on.get(i)[0] - on.get(i - 1)[0] > 1.5) gaps++;
-            if (gaps >= 4 && gaps > 0.2 * cells) s.kind = "plane";
+            for (int i = 0; i < n; i++) {
+                if (gone[i]) continue;
+                double d = (px[i] + 0.5) * cs[a] + (py[i] + 0.5) * sn[a] - rho;
+                double t = (px[i] + 0.5) * -sn[a] + (py[i] + 0.5) * cs[a];
+                if (Math.abs(d) <= 4 && t >= t0 - 1 && t <= t1 + 1) spread = Math.max(spread, Math.abs(d));
+            }
+            s.halfWidth = (float) ((spread + 1.5) * c + 2);
+            s.kind = blinks(on, bestA, bestB) ? "plane" : "";
             out.add(s);
-            for (int i = bestA; i <= bestB; i++) {
-                int q = (int) on.get(i)[1];
-                gone[q] = true;
-                vote(acc, rhos, diag, cs, sn, px[q], py[q], -1);
+            // the whole corridor's cells go (a thick trail's edge cells would otherwise come back as a second line)
+            for (int i = 0; i < n; i++) {
+                if (gone[i]) continue;
+                double d = (px[i] + 0.5) * cs[a] + (py[i] + 0.5) * sn[a] - rho;
+                double t = (px[i] + 0.5) * -sn[a] + (py[i] + 0.5) * cs[a];
+                if (Math.abs(d) > spread + 1.5 || t < t0 - ext || t > t1 + ext) continue;
+                gone[i] = true;
+                vote(acc, rhos, diag, cs, sn, px[i], py[i], -1);
             }
         }
         return out;
+    }
+
+    /**
+     * Whether a line's cells, laid along it, leave regular dark stretches: a plane's flashing lights. The run's
+     * cells are projected onto the line in steps of a cell; three or more empty stretches of two cells or longer,
+     * a quarter of the length dark in all, and stretches alike in length (within a factor of two of their median).
+     */
+    static boolean blinks(List<double[]> on, int a, int b) {
+        double t0 = on.get(a)[0], t1 = on.get(b)[0];
+        int bins = (int) Math.floor(t1 - t0) + 1;
+        if (bins < 12) return false;
+        boolean[] occ = new boolean[bins];
+        for (int i = a; i <= b; i++) occ[Math.min(bins - 1, (int) Math.floor(on.get(i)[0] - t0))] = true;
+        List<Integer> gaps = new ArrayList<Integer>();
+        int run = 0, dark = 0;
+        for (int k = 0; k < bins; k++) {
+            if (!occ[k]) {
+                run++;
+                dark++;
+            } else {
+                if (run >= 2) gaps.add(run);
+                run = 0;
+            }
+        }
+        if (gaps.size() < 3 || dark < 0.25 * bins) return false;
+        Collections.sort(gaps);
+        int med = gaps.get(gaps.size() / 2), alike = 0;
+        for (int g : gaps) if (g * 2 >= med && g <= med * 2) alike++;
+        return alike >= 0.75 * gaps.size();
     }
 
     private static void vote(int[] acc, int rhos, double diag, double[] cs, double[] sn, int x, int y, int v) {

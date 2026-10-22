@@ -8,8 +8,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.TimeZone;
 
@@ -91,6 +94,21 @@ public final class ReportCard {
     public String conditions = "";
     public String tip = "";
     public String spoken = "";
+    /** The streaks found: the satellites named (and when), planes, meteors, and what was done with them; "" if none. */
+    public String streaks = "";
+    public final List<Streak> streakList = new ArrayList<Streak>();
+
+    /** A satellite named in the picture, or a kind of unnamed streak (name "plane", "meteor" or "unknown"). */
+    public static final class Streak {
+        public String name = "", time = "";
+        /** 0 for the unnamed kinds. */
+        public int norad;
+        /** Frames it crossed. */
+        public int frames;
+        /** Brightest predicted magnitude (NaN if unnamed). */
+        public double mag = Double.NaN;
+        public boolean kept;
+    }
 
     private ReportCard() {}
 
@@ -137,6 +155,7 @@ public final class ReportCard {
         r.gain();
         r.registration();
         r.skyGuide();
+        r.streaks();
         r.tipAndSpeech();
         return r;
     }
@@ -884,6 +903,171 @@ public final class ReportCard {
         sky = SkyGuide.describe(o.solution, jd, in.sky, in.catalog != null ? in.catalog : in.sky != null ? in.sky.catalog : null, x0, y0, w, h);
     }
 
+    private void streaks() {
+        PostProcessor.Output o = in.out;
+        SatMatch.Result r = o.streaks;
+        String note = o.satellitesNote != null ? o.satellitesNote : "";
+        if (r == null) {
+            if (!note.isEmpty()) streaks = "Streaks weren't named: " + note + ".";
+            return;
+        }
+        Map<Integer, Streak> named = new LinkedHashMap<Integer, Streak>();
+        Map<Integer, Integer> firstUnit = new HashMap<Integer, Integer>();
+        int planes = 0, meteors = 0, other = 0, unlisted = 0;
+        for (List<SatMatch.Streak> chain : chains(r.streaks)) {
+            boolean plane = false, meteor = false;
+            for (SatMatch.Streak s : chain) {
+                plane |= "plane".equals(s.kind);
+                meteor |= "meteor".equals(s.kind);
+            }
+            if (plane) planes++;
+            else if (chain.size() >= 2) unlisted++;
+            else if (meteor) meteors++;
+            else other++;
+        }
+        for (SatMatch.Streak s : r.streaks) {
+            if (s.sat == null) continue;
+            Streak k = named.get(s.sat.norad);
+            if (k == null) {
+                k = new Streak();
+                k.name = s.sat.displayName();
+                k.norad = s.sat.norad;
+                k.kept = o.satellitesKept;
+                named.put(s.sat.norad, k);
+                firstUnit.put(s.sat.norad, s.unit);
+            }
+            k.frames++;
+            if (Double.isNaN(k.mag) || s.mag < k.mag) k.mag = s.mag;
+            if (s.unit < firstUnit.get(s.sat.norad)) firstUnit.put(s.sat.norad, s.unit);
+        }
+        List<Streak> list = new ArrayList<Streak>(named.values());
+        for (Streak k : list) k.time = whenOf(firstUnit.get(k.norad));
+        Collections.sort(list, new Comparator<Streak>() {
+            @Override
+            public int compare(Streak a, Streak b) {
+                return Double.compare(a.mag, b.mag);
+            }
+        });
+        streakList.addAll(list);
+        String[] kinds = {"plane", "meteor", "unlisted satellite", "unknown"};
+        int[] counts = {planes, meteors, unlisted, other};
+        for (int i = 0; i < kinds.length; i++) {
+            if (counts[i] == 0) continue;
+            Streak k = new Streak();
+            k.name = kinds[i];
+            k.frames = counts[i];
+            k.kept = o.satellitesKept && "meteor".equals(kinds[i]);
+            streakList.add(k);
+        }
+        if (r.streaks.isEmpty()) {
+            streaks = r.predicted > 0 ? "No streaks: the satellites that crossed were too faint to leave one." : "No streaks found.";
+            if (!note.isEmpty()) streaks += " (Satellites weren't named: " + note + ".)";
+            return;
+        }
+        List<String> parts = new ArrayList<String>();
+        int shown = Math.min(5, list.size());
+        for (int i = 0; i < shown; i++) {
+            Streak k = list.get(i);
+            parts.add(SatPlanner.the(k.name) + (k.time.isEmpty() ? "" : " at " + k.time)
+                    + (k.frames > 1 ? " (" + count(k.frames, "frame") + ")" : ""));
+        }
+        if (list.size() > shown) parts.add(count(list.size() - shown, "more satellite"));
+        StringBuilder sb = new StringBuilder();
+        if (!list.isEmpty()) sb.append(list.size() == 1 ? "A satellite crossed the picture: " : "Satellites crossed the picture: ")
+                .append(SkyGuide.list(parts)).append('.');
+        List<String> rest = new ArrayList<String>();
+        if (planes > 0) rest.add(count(planes, "plane"));
+        if (unlisted > 0) rest.add(unlisted == 1 ? "a satellite the data doesn't have" : unlisted + " satellites the data doesn't have");
+        if (meteors > 0) rest.add(count(meteors, "possible meteor"));
+        if (other > 0) rest.add(count(other, "streak") + " nothing explains");
+        if (!rest.isEmpty()) sb.append(sb.length() > 0 ? " Also " : "").append(sb.length() > 0 ? SkyGuide.list(rest) : capital(SkyGuide.list(rest)))
+                .append('.');
+        boolean anyKept = false, anyOut = false;
+        for (Streak k : streakList) {
+            if (k.kept) anyKept = true;
+            else anyOut = true;
+        }
+        sb.append(anyKept && !anyOut ? " Kept in the picture at full brightness, as asked."
+                : anyKept ? " The satellites and meteors were kept, as asked; the rest were taken out."
+                : " All were taken out of the stack, faint edges included.");
+        if (list.isEmpty() && !note.isEmpty()) sb.append(" (Satellites weren't named: ").append(note).append(".)");
+        streaks = sb.toString();
+    }
+
+    /**
+     * The unnamed streaks as objects: a streak in one frame and its continuation in the next (in line with it,
+     * within a few degrees and pixels) are one thing crossing, a plane or a satellite the data doesn't have.
+     */
+    public static List<List<SatMatch.Streak>> chains(List<SatMatch.Streak> streaks) {
+        List<SatMatch.Streak> un = new ArrayList<SatMatch.Streak>();
+        for (SatMatch.Streak s : streaks) if (s.sat == null && !Float.isNaN(s.x0)) un.add(s);
+        Collections.sort(un, new Comparator<SatMatch.Streak>() {
+            @Override
+            public int compare(SatMatch.Streak a, SatMatch.Streak b) {
+                return a.unit - b.unit;
+            }
+        });
+        List<List<SatMatch.Streak>> out = new ArrayList<List<SatMatch.Streak>>();
+        for (SatMatch.Streak s : un) {
+            List<SatMatch.Streak> into = null;
+            for (List<SatMatch.Streak> c : out) {
+                SatMatch.Streak last = c.get(c.size() - 1);
+                // the next frame or the one after; or the same frame, a dashed plane's light broken into pieces
+                if (s.unit - last.unit >= 0 && s.unit - last.unit <= 2 && inLine(c, s)) {
+                    into = c;
+                    break;
+                }
+            }
+            if (into == null) out.add(into = new ArrayList<SatMatch.Streak>());
+            into.add(s);
+        }
+        return out;
+    }
+
+    /**
+     * Whether streak {@code b} carries on the line of the {@code chain}: the line through all its pieces' ends,
+     * weighted by their lengths. A short piece's direction is uncertain by about two cells over its length, and
+     * the line wanders a little over a long way, so both tolerances grow accordingly.
+     */
+    static boolean inLine(List<SatMatch.Streak> chain, SatMatch.Streak b) {
+        double sw = 0, mx = 0, my = 0, hw = 0;
+        for (SatMatch.Streak a : chain) {
+            double w = Math.max(1, Math.hypot(a.x1 - a.x0, a.y1 - a.y0));
+            mx += w * (a.x0 + a.x1);
+            my += w * (a.y0 + a.y1);
+            sw += 2 * w;
+            hw = Math.max(hw, a.halfWidth);
+        }
+        mx /= sw;
+        my /= sw;
+        double sxx = 0, sxy = 0, syy = 0, span = 0;
+        for (SatMatch.Streak a : chain) {
+            double w = Math.max(1, Math.hypot(a.x1 - a.x0, a.y1 - a.y0));
+            for (int e = 0; e < 2; e++) {
+                double dx = (e == 0 ? a.x0 : a.x1) - mx, dy = (e == 0 ? a.y0 : a.y1) - my;
+                sxx += w * dx * dx;
+                sxy += w * dx * dy;
+                syy += w * dy * dy;
+            }
+            span = Math.max(span, Math.hypot(a.x1 - a.x0, a.y1 - a.y0));
+        }
+        double ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ux = Math.cos(ang), uy = Math.sin(ang);
+        double ex = b.x1 - b.x0, ey = b.y1 - b.y0, len2 = Math.hypot(ex, ey);
+        if (len2 < 1) return false;
+        double angTol = Math.max(Math.toRadians(4), Math.atan2(3 * StreakEvidence.CELL, Math.min(len2, span)));
+        if (Math.abs(ux * ex + uy * ey) / len2 < Math.cos(angTol)) return false;
+        double nx = -uy, ny = ux;
+        double far = Math.hypot((b.x0 + b.x1) / 2 - mx, (b.y0 + b.y1) / 2 - my);
+        double tol = Math.max(hw, b.halfWidth) + 2 * StreakEvidence.CELL + 0.01 * far;
+        return Math.abs((b.x0 - mx) * nx + (b.y0 - my) * ny) < tol && Math.abs((b.x1 - mx) * nx + (b.y1 - my) * ny) < tol;
+    }
+
+    /** The local time of a unit's frame ("11:40 PM"), or its minutes into the session; "" if not found. */
+    private String whenOf(int unit) {
+        for (F f : fs) if (f.r.index == unit) return f.when;
+        return "";
+    }
+
     static String skyClass(double m) {
         if (m >= 21.7) return "an excellent dark sky";
         if (m >= 21.3) return "a dark country sky";
@@ -978,6 +1162,17 @@ public final class ReportCard {
             j.end().end();
         }
         if (!Double.isNaN(skyMag)) j.put("skyMag", round(skyMag, 2));
+        if (!streaks.isEmpty()) {
+            j.obj("streaks").put("text", streaks).arr("items");
+            for (Streak k : streakList) {
+                j.obj().put("name", k.name).put("frames", k.frames).put("kept", k.kept);
+                if (k.norad != 0) j.put("norad", k.norad);
+                if (!k.time.isEmpty()) j.put("time", k.time);
+                if (!Double.isNaN(k.mag)) j.put("mag", round(k.mag, 1));
+                j.end();
+            }
+            j.end().end();
+        }
         j.put("conditions", conditions);
         j.put("tip", tip).put("spoken", spoken);
         j.end();
@@ -1002,6 +1197,7 @@ public final class ReportCard {
         if (!registration.isEmpty()) sb.append(registration).append(" Confidence: ").append(confidence).append(".\n");
         if (!conditions.isEmpty()) sb.append(conditions).append('\n');
         if (sky != null) for (String s : sky.lines) sb.append(s).append('\n');
+        if (!streaks.isEmpty()) sb.append(streaks).append('\n');
         sb.append("Frames:");
         for (Frame f : frames) {
             sb.append(String.format(Locale.US, " %d:%d", f.index, f.score));
