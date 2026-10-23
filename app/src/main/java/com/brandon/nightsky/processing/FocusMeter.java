@@ -63,19 +63,25 @@ public final class FocusMeter {
      * @param raw   the frame (unsigned 16-bit, values times invScale are ADU)
      * @param black per-CFA-plane black levels of this frame
      */
-    public static Reading measure(short[] raw, float invScale, SensorSpec spec, float[] black) {
+    public static Reading measure(final short[] raw, final float invScale, final SensorSpec spec, final float[] black) {
         long t0 = System.nanoTime();
         Reading r = new Reading();
         int W = spec.width, H = spec.height;
-        int cs = (Math.min(W, H) / 3) & ~31;
+        final int cs = (Math.min(W, H) / 3) & ~31;
         if (cs < 128) {
             r.why = "the frame is too small to measure";
             return r;
         }
         int m = (int) (0.04 * Math.min(W, H)) & ~1;
-        int[][] crops = {{((W - cs) / 2) & ~1, ((H - cs) / 2) & ~1}, {m, m}, {(W - cs - m) & ~1, (H - cs - m) & ~1}};
-        Crop[] cr = new Crop[3];
-        for (int c = 0; c < 3; c++) cr[c] = new Crop(raw, invScale, spec, black, crops[c][0], crops[c][1], cs);
+        final int[][] crops = {{((W - cs) / 2) & ~1, ((H - cs) / 2) & ~1}, {m, m}, {(W - cs - m) & ~1, (H - cs - m) & ~1}};
+        // the crops side by side, here and in what follows
+        final Crop[] cr = new Crop[3];
+        Parallel.forRange(3, new Parallel.Range() {
+            @Override
+            public void run(int s, int e) {
+                for (int c = s; c < e; c++) cr[c] = new Crop(raw, invScale, spec, black, crops[c][0], crops[c][1], cs);
+            }
+        });
         // a rough size with a middling aperture (or a big one for badly blurred stars), then an aperture fitted
         // to it, grown once if the stars turn out bigger
         double h = guess(cr, 2, 9, GUESS_SNR);
@@ -101,9 +107,9 @@ public final class FocusMeter {
         int n = 0, nc = 0;
         double centre = Double.NaN;
         long[] scratch = new long[3 * MAX_PER_CROP];
+        measureAll(cr, rd, ap, MIN_SNR, MAX_PER_CROP);
         for (int c = 0; c < 3; c++) {
             Crop k = cr[c];
-            k.measure(rd, ap, MIN_SNR, MAX_PER_CROP);
             for (int i = 0; i < k.n; i++) {
                 all[n] = k.hfr[i];
                 wt[n] = k.wt[i];
@@ -158,8 +164,8 @@ public final class FocusMeter {
     private static double guess(Crop[] cr, int rd, double ap, double snr) {
         float[] v = new float[3 * GUESS_PER_CROP], w = new float[3 * GUESS_PER_CROP];
         int n = 0;
+        measureAll(cr, rd, ap, snr, GUESS_PER_CROP);
         for (Crop c : cr) {
-            c.measure(rd, ap, snr, GUESS_PER_CROP);
             for (int i = 0; i < c.n; i++) {
                 v[n] = c.hfr[i];
                 w[n++] = c.wt[i];
@@ -167,6 +173,16 @@ public final class FocusMeter {
         }
         if (n < Math.max(4, MIN_STARS / 2)) return Double.NaN;
         return Stats.weightedMedian(v, w, n, new long[n]);
+    }
+
+    /** Up to limit stars measured in each crop (see {@link Crop#measure}), the crops side by side. */
+    private static void measureAll(final Crop[] cr, final int rd, final double ap, final double snr, final int limit) {
+        Parallel.forRange(cr.length, new Parallel.Range() {
+            @Override
+            public void run(int s, int e) {
+                for (int c = s; c < e; c++) cr[c].measure(rd, ap, snr, limit);
+            }
+        });
     }
 
     /** What measuring one star came to. */
