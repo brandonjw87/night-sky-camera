@@ -1172,16 +1172,22 @@ final class SessionController {
         h.post(new Runnable() {
             @Override
             public void run() {
-                if (tk != rerenderToken || output == null || small == null || result == null) return;
-                Recipe rc = c != null ? c : result.recipe;
-                previewFraming = whole ? null : frameFor(rc, result.north, small.cropWidth(), small.cropHeight());
-                previewBase = previewBitmap(small, output.analysis, paramsOf(rc, c != null ? Float.NaN : result.brightness), smallFactor);
-                preview = decorate(previewBase);
-                previewVersion++;
+                if (tk != rerenderToken) return;
+                previewAs(c, whole);
                 Status cur = status;
                 publish(cur.headline, cur.detail, -1);
             }
         });
+    }
+
+    /** The preview as {@code c} renders it ({@link #previewEdit}), or the photo as it is (null); on the session thread. */
+    private void previewAs(Recipe c, boolean whole) {
+        if (output == null || small == null || result == null) return;
+        Recipe rc = c != null ? c : result.recipe;
+        previewFraming = whole ? null : frameFor(rc, result.north, small.cropWidth(), small.cropHeight());
+        previewBase = previewBitmap(small, output.analysis, paramsOf(rc, c != null ? Float.NaN : result.brightness), smallFactor);
+        preview = decorate(previewBase);
+        previewVersion++;
     }
 
     /**
@@ -1200,6 +1206,7 @@ final class SessionController {
                 Result r = result;
                 final Recipe cur = r.recipe;
                 if (cur == null) {
+                    previewAs(null, false);
                     publish("Not saved", "This photo's recipe wasn't kept, so it can't be edited.", -1);
                     return;
                 }
@@ -1208,12 +1215,14 @@ final class SessionController {
                     try {
                         e.mask = pm.isBlank() ? "" : pm.save(st.dir);
                     } catch (IOException ex) {
+                        previewAs(null, false);
                         publish("Not saved", "The painting couldn't be kept: " + ex.getMessage(), -1);
                         return;
                     }
                 }
                 String what = e.changes(cur);
                 if (what.isEmpty()) {
+                    previewAs(null, false);
                     publish("Nothing to save", "The edit is the photo as it is.", -1);
                     return;
                 }
@@ -1232,6 +1241,7 @@ final class SessionController {
                     return;
                 }
                 if (cur.isMerge()) {
+                    previewAs(null, false);
                     publish("Not saved", "It's sessions stacked together: only how it's rendered can change.", -1);
                     return;
                 }
@@ -1323,6 +1333,7 @@ final class SessionController {
                 @Override
                 public void run() {
                     phase = Phase.DONE;
+                    previewAs(null, false);
                     publish("Not saved", "Could not save the edit: " + why, -1);
                 }
             });
@@ -1370,7 +1381,8 @@ final class SessionController {
     /** Stacks the session again as {@code e} says and shows it (on the calling thread, a job's own); {@code again}: the render it remakes. */
     private void restack(final SessionStore st, final Recipe e, final Recipe again, int backTo) {
         boolean dng = !"false".equals(readProperty(st, "saveDng"));
-        runDevelop(st, e.brightness, dng, null, JOB_EDIT, backTo, e.trails ? "Building the star trails" : "Lining up the stars", new Maker() {
+        runDevelop(st, e.brightness, dng, null, again != null ? JOB_AGAIN : JOB_EDIT, backTo, e.trails ? "Building the star trails"
+                : "Lining up the stars", new Maker() {
             @Override
             public Made make(Progress progress) throws IOException {
                 Made m = developEdit(st, e, progress);
@@ -4277,7 +4289,8 @@ final class SessionController {
     }
 
     /** What a develop job is: a session (or minutes added to one), sessions merged, or an edit stacked again (G3). */
-    private static final int JOB_DEVELOP = 0, JOB_MERGE = 1, JOB_EDIT = 2;
+    /** Develop jobs: a session, sessions merged, an edit stacked again, a saved render whose stack was deleted made again. */
+    private static final int JOB_DEVELOP = 0, JOB_MERGE = 1, JOB_EDIT = 2, JOB_AGAIN = 3;
 
     /**
      * The develop thread's frame: progress on the screen, the stack from {@code maker}, then everything saved and shown
@@ -4286,8 +4299,9 @@ final class SessionController {
      */
     private void runDevelop(final SessionStore st, final float brightness, final boolean saveDng, final Sounds snd, final int job,
                             int backTo, String firstStage, Maker maker) {
-        final boolean merging = job == JOB_MERGE;
-        final String verb = merging ? "Merging" : job == JOB_EDIT ? "Stacking the edit" : "Developing";
+        final boolean merging = job == JOB_MERGE, edit = job == JOB_EDIT || job == JOB_AGAIN;
+        final String verb = merging ? "Merging" : job == JOB_EDIT ? "Stacking the edit" : job == JOB_AGAIN ? "Making it again" : "Developing";
+        final String what = merging ? "merging" : job == JOB_EDIT ? "stacking the edit" : job == JOB_AGAIN ? "making a render again" : "developing";
         final long t0 = SystemClock.elapsedRealtime();
         post(Phase.DEVELOPING, verb, firstStage, 0f);
         Progress progress = new Progress() {
@@ -4310,9 +4324,10 @@ final class SessionController {
             Made m = maker.make(progress);
             finishDevelop(m, brightness, saveDng, snd, t0);
         } catch (final CancelledException e) {
-            st.log(merging ? "merging cancelled" : job == JOB_EDIT ? "stacking the edit cancelled" : "developing cancelled");
-            if (job == JOB_EDIT) {
-                doOpen(st.dir, backTo, "Cancelled", "The edit wasn't saved; the photo is as it was.");
+            st.log(what + " cancelled");
+            if (edit) {
+                doOpen(st.dir, backTo, "Cancelled", job == JOB_AGAIN ? "It wasn't made again; this is the session's latest photo."
+                        : "The edit wasn't saved; the photo is as it was.");
                 return;
             }
             h.post(new Runnable() {
@@ -4328,11 +4343,15 @@ final class SessionController {
                 }
             });
         } catch (final Throwable t) {
-            st.log((merging ? "merging" : job == JOB_EDIT ? "stacking the edit" : "developing") + " failed: " + t);
+            st.log(what + " failed: " + t);
             for (StackTraceElement el : t.getStackTrace()) st.log("  at " + el);
-            if (job == JOB_EDIT) {
-                doOpen(st.dir, backTo, "Edit not saved", "Stacking it again failed: " + (t instanceof OutOfMemoryError ? "out of memory"
-                        : t.getMessage()) + ". The photo is as it was.");
+            if (edit) {
+                String why = t instanceof OutOfMemoryError ? "out of memory" : t.getMessage();
+                if (job == JOB_AGAIN) {
+                    doOpen(st.dir, backTo, "Not made again", "Stacking it again failed: " + why + ". This is the session's latest photo.");
+                } else {
+                    doOpen(st.dir, backTo, "Edit not saved", "Stacking it again failed: " + why + ". The photo is as it was.");
+                }
                 return;
             }
             h.post(new Runnable() {
@@ -4380,30 +4399,43 @@ final class SessionController {
         // rendered as its recipe says: the develop step's settings, or an edit's (G3)
         Renderer.Params params = paramsOf(m.recipe, brightness);
         final double[] north = northOf(o, master != null ? master.solutionR : o.solution != null ? o.solution.R : null);
-        Uri jpeg = saveJpeg(o, sp, params, m.recipe, north, name, null, factor, hash);
-        Recipe recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
+        // a render made again that came out as it was isn't saved twice: it's the one already in the gallery (G3)
+        final boolean same = m.again != null && !m.again.pixelHash.isEmpty()
+                && m.again.pixelHash.equals(photoHash(o, params, m.recipe, north, factor));
+        Uri jpeg;
+        Recipe recipe;
+        if (same) {
+            jpeg = m.again.uri.isEmpty() ? null : Uri.parse(m.again.uri);
+            recipe = m.again;
+            hash[0] = m.again.pixelHash;
+        } else {
+            jpeg = saveJpeg(o, sp, params, m.recipe, north, name, null, factor, hash);
+            recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
+        }
         if (m.again != null) {
-            home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s", m.again.number,
-                    sameAs(m.again, master, hash[0])));
+            home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s%s", m.again.number,
+                    sameAs(m.again, master, hash[0]), same ? ", so it isn't saved twice" : recipe != null
+                            ? String.format(Locale.US, ", so it's saved as render r%03d", recipe.number) : ""));
         }
         Uri blendUri = null;
-        if (o.blend != null) {
+        if (o.blend != null && !same) {
             post(Phase.DEVELOPING, "Saving", "The cloud-blur version", -1f);
             try {
                 blendUri = saveBlend(o, sp, brightness, name + "_blend");
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 st.log("cloud blur: not saved: " + e);
             }
-            o.blend = null; // its memory, for the result screen
         }
+        o.blend = null; // its memory, for the result screen
         Uri dng = null;
-        if (saveDng) {
+        if (saveDng && !same) {
             post(Phase.DEVELOPING, "Saving", "RAW (DNG) copy", -1f);
             dng = saveDng(o, sp, name);
         }
         if (!"developed".equals(st.state())) st.setState("developed");
-        st.log(String.format(Locale.US, "%s in %.1f s: %s", m.edit ? "edit stacked" : m.merge == null ? "developed" : m.nights ? "merged"
-                : "stacked with the session it adds to", (SystemClock.elapsedRealtime() - t0) / 1000.0, o.summary));
+        st.log(String.format(Locale.US, "%s in %.1f s: %s", m.again != null ? "render made again" : m.edit ? "edit stacked"
+                : m.merge == null ? "developed" : m.nights ? "merged" : "stacked with the session it adds to",
+                (SystemClock.elapsedRealtime() - t0) / 1000.0, o.summary));
         if (home != st) home.log(String.format(Locale.US, "%s: %s", m.recipe.note, o.summary));
         Uri log = null;
         if (!m.edit) {
@@ -4424,7 +4456,7 @@ final class SessionController {
         saveThumb(home, frame(bmp, pf));
         final Result r = new Result();
         r.summary = o.summary;
-        r.name = name;
+        r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
         r.session = home.dir.getName();
         r.trails = m.trails;
         r.startedMs = parseLong(m.props.getProperty("capture.startWallMs"));
@@ -4448,7 +4480,26 @@ final class SessionController {
         r.merge = m.merge;
         r.north = north;
         r.repeatOf = m.merge == null && !m.edit ? m.props.getProperty("repeatOf", "") : "";
-        prefs.setLastResultUri(jpeg.toString());
+        if (jpeg != null) prefs.setLastResultUri(jpeg.toString());
+        // what's said: an edit by its render's number, a render made again by how it came out
+        final String headline, detail;
+        if (m.again != null) {
+            headline = String.format(Locale.US, "Render %d made again", m.again.number);
+            detail = same ? "Its stacked picture had been deleted to make room, so it was stacked again from the frames: the same picture, "
+                    + "pixel for pixel."
+                    : recipe == null ? "It differs from the first, and couldn't be saved."
+                    : m.again.outdated() ? String.format(Locale.US, "Made with this version's processing and saved as render %d; render %d stays "
+                    + "as it was.", recipe.number, m.again.number)
+                    : String.format(Locale.US, "Saved as render %d: it differs from render %d (%s).", recipe.number, m.again.number,
+                    sameAs(m.again, master, hash[0]));
+        } else if (m.edit) {
+            headline = recipe != null ? String.format(Locale.US, "Saved as render %d", recipe.number) : "Your edit is ready";
+            detail = r.summary;
+        } else {
+            headline = m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
+                    : m.trails ? "Your star trails are ready" : "Your photo is ready";
+            detail = r.summary;
+        }
         final RgbImage smf = sm;
         final int ff = f;
         h.post(new Runnable() {
@@ -4466,8 +4517,7 @@ final class SessionController {
                 phase = Phase.DONE;
                 outcome = NightPlan.Outcome.DONE;
                 outcomeDetail = doneWords(r, o);
-                publish(m.edit ? "Your edit is ready" : m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
-                        : m.trails ? "Your star trails are ready" : "Your photo is ready", r.summary, -1);
+                publish(headline, detail, -1);
                 if (snd != null) {
                     snd.say(m.merge != null ? (m.nights ? "The merged photo is ready: " : "The longer photo is ready: ") + m.merge.total
                             : r.report != null ? r.report.spoken : spoken(o), new Runnable() {
@@ -4500,7 +4550,8 @@ final class SessionController {
     private static String sameAs(Recipe was, Master.Meta master, String pixelHash) {
         boolean stack = master != null && !was.masterHash.isEmpty() && was.masterHash.equals(master.hash);
         boolean pixels = pixelHash != null && pixelHash.equals(was.pixelHash);
-        if (stack && pixels) return "the same stack and the same picture, pixel for pixel";
+        if (pixels) return stack ? "the same stack and the same picture, pixel for pixel"
+                : "the same picture, pixel for pixel (the stack differs below what the photo shows)";
         if (was.outdated()) return "with the new processing, so it differs from the first";
         if (stack) return "the same stack, but the picture differs (the rendering changed since)";
         return "a different stack (the satellite data or the app changed since it was made)";
@@ -4697,6 +4748,14 @@ final class SessionController {
         ex.width = w;
         ex.height = h;
         return ex;
+    }
+
+    /** The SHA-256 of the pixels of the photo {@link #saveJpeg} would save with these settings, without saving it. */
+    private static String photoHash(PostProcessor.Output o, Renderer.Params p, Recipe rc, double[] north, int factor) {
+        RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
+        int[] px = sm != null ? Renderer.renderSmall(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
+        Framing f = frameFor(rc, north, o.analysis.cw / factor, o.analysis.ch / factor);
+        return Master.pixelHash(f != null ? f.apply(px) : px);
     }
 
     /** SHA-256 of a rendered photo's pixels, row after row, as {@link Master#pixelHash} makes it. */

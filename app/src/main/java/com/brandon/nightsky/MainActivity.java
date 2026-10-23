@@ -15,6 +15,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
@@ -32,6 +33,7 @@ import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -51,12 +53,16 @@ import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusModel;
+import com.brandon.nightsky.processing.FramePreview;
+import com.brandon.nightsky.processing.FrameStore;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
+import com.brandon.nightsky.processing.Recipe;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
@@ -68,9 +74,11 @@ import com.brandon.nightsky.processing.SettingsFile;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.Tonight;
+import com.brandon.nightsky.processing.UnitRecord;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
+import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -83,6 +91,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.TreeSet;
 
 /**
  * The whole app on one screen that changes with the session: set up, place the phone, capturing,
@@ -188,6 +197,12 @@ public final class MainActivity extends Activity {
     private long viewerCheckedMs;
     /** The arm screen is temporarily brighter so another phone can read the QR code. */
     private boolean qrBright;
+    /** The edit screen (G3) while it's open over the result screen, and its picture. */
+    private EditState edit;
+    private ZoomImageView editZoom;
+    /** The developing screen's note and cancel button, which follow what's running. */
+    private TextView devNote;
+    private Button devCancel;
 
     private final ServiceConnection conn = new ServiceConnection() {
         @Override
@@ -354,7 +369,7 @@ public final class MainActivity extends Activity {
                 case 0: showHome(); break;
                 case 1: showArming(); break;
                 case 2: showCapturing(); break;
-                case 3: showDeveloping(); break;
+                case 3: showDeveloping(s); break;
                 case 4:
                     if (s.reading != null && s.result == null) showReading(s);
                     else showResult(s);
@@ -387,7 +402,9 @@ public final class MainActivity extends Activity {
             shownPreview = s.previewVersion;
             if (live != null) live.setImageBitmap(pv);
             if (zoom != null) zoom.show(pv, true);
+            if (editZoom != null && (edit == null || !edit.comparing)) editZoom.show(pv, true);
         }
+        if (devNote != null) styleDeveloping(s);
         if (saveVersion != null && s.result != null && resultBrightness != null) {
             float cur = resultBrightness.getProgress() / 100f;
             saveVersion.setEnabled(p == SessionController.Phase.DONE && Math.abs(cur - shownBrightness) > 0.005f);
@@ -441,6 +458,9 @@ public final class MainActivity extends Activity {
         bar = null;
         live = null;
         zoom = null;
+        editZoom = null;
+        devNote = null;
+        devCancel = null;
         resultBrightness = null;
         saveVersion = null;
         shownPreview = -1;
@@ -2374,7 +2394,7 @@ public final class MainActivity extends Activity {
         col.addView(row, gap(10));
     }
 
-    private void showDeveloping() {
+    private void showDeveloping(SessionController.Status s) {
         clearRefs();
         root.removeAllViews();
         LinearLayout col = column();
@@ -2388,15 +2408,33 @@ public final class MainActivity extends Activity {
         col.addView(detail, gap(6));
         col.addView(bar, gap(10));
         col.addView(live, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        col.addView(text("You can pick the phone up now. This takes a minute or two.", 13, RED_DIM, false), gap(8));
-        Button cancel = button("Cancel (keeps the frames)", false);
-        cancel.setOnClickListener(new View.OnClickListener() {
+        devNote = text("", 13, RED_DIM, false);
+        col.addView(devNote, gap(8));
+        devCancel = button("Cancel", false);
+        devCancel.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (service != null) service.controller().cancel();
             }
         });
-        col.addView(cancel, gap(10));
+        col.addView(devCancel, gap(10));
+        styleDeveloping(s);
+    }
+
+    /** The developing screen's note and cancel button for what's running: developing, merging, an edit, a save. */
+    private void styleDeveloping(SessionController.Status s) {
+        String hl = s != null ? s.headline : "";
+        boolean edit = hl.startsWith("Stacking the edit"), merge = hl.startsWith("Merging"), again = hl.startsWith("Making it again");
+        boolean quick = hl.equals("Saving") || hl.equals("Opening");
+        String note = edit ? "The photo you edited stays as it was: the edit is saved as a new render. This takes a minute or two."
+                : again ? "Its stacked picture was deleted to make room, so it's stacked again from the frames as its recipe says. This "
+                + "takes a minute or two."
+                : merge ? "This takes a few minutes. The sessions stay as they were." : quick ? ""
+                : "You can pick the phone up now. This takes a minute or two.";
+        devNote.setText(note);
+        devNote.setVisibility(note.isEmpty() ? View.GONE : View.VISIBLE);
+        devCancel.setText(edit ? "Cancel (the photo stays as it was)" : merge || again ? "Cancel" : "Cancel (keeps the frames)");
+        devCancel.setVisibility(quick ? View.GONE : View.VISIBLE);
     }
 
     private void showResult(final SessionController.Status s) {
@@ -2562,8 +2600,38 @@ public final class MainActivity extends Activity {
         row2.addView(open, weight());
         row2.addView(again, weight());
         col.addView(row2, gap(6));
-        // the rest, smaller: minutes added, tomorrow night, other nights, the cloud blur, the sessions
+        // the rest, smaller: editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
         List<Button> more = new ArrayList<Button>();
+        if (r != null && r.recipe != null) {
+            final Button eb = smallButton("Edit", false);
+            eb.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    openEdit(eb);
+                }
+            });
+            more.add(eb);
+            if (r.recipe.outdated() && r.merge == null) {
+                // made by an older version: offered again with this one's processing (G3)
+                Button nb = smallButton("New processing", false);
+                nb.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        confirm("Make this photo again with this version's processing? It's saved as a new render; this one stays.",
+                                new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (service == null || r.recipe == null) return;
+                                        Recipe e = r.recipe.edit();
+                                        e.restacked();
+                                        service.controller().saveEdit(e, null);
+                                    }
+                                });
+                    }
+                });
+                more.add(nb);
+            }
+        }
         if (r != null && r.startedMs > 0 && r.endedMs > 0 && !s.scheduled && !fromLibrary) {
             // the same stars at the same height tomorrow night: 3 min 56 s earlier by the clock
             final Button rep = smallButton("Repeat tomorrow", false);
@@ -2603,6 +2671,1043 @@ public final class MainActivity extends Activity {
         col.addView(viewerBox, gap(2));
         refreshViewer(true);
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // Edit screen (G3): how it's rendered, cropped and turned, which frames go in, the reference frame, frames
+    // lined up by hand and the foreground; saved as a new render, nothing written over
+    // ------------------------------------------------------------------------------------------------
+
+    private static final String TAB_LOOK = "Look", TAB_CROP = "Crop", TAB_FRAMES = "Frames", TAB_GROUND = "Ground", TAB_RENDERS = "Renders";
+
+    /** The edit screen's state while it's open. */
+    private static final class EditState {
+        SessionController.EditInfo info;
+        /** The edit as it stands (its frames come from the trim and {@link #leftOut}). */
+        Recipe r;
+        /** The time trim (positions in the frames) and the frames (units) left out by hand. */
+        int from, to;
+        final TreeSet<Integer> leftOut = new TreeSet<Integer>();
+        /** The frame touched in the strip (a position; -1 for none). */
+        int picked = -1;
+        /** The foreground painting (null when the stack can't change), and its cells over the picture (a pixel each). */
+        EdgeMask painting;
+        Bitmap cells;
+        /** What one finger does on the Ground tab: paints ground, sky, rubs out ({@link EdgeMask} values), or -1 moves. */
+        int brush = -1;
+        int brushDp = 36;
+        /** The photo as it was, for Compare, and whether it's shown now. */
+        Bitmap before;
+        boolean comparing;
+        /** Saved: the photo isn't put back as it was when the screen closes. */
+        boolean saved;
+        String tab = TAB_LOOK;
+        FrameLayout ov;
+        LinearLayout tabBox;
+        TextView hint;
+        /** Lining a frame up by hand, over the edit screen (null when not shown). */
+        View tapView;
+    }
+
+    /** Reads what editing the photo needs (the session's frames and foreground), then opens the edit screen. */
+    private void openEdit(final Button b) {
+        if (service == null || reportOverlay != null) return;
+        final Bitmap before = service.controller().preview();
+        b.setEnabled(false);
+        b.setText("Reading…");
+        service.controller().editInfo(new SessionController.EditCallback() {
+            @Override
+            public void ready(SessionController.EditInfo in, String why) {
+                b.setEnabled(true);
+                b.setText("Edit");
+                if (zoom == null || reportOverlay != null) return; // the result screen has gone
+                if (in == null) {
+                    toastish(why);
+                    return;
+                }
+                showEdit(in, before);
+            }
+        });
+    }
+
+    private void showEdit(SessionController.EditInfo in, Bitmap before) {
+        final EditState es = new EditState();
+        es.info = in;
+        es.r = in.recipe;
+        es.before = before;
+        int n = in.frames.length;
+        es.from = 0;
+        es.to = Math.max(0, n - 1);
+        Recipe.Part b = es.r.base();
+        if (n > 0 && b != null && b.include != null) {
+            int first = -1, last = -1;
+            for (int i = 0; i < n; i++) {
+                if (!b.include.contains(in.frames[i].index)) continue;
+                if (first < 0) first = i;
+                last = i;
+            }
+            if (first >= 0) {
+                es.from = first;
+                es.to = last;
+                for (int i = first; i <= last; i++) if (!b.include.contains(in.frames[i].index)) es.leftOut.add(in.frames[i].index);
+            }
+        }
+        es.painting = in.painting != null ? in.painting.copy() : null;
+        edit = es;
+
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(BG);
+        ov.setClickable(true);
+        es.ov = ov;
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(8), dp(8), dp(8), dp(10));
+        ov.addView(col, match());
+        editZoom = new ZoomImageView(this);
+        editZoom.setBackgroundColor(BG);
+        col.addView(editZoom, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.1f));
+        Bitmap pv = service != null ? service.controller().preview() : null;
+        if (pv != null) editZoom.show(pv, false);
+        es.hint = text("", 13, RED_DIM, false);
+        col.addView(es.hint, gap(4));
+        LinearLayout tabs = row();
+        final List<String> names = new ArrayList<String>();
+        names.add(TAB_LOOK);
+        names.add(TAB_CROP);
+        if (in.noRestack.isEmpty() && n > 0) names.add(TAB_FRAMES);
+        if (in.noRestack.isEmpty() && es.painting != null) names.add(TAB_GROUND);
+        names.add(TAB_RENDERS);
+        final List<Button> tabButtons = new ArrayList<Button>();
+        for (final String t : names) {
+            Button tb = chip(t, t.equals(es.tab));
+            tb.setTextSize(13);
+            tb.setMaxLines(1);
+            tb.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (t.equals(es.tab)) return;
+                    es.tab = t;
+                    for (int k = 0; k < names.size(); k++) styleChip(tabButtons.get(k), names.get(k).equals(t));
+                    fillEditTab(es);
+                }
+            });
+            tabButtons.add(tb);
+            LinearLayout.LayoutParams lp = weight();
+            lp.leftMargin = lp.rightMargin = dp(2);
+            tabs.addView(tb, lp);
+        }
+        col.addView(tabs, gap(6));
+        ScrollView sv = new ScrollView(this);
+        es.tabBox = new LinearLayout(this);
+        es.tabBox.setOrientation(LinearLayout.VERTICAL);
+        es.tabBox.setPadding(dp(4), dp(4), dp(4), dp(8));
+        sv.addView(es.tabBox);
+        col.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout bar = row();
+        Button cmp = button("Compare", false);
+        cmp.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent ev) {
+                int a = ev.getActionMasked();
+                if (a == MotionEvent.ACTION_DOWN) {
+                    // held down: the photo as it was
+                    v.setPressed(true);
+                    es.comparing = true;
+                    if (es.before != null && editZoom != null) editZoom.show(es.before, true);
+                } else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                    v.setPressed(false);
+                    es.comparing = false;
+                    Bitmap now = service != null ? service.controller().preview() : null;
+                    if (now != null && editZoom != null) editZoom.show(now, true);
+                }
+                return true;
+            }
+        });
+        Button cancel = button("Cancel", false);
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeReport();
+            }
+        });
+        Button save = button("Save", true);
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                saveEditNow(es);
+            }
+        });
+        bar.addView(cmp, weight());
+        bar.addView(cancel, weight());
+        bar.addView(save, weight());
+        col.addView(bar, gap(6));
+        openOverlay(ov);
+        fillEditTab(es);
+    }
+
+    /** The tab's controls; the Ground tab shows the whole picture (neither cut nor turned) with the foreground over it. */
+    private void fillEditTab(EditState es) {
+        LinearLayout box = es.tabBox;
+        box.removeAllViews();
+        boolean ground = TAB_GROUND.equals(es.tab);
+        if (editZoom != null) {
+            editZoom.setOverlay(ground ? groundOverlay(es) : null);
+            editZoom.setPainter(ground && es.brush >= 0 ? painter(es) : null, dp(es.brushDp));
+        }
+        if (TAB_LOOK.equals(es.tab)) lookTab(es, box);
+        else if (TAB_CROP.equals(es.tab)) cropTab(es, box);
+        else if (TAB_FRAMES.equals(es.tab)) framesTab(es, box);
+        else if (ground) groundTab(es, box);
+        else rendersTab(es, box);
+        editPreview(es);
+    }
+
+    /** The picture as the edit renders it (quick, from the small copy), and the hint under it. */
+    private void editPreview(EditState es) {
+        if (service != null) service.controller().previewEdit(editRecipe(es), TAB_GROUND.equals(es.tab));
+        editHint(es);
+    }
+
+    private void editHint(EditState es) {
+        if (es.hint == null) return;
+        Recipe e = editRecipe(es);
+        StringBuilder sb = new StringBuilder();
+        if (TAB_FRAMES.equals(es.tab)) sb.append(framesIn(es)).append(" of ").append(es.info.frames.length).append(" frames go in. ");
+        if (!e.sameStack(es.info.was)) {
+            sb.append("Frame and ground changes are stacked when you save (a minute or two). ");
+        }
+        if (TAB_GROUND.equals(es.tab)) sb.append(es.brush >= 0 ? "One finger paints; two fingers zoom and move." : "Pick Ground or Sky to paint.");
+        else sb.append("Hold Compare to see it as it was.");
+        es.hint.setText(sb.toString());
+    }
+
+    /** The edit as it stands, as a recipe: the frames from the trim and those left out by hand, the painting's name. */
+    private Recipe editRecipe(EditState es) {
+        Recipe r = es.r.edit();
+        ReportCard.Frame[] fr = es.info.frames;
+        Recipe.Part b = r.base();
+        if (fr.length > 0 && b != null) {
+            if (es.from == 0 && es.to == fr.length - 1 && es.leftOut.isEmpty()) {
+                b.include = null;
+                b.includeNote = "";
+            } else {
+                TreeSet<Integer> inc = new TreeSet<Integer>();
+                for (int i = es.from; i <= es.to; i++) if (!es.leftOut.contains(fr[i].index)) inc.add(fr[i].index);
+                b.include = inc;
+                b.includeNote = includeWords(es);
+            }
+        }
+        if (es.painting != null) r.mask = es.painting.isBlank() ? "" : es.painting.name();
+        return r;
+    }
+
+    /** "between 11:02 PM and 11:31 PM, 2 left out by hand" ("" for all the frames). */
+    private static String includeWords(EditState es) {
+        ReportCard.Frame[] fr = es.info.frames;
+        StringBuilder sb = new StringBuilder();
+        if (es.from > 0 || es.to < fr.length - 1) sb.append("between ").append(fr[es.from].time).append(" and ").append(fr[es.to].time);
+        int hand = 0;
+        for (int i = es.from; i <= es.to; i++) if (es.leftOut.contains(fr[i].index)) hand++;
+        if (hand > 0) sb.append(sb.length() > 0 ? ", " : "").append(hand).append(" left out by hand");
+        return sb.toString();
+    }
+
+    private static int framesIn(EditState es) {
+        int n = 0;
+        for (int i = es.from; i <= es.to && i < es.info.frames.length; i++) if (!es.leftOut.contains(es.info.frames[i].index)) n++;
+        return n;
+    }
+
+    /**
+     * The reference frame (unit) the edit lines up on: chosen by hand, else the one developing chose while the edit
+     * keeps it (-1 if unknown, or left out: the stack then chooses another).
+     */
+    private static int refUnit(EditState es) {
+        if (es.r.reference >= 0) return es.r.reference;
+        int ru = es.info.referenceUnit;
+        return ru >= 0 && keeps(es, ru) ? ru : -1;
+    }
+
+    /** Whether the edit keeps frame (unit) {@code unit}: inside the trim and not left out by hand. */
+    private static boolean keeps(EditState es, int unit) {
+        if (es.leftOut.contains(unit)) return false;
+        ReportCard.Frame[] fr = es.info.frames;
+        for (int i = es.from; i <= es.to && i < fr.length; i++) if (fr[i].index == unit) return true;
+        return fr.length == 0;
+    }
+
+    private void saveEditNow(EditState es) {
+        if (service == null) return;
+        Recipe e = editRecipe(es);
+        if (e.changes(es.info.was).isEmpty()) {
+            toastish("Nothing has changed");
+            return;
+        }
+        if (es.info.frames.length > 0 && framesIn(es) == 0) {
+            toastish("Keep at least one frame");
+            return;
+        }
+        es.saved = true;
+        service.controller().saveEdit(e, es.painting);
+        closeReport();
+    }
+
+    private interface Slider {
+        String label(int v);
+
+        void set(int v);
+    }
+
+    /** A setting's label and slider, 0 to {@code max}; moving it renders the picture again. */
+    private void addSlider(final EditState es, LinearLayout box, int max, int value, final Slider s) {
+        final TextView l = text(s.label(value), 14, RED, false);
+        SeekBar sb = seek(0);
+        sb.setMax(max);
+        sb.setProgress(Math.max(0, Math.min(max, value)));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int v, boolean user) {
+                if (!user) return;
+                l.setText(s.label(v));
+                s.set(v);
+                editPreview(es);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) {
+            }
+        });
+        box.addView(l, gap(8));
+        box.addView(sb);
+    }
+
+    /** "7", "6.5", "-0.3". */
+    private static String num(float v) {
+        float r = Math.round(v * 10) / 10f;
+        return r == Math.round(r) ? Integer.toString(Math.round(r)) : String.format(Locale.US, "%.1f", r);
+    }
+
+    private void lookTab(final EditState es, LinearLayout box) {
+        final Recipe r = es.r;
+        addSlider(es, box, 18, Math.round((r.stretch - 1) * 2), new Slider() {
+            @Override
+            public String label(int v) {
+                float st = 1 + v / 2f;
+                return "Stretch " + num(st) + (st == 5f ? " (as developed)" : st < 5f ? " (gentler)" : " (stronger: more faint light)");
+            }
+
+            @Override
+            public void set(int v) {
+                r.stretch = 1 + v / 2f;
+            }
+        });
+        addSlider(es, box, 40, Math.round(r.ev * 10) + 20, new Slider() {
+            @Override
+            public String label(int v) {
+                float ev = (v - 20) / 10f;
+                return "Exposure " + (ev > 0 ? "+" : "") + num(ev) + " EV" + (v == 20 ? " (as developed)" : "");
+            }
+
+            @Override
+            public void set(int v) {
+                r.ev = (v - 20) / 10f;
+            }
+        });
+        addSlider(es, box, 20, Math.round(r.black * 20), new Slider() {
+            @Override
+            public String label(int v) {
+                return "Black point " + 5 * v + "%" + (v == 0 ? " (as developed)" : ": the sky darker");
+            }
+
+            @Override
+            public void set(int v) {
+                r.black = v / 20f;
+            }
+        });
+        addSlider(es, box, 40, Math.round(r.saturation * 20), new Slider() {
+            @Override
+            public String label(int v) {
+                return "Colour " + 5 * v + "%" + (v == 20 ? " (as developed)" : "");
+            }
+
+            @Override
+            public void set(int v) {
+                r.saturation = v / 20f;
+            }
+        });
+        addSlider(es, box, 100, Math.round(r.brightness * 100), new Slider() {
+            @Override
+            public String label(int v) {
+                return "Sky brightness " + v + "%";
+            }
+
+            @Override
+            public void set(int v) {
+                r.brightness = v / 100f;
+            }
+        });
+        box.addView(label("Look"), gap(12));
+        LinearLayout looks = row();
+        final String[][] ls = {{Recipe.LOOK_NATURAL, "Natural"}, {Recipe.LOOK_PUNCHY, "Punchy"}, {Recipe.LOOK_LINEAR, "Linear"}};
+        final List<Button> lb = new ArrayList<Button>();
+        for (final String[] l : ls) {
+            Button c = chip(l[1], l[0].equals(r.look));
+            c.setTextSize(14);
+            c.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    r.look = l[0];
+                    for (int k = 0; k < ls.length; k++) styleChip(lb.get(k), ls[k][0].equals(r.look));
+                    editPreview(es);
+                }
+            });
+            lb.add(c);
+            looks.addView(c, weight());
+        }
+        box.addView(looks, gap(4));
+        box.addView(text("Natural is the develop step's gentle curve. Punchy lifts the faint light with more contrast and colour. Linear is "
+                + "the light as it fell, where bright stars clip.", 12, RED_DIM, false), gap(4));
+        Button reset = smallButton("As developed", false);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                r.stretch = 5f;
+                r.ev = 0f;
+                r.black = 0f;
+                r.saturation = 1f;
+                r.look = Recipe.LOOK_NATURAL;
+                List<Recipe> all = es.info.renders;
+                r.brightness = all.isEmpty() ? 0.5f : all.get(0).brightness;
+                fillEditTab(es);
+            }
+        });
+        box.addView(reset, gap(10));
+    }
+
+    private void cropTab(final EditState es, LinearLayout box) {
+        final Recipe r = es.r;
+        box.addView(label("Crop"), gap(4));
+        LinearLayout crops = row();
+        final List<Button> cb = new ArrayList<Button>();
+        for (final String c : Recipe.CROPS) {
+            Button b = chip(Recipe.CROP_FULL.equals(c) ? "Full" : c, c.equals(r.crop));
+            b.setTextSize(14);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    r.crop = c;
+                    for (int k = 0; k < Recipe.CROPS.length; k++) styleChip(cb.get(k), Recipe.CROPS[k].equals(r.crop));
+                    editPreview(es);
+                }
+            });
+            cb.add(b);
+            crops.addView(b, weight());
+        }
+        box.addView(crops, gap(4));
+        box.addView(text("Cut from the middle of the photo (turned first when north is up), as large as fits.", 12, RED_DIM, false), gap(4));
+        box.addView(label("Turn"), gap(14));
+        LinearLayout turn = row();
+        final Button nb = chip("North up", r.northUp);
+        nb.setTextSize(14);
+        nb.setEnabled(es.info.noNorth.isEmpty());
+        nb.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                r.northUp = !r.northUp;
+                styleChip(nb, r.northUp);
+                editPreview(es);
+            }
+        });
+        turn.addView(nb, weight());
+        turn.addView(spacer(), weight());
+        box.addView(turn, gap(4));
+        box.addView(text(es.info.noNorth.isEmpty() ? "Turns the photo so north is up, from where its stars say the camera pointed."
+                : es.info.noNorth, 12, RED_DIM, false), gap(4));
+    }
+
+    private void framesTab(final EditState es, LinearLayout box) {
+        final ReportCard.Frame[] fr = es.info.frames;
+        final int n = fr.length;
+        final TextView cap = text("", 13, RED, false);
+        final LinearLayout actions = row();
+        final TextView refL = text("", 14, RED, false);
+        final Button refAuto = smallButton("Automatic", false);
+        final FrameStrip strip = new FrameStrip(this);
+        final Runnable update = new Runnable() {
+            @Override
+            public void run() {
+                if (es.r.reference >= 0 && !keeps(es, es.r.reference)) es.r.reference = -1;
+                markStrip(es, strip);
+                frameActions(es, actions, cap, this);
+                int ru = refUnit(es);
+                refL.setText(ru < 0 ? (es.info.referenceUnit >= 0 ? "The stack chooses the reference again: the one it had is left out."
+                        : "Lined up on the frame the stack chooses.") : es.r.reference >= 0
+                        ? "Lined up on frame " + ru + ", chosen by hand." : "Lined up on frame " + ru + ", as developing chose.");
+                refAuto.setVisibility(es.r.reference >= 0 ? View.VISIBLE : View.GONE);
+                editHint(es);
+            }
+        };
+        strip.setFrames(fr, new FrameStrip.Listener() {
+            @Override
+            public void onFrame(ReportCard.Frame f) {
+                for (int i = 0; i < n; i++) if (fr[i] == f) es.picked = i;
+                update.run();
+            }
+        });
+        LinearLayout.LayoutParams slp = gap(4);
+        slp.height = dp(72);
+        box.addView(strip, slp);
+        final TextView fromL = text("From " + frameWords(fr[es.from]), 14, RED, false);
+        final TextView toL = text("To " + frameWords(fr[es.to]), 14, RED, false);
+        final SeekBar fromS = seek(0), toS = seek(0);
+        fromS.setMax(Math.max(1, n - 1));
+        fromS.setProgress(es.from);
+        toS.setMax(Math.max(1, n - 1));
+        toS.setProgress(es.to);
+        fromS.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int v, boolean user) {
+                if (!user) return;
+                v = Math.min(v, Math.min(es.to, n - 1));
+                if (v != b.getProgress()) b.setProgress(v);
+                es.from = v;
+                fromL.setText("From " + frameWords(fr[v]));
+                update.run();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) {
+            }
+        });
+        toS.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int v, boolean user) {
+                if (!user) return;
+                v = Math.min(n - 1, Math.max(v, es.from));
+                if (v != b.getProgress()) b.setProgress(v);
+                es.to = v;
+                toL.setText("To " + frameWords(fr[v]));
+                update.run();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) {
+            }
+        });
+        box.addView(fromL, gap(8));
+        box.addView(fromS);
+        box.addView(toL, gap(2));
+        box.addView(toS);
+        box.addView(cap, gap(8));
+        box.addView(actions, gap(4));
+        if (!es.r.trails) {
+            box.addView(label("Reference frame"), gap(14));
+            LinearLayout rr = row();
+            rr.setGravity(Gravity.CENTER_VERTICAL);
+            rr.addView(refL, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+            refAuto.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    es.r.reference = -1;
+                    update.run();
+                }
+            });
+            rr.addView(refAuto, weight());
+            box.addView(rr, gap(4));
+            box.addView(text("The other frames are lined up on its stars. Pick a sharp frame with plenty of stars.", 12, RED_DIM, false), gap(2));
+        }
+        if (es.info.was.quick) {
+            box.addView(label("Quality"), gap(14));
+            LinearLayout qr = row();
+            final Button q = chip("Full quality", !es.r.quick);
+            q.setTextSize(14);
+            q.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    es.r.quick = !es.r.quick;
+                    styleChip(q, !es.r.quick);
+                    editHint(es);
+                }
+            });
+            qr.addView(q, weight());
+            qr.addView(spacer(), weight());
+            box.addView(qr, gap(4));
+            box.addView(text("It was a Quick look: full quality measures the sensor's pattern, stacks twice and saves the photo full size.",
+                    12, RED_DIM, false), gap(2));
+        }
+        update.run();
+    }
+
+    /** "frame 12 (11:14 PM)". */
+    private static String frameWords(ReportCard.Frame f) {
+        return "frame " + f.index + " (" + f.time + ")";
+    }
+
+    private static void markStrip(EditState es, FrameStrip strip) {
+        strip.setEdit(es.from, es.to, es.leftOut, refUnit(es), es.r.taps.keySet());
+        if (es.picked >= 0) strip.select(es.picked);
+    }
+
+    /** What can be done with the frame touched: leave it out or put it back, line the others up on it, line it up by hand. */
+    private void frameActions(final EditState es, LinearLayout actions, TextView cap, final Runnable update) {
+        actions.removeAllViews();
+        if (es.picked < 0 || es.picked >= es.info.frames.length) {
+            cap.setText("Touch a frame to leave it out" + (es.r.trails ? "" : ", line the others up on it, or line it up by hand") + ".");
+            return;
+        }
+        final ReportCard.Frame f = es.info.frames[es.picked];
+        final boolean out = es.leftOut.contains(f.index), inTrim = es.picked >= es.from && es.picked <= es.to;
+        String state = !inTrim ? "outside the trim" : out ? "left out by hand" : !f.used ? "left out when developed: " + f.reason
+                : "score " + f.score + (f.reason.isEmpty() ? "" : ": " + f.reason);
+        float[] t = es.r.taps.get(f.index);
+        if (t != null) state += "; lined up by hand on " + t.length / 4 + " stars";
+        cap.setText("Frame " + f.index + " (" + f.time + "), " + state + ".");
+        Button lo = smallButton(out ? "Put back" : "Leave out", false);
+        lo.setEnabled(inTrim);
+        lo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (out) {
+                    es.leftOut.remove(f.index);
+                } else {
+                    if (framesIn(es) <= 1) {
+                        toastish("Keep at least one frame");
+                        return;
+                    }
+                    es.leftOut.add(f.index);
+                }
+                update.run();
+            }
+        });
+        actions.addView(lo, weight());
+        if (es.r.trails) return;
+        final int ru = refUnit(es);
+        Button ref = smallButton(ru == f.index ? "Reference ✓" : "Reference", false);
+        ref.setEnabled(ru != f.index);
+        ref.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                es.r.reference = f.index;
+                es.leftOut.remove(f.index);
+                update.run();
+            }
+        });
+        actions.addView(ref, weight());
+        Button tap = smallButton("Line up by hand", false);
+        tap.setEnabled(ru >= 0 && ru != f.index);
+        tap.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openTaps(es, f.index, update);
+            }
+        });
+        actions.addView(tap, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.4f));
+    }
+
+    private void groundTab(final EditState es, LinearLayout box) {
+        final Recipe r = es.r;
+        final SessionController.EditInfo in = es.info;
+        LinearLayout fr = row();
+        final Button fz = chip("Keep the ground still", r.freezeGround);
+        fz.setTextSize(14);
+        fz.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                r.freezeGround = !r.freezeGround;
+                styleChip(fz, r.freezeGround);
+                editHint(es);
+            }
+        });
+        fr.addView(fz, weight());
+        box.addView(fr, gap(4));
+        box.addView(text("Trees and roof lines at the edges stay sharp: they come from the frames' plain average, not lined up with "
+                + "the stars, and the stars beside them only from frames that saw them.", 12, RED_DIM, false), gap(4));
+        String where = EdgeMask.where(in.autoGround, es.painting.cw, es.painting.ch);
+        box.addView(text(in.autoGround == null || where.isEmpty() ? "Nothing was found at the edges automatically: paint any ground there."
+                : String.format(Locale.US, "Found automatically (shaded): %s, %.0f%% of the frame.", where,
+                100.0 * EdgeMask.count(in.autoGround) / in.autoGround.length), 13, RED, false), gap(10));
+        box.addView(label("One finger"), gap(12));
+        LinearLayout bs = row();
+        final String[] names = {"Moves", "Ground", "Sky", "Rubs out"};
+        final int[] vals = {-1, EdgeMask.GROUND, EdgeMask.SKY, EdgeMask.NONE};
+        final List<Button> bb = new ArrayList<Button>();
+        for (int k = 0; k < names.length; k++) {
+            final int val = vals[k];
+            Button c = chip(names[k], es.brush == val);
+            c.setTextSize(13);
+            c.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    es.brush = val;
+                    for (int j = 0; j < vals.length; j++) styleChip(bb.get(j), es.brush == vals[j]);
+                    if (editZoom != null) editZoom.setPainter(es.brush >= 0 ? painter(es) : null, dp(es.brushDp));
+                    editHint(es);
+                }
+            });
+            bb.add(c);
+            bs.addView(c, weight());
+        }
+        box.addView(bs, gap(4));
+        final TextView sl = text("Brush " + es.brushDp + " dp", 14, RED, false);
+        SeekBar size = seek(0);
+        size.setMax(84);
+        size.setProgress(es.brushDp - 12);
+        size.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int v, boolean user) {
+                if (!user) return;
+                es.brushDp = 12 + v;
+                sl.setText("Brush " + es.brushDp + " dp");
+                if (editZoom != null && es.brush >= 0) editZoom.setPainter(painter(es), dp(es.brushDp));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) {
+            }
+        });
+        box.addView(sl, gap(8));
+        box.addView(size);
+        Button clear = smallButton("Clear the painting", false);
+        clear.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                es.painting = new EdgeMask(es.painting.width, es.painting.height);
+                es.cells = null;
+                if (editZoom != null) editZoom.setOverlay(groundOverlay(es));
+                editHint(es);
+            }
+        });
+        box.addView(clear, gap(10));
+        box.addView(text("Ground: something in the way that wasn't found. Sky: sky that was taken for ground. Stars on the ground are "
+                + "left out of lining up the frames.", 12, RED_DIM, false), gap(6));
+    }
+
+    /** The foreground over the whole picture: shaded where it was found, stronger where painted as ground. */
+    private ZoomImageView.Overlay groundOverlay(final EditState es) {
+        if (es.painting == null) return null;
+        if (es.cells == null) groundCells(es, 0, 0, es.painting.cw - 1, es.painting.ch - 1);
+        final SessionController.EditInfo in = es.info;
+        final Matrix mx = new Matrix();
+        float sc = EdgeMask.CELL / (float) in.factor;
+        mx.setScale(sc, sc);
+        mx.postTranslate(-in.cx0 / (float) in.factor, -in.cy0 / (float) in.factor);
+        // no filtering: the cells stay square
+        final Paint p = new Paint();
+        return new ZoomImageView.Overlay() {
+            @Override
+            public void draw(Canvas c, float scale) {
+                if (es.cells != null) c.drawBitmap(es.cells, mx, p);
+            }
+        };
+    }
+
+    /** Colours the cells x0..x1, y0..y1 of the overlay as the painting over the automatic finding has them. */
+    private static void groundCells(EditState es, int x0, int y0, int x1, int y1) {
+        EdgeMask m = es.painting;
+        boolean[] auto = es.info.autoGround;
+        if (es.cells == null) es.cells = Bitmap.createBitmap(m.cw, m.ch, Bitmap.Config.ARGB_8888);
+        x0 = Math.max(0, x0);
+        y0 = Math.max(0, y0);
+        x1 = Math.min(m.cw - 1, x1);
+        y1 = Math.min(m.ch - 1, y1);
+        if (x1 < x0 || y1 < y0) return;
+        int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        int[] px = new int[w * h];
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                int k = (y0 + j) * m.cw + x0 + i;
+                byte v = m.paint[k];
+                boolean a = auto != null && k < auto.length && auto[k];
+                px[j * w + i] = v == EdgeMask.GROUND ? 0xA0E53935 : v == EdgeMask.SKY ? (a ? 0x30FFCDD2 : 0) : a ? 0x60E53935 : 0;
+            }
+        }
+        es.cells.setPixels(px, 0, w, x0, y0, w, h);
+    }
+
+    /** One finger on the Ground tab: paints the brush's value into the painting, in the sensor's cells. */
+    private ZoomImageView.PaintListener painter(final EditState es) {
+        return new ZoomImageView.PaintListener() {
+            @Override
+            public void onPaint(float x, float y, float radius, boolean start) {
+                SessionController.EditInfo in = es.info;
+                if (es.painting == null || es.brush < 0) return;
+                float sx = in.cx0 + x * in.factor, sy = in.cy0 + y * in.factor, sr = radius * in.factor;
+                if (!es.painting.paintDisc(sx, sy, sr, (byte) es.brush)) return;
+                int c = EdgeMask.CELL;
+                groundCells(es, (int) ((sx - sr) / c) - 1, (int) ((sy - sr) / c) - 1, (int) ((sx + sr) / c) + 1, (int) ((sy + sr) / c) + 1);
+                if (editZoom != null) editZoom.invalidate();
+                if (start) editHint(es);
+            }
+        };
+    }
+
+    private void rendersTab(final EditState es, LinearLayout box) {
+        List<Recipe> rs = es.info.renders;
+        box.addView(text("Every save is a new render with its own recipe; none is written over. Open one to see it again or to edit "
+                + "from it.", 12, RED_DIM, false), gap(2));
+        SimpleDateFormat df = new SimpleDateFormat("d MMM, HH:mm", Locale.getDefault());
+        for (int i = rs.size() - 1; i >= 0; i--) {
+            final Recipe x = rs.get(i);
+            boolean shown = x.number == es.info.was.number;
+            LinearLayout c = card();
+            c.addView(text("Render " + x.number + (shown ? " (shown)" : ""), 15, RED, true));
+            c.addView(text((x.createdMs > 0 ? df.format(new Date(x.createdMs)) + " · " : "") + (x.note.isEmpty() ? "made" : x.note),
+                    13, RED_DIM, false), gap(2));
+            if (x.outdated()) c.addView(text("Made by an older version's processing.", 12, RED_DIM, false), gap(2));
+            if (!shown) {
+                c.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (service == null) return;
+                        File dir = es.info.dir;
+                        closeReport();
+                        service.controller().openRender(dir, x.number);
+                    }
+                });
+            }
+            box.addView(c, gap(8));
+        }
+        if (es.info.was.outdated() && es.info.noRestack.isEmpty()) {
+            Button again = smallButton("Make it again with the new processing", false);
+            again.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (service == null) return;
+                    Recipe e = es.info.was.edit();
+                    e.restacked();
+                    es.saved = true;
+                    service.controller().saveEdit(e, null);
+                    closeReport();
+                }
+            });
+            box.addView(again, gap(10));
+        }
+        if (!es.info.noRestack.isEmpty()) box.addView(text(es.info.noRestack, 12, RED_DIM, false), gap(10));
+    }
+
+    // ---- lining a frame up by hand (F3's rescue, in G3)
+
+    /**
+     * Its own screen over the edit screen: a star tapped in the reference frame, then the same star in frame
+     * {@code unit}, two pairs or more, each pulled onto the star under the finger; {@code done} runs when it closes.
+     */
+    private void openTaps(final EditState es, final int unit, final Runnable done) {
+        if (es.tapView != null) return;
+        final SessionController.EditInfo in = es.info;
+        final int ref = refUnit(es);
+        final FrameLayout tv = new FrameLayout(this);
+        tv.setBackgroundColor(BG);
+        tv.setClickable(true);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(8), dp(8), dp(8), dp(10));
+        tv.addView(col, match());
+        final TextView title = text("Line up frame " + unit + " by hand", 18, RED, true);
+        final TextView say = text("Reading the two frames…", 14, RED_DIM, false);
+        final ZoomImageView z = new ZoomImageView(this);
+        z.setBackgroundColor(BG);
+        col.addView(title);
+        col.addView(say, gap(4));
+        col.addView(z, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout bar = row();
+        final Button undo = smallButton("Undo", false), flip = smallButton("Other frame", false), cancel = smallButton("Cancel", false),
+                ok = smallButton("Done", true);
+        bar.addView(undo, weight());
+        bar.addView(flip, weight());
+        bar.addView(cancel, weight());
+        bar.addView(ok, weight());
+        col.addView(bar, gap(6));
+        es.ov.addView(tv, match());
+        es.tapView = tv;
+
+        // pairs: a star in the reference (x, y) and in the frame (x, y), sensor pixels
+        final List<float[]> pairs = new ArrayList<float[]>();
+        float[] old = es.r.taps.get(unit);
+        if (old != null) for (int k = 0; k + 3 < old.length; k += 4) pairs.add(new float[]{old[k], old[k + 1], old[k + 2], old[k + 3]});
+        final float[] pending = {Float.NaN, Float.NaN};
+        final FramePreview[] fp = new FramePreview[2];
+        final Bitmap[] bm = new Bitmap[2];
+        final int[] showing = {0};
+        final Runnable prompt = new Runnable() {
+            @Override
+            public void run() {
+                int np = pairs.size();
+                if (fp[0] == null) return;
+                if (showing[0] == 1 && !Float.isNaN(pending[0])) {
+                    say.setText("Now tap the same star in frame " + unit + ". Use Other frame to look back.");
+                } else if (showing[0] == 1) {
+                    say.setText("Frame " + unit + ". Use Other frame to go back to the reference and tap a star there first.");
+                } else if (np == 0) {
+                    say.setText("Tap a star in the reference (frame " + ref + ") that you can find again. Two fingers zoom.");
+                } else {
+                    say.setText(np + (np == 1 ? " star" : " stars") + " matched. Tap another star in the reference, far from the others"
+                            + (np >= 2 ? ", or press Done." : "."));
+                }
+                title.setText((showing[0] == 0 ? "The reference, frame " + ref : "Frame " + unit) + ": line up by hand");
+                ok.setEnabled(np >= 2 || (np == 0 && es.r.taps.containsKey(unit)));
+                ok.setText(np == 0 && es.r.taps.containsKey(unit) ? "Remove" : "Done");
+                undo.setEnabled(np > 0 || !Float.isNaN(pending[0]));
+                z.invalidate();
+            }
+        };
+        z.setOverlay(new ZoomImageView.Overlay() {
+            final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG), num = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+            @Override
+            public void draw(Canvas c, float scale) {
+                ring.setStyle(Paint.Style.STROKE);
+                ring.setColor(RED);
+                ring.setStrokeWidth(dp(2) / scale);
+                num.setColor(RED);
+                num.setTextSize(dp(14) / scale);
+                float r = dp(12) / scale;
+                int o = showing[0] == 0 ? 0 : 2;
+                for (int k = 0; k < pairs.size(); k++) {
+                    float x = pairs.get(k)[o] / 2, y = pairs.get(k)[o + 1] / 2;
+                    c.drawCircle(x, y, r, ring);
+                    c.drawText(Integer.toString(k + 1), x + r, y - r, num);
+                }
+                if (showing[0] == 0 && !Float.isNaN(pending[0])) {
+                    c.drawCircle(pending[0] / 2, pending[1] / 2, r, ring);
+                    c.drawCircle(pending[0] / 2, pending[1] / 2, r * 0.3f, ring);
+                }
+            }
+        });
+        z.setTapListener(new ZoomImageView.TapListener() {
+            @Override
+            public void onTap(float x, float y) {
+                int sh = showing[0];
+                if (fp[sh] == null) return;
+                float[] p = fp[sh].snap(x, y, 14);
+                if (p == null) {
+                    toastish("No star there: tap right on one");
+                    return;
+                }
+                if (sh == 0) {
+                    pending[0] = p[0];
+                    pending[1] = p[1];
+                    showing[0] = 1;
+                    z.show(bm[1], true);
+                } else if (!Float.isNaN(pending[0])) {
+                    pairs.add(new float[]{pending[0], pending[1], p[0], p[1]});
+                    pending[0] = pending[1] = Float.NaN;
+                    showing[0] = 0;
+                    z.show(bm[0], true);
+                } else {
+                    toastish("First tap the star in the reference");
+                }
+                prompt.run();
+            }
+        });
+        undo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!Float.isNaN(pending[0])) pending[0] = pending[1] = Float.NaN;
+                else if (!pairs.isEmpty()) pairs.remove(pairs.size() - 1);
+                if (showing[0] != 0 && bm[0] != null) {
+                    showing[0] = 0;
+                    z.show(bm[0], true);
+                }
+                prompt.run();
+            }
+        });
+        flip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (bm[0] == null) return;
+                showing[0] = 1 - showing[0];
+                z.show(bm[showing[0]], true);
+                prompt.run();
+            }
+        });
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeTaps(es);
+            }
+        });
+        ok.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (pairs.isEmpty()) {
+                    es.r.taps.remove(unit);
+                } else {
+                    float[] t = new float[4 * pairs.size()];
+                    for (int k = 0; k < pairs.size(); k++) System.arraycopy(pairs.get(k), 0, t, 4 * k, 4);
+                    es.r.taps.put(unit, t);
+                    es.leftOut.remove(unit);
+                }
+                closeTaps(es);
+                done.run();
+            }
+        });
+        ok.setEnabled(false);
+        undo.setEnabled(false);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    SessionStore st = new SessionStore(in.dir);
+                    UnitRecord ra = null, rb = null;
+                    for (UnitRecord u : st.readUnits()) {
+                        if (u.index == ref) ra = u;
+                        if (u.index == unit) rb = u;
+                    }
+                    FrameStore fs = st.frames(in.width, in.height);
+                    short[] raw = new short[in.width * in.height];
+                    final FramePreview a = framePreview(fs, ra, ref, raw, in.width, in.height);
+                    final FramePreview b = framePreview(fs, rb, unit, raw, in.width, in.height);
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (es.tapView != tv) return;
+                            fp[0] = a;
+                            fp[1] = b;
+                            bm[0] = Bitmap.createBitmap(a.argb, a.w, a.h, Bitmap.Config.ARGB_8888);
+                            bm[1] = Bitmap.createBitmap(b.argb, b.w, b.h, Bitmap.Config.ARGB_8888);
+                            z.show(bm[0], false);
+                            prompt.run();
+                        }
+                    });
+                } catch (final IOException | RuntimeException | OutOfMemoryError e) {
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (es.tapView == tv) say.setText("The frames couldn't be read: " + e.getMessage());
+                        }
+                    });
+                }
+            }
+        }, "tap-frames").start();
+    }
+
+    private static FramePreview framePreview(FrameStore fs, UnitRecord rec, int unit, short[] raw, int w, int h) throws IOException {
+        if (rec == null || !fs.exists(unit)) throw new IOException("frame " + unit + " isn't on the phone");
+        fs.read(unit, raw);
+        return FramePreview.of(raw, w, h, rec.invScale, rec.black);
+    }
+
+    private void closeTaps(EditState es) {
+        if (es.tapView == null) return;
+        es.ov.removeView(es.tapView);
+        es.tapView = null;
+    }
+
 
     // ------------------------------------------------------------------------------------------------
     // Session report
@@ -2694,7 +3799,7 @@ public final class MainActivity extends Activity {
             OnBackInvokedCallback cb = new OnBackInvokedCallback() {
                 @Override
                 public void onBackInvoked() {
-                    closeReport();
+                    overlayBack();
                 }
             };
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, cb);
@@ -2702,10 +3807,26 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Back over the result screen: lining a frame up by hand closes first, then the page over it. */
+    private void overlayBack() {
+        if (edit != null && edit.tapView != null) {
+            closeTaps(edit);
+            return;
+        }
+        closeReport();
+    }
+
     private void closeReport() {
         if (reportOverlay != null) {
             root.removeView(reportOverlay);
             reportOverlay = null;
+        }
+        if (edit != null) {
+            EditState es = edit;
+            edit = null;
+            editZoom = null;
+            // closed without saving: the photo as it was
+            if (!es.saved && service != null) service.controller().previewEdit(null, false);
         }
         if (reportBack != null && Build.VERSION.SDK_INT >= 33) {
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) reportBack);
@@ -2740,7 +3861,7 @@ public final class MainActivity extends Activity {
     public void onBackPressed() {
         // before Android 13 (from 13 on, the callbacks take Back)
         if (reportOverlay != null) {
-            closeReport();
+            overlayBack();
             return;
         }
         if ((shownPhase == null || screenOf(shownPhase) == 0) && pageBack()) return;
