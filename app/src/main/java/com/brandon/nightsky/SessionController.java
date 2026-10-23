@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
@@ -23,10 +24,12 @@ import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
+import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
 import com.brandon.nightsky.processing.FocusModel;
 import com.brandon.nightsky.processing.FocusSweep;
 import com.brandon.nightsky.processing.FocusWatch;
+import com.brandon.nightsky.processing.Framing;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
@@ -224,6 +227,8 @@ final class SessionController {
         /** How the photo shown was made (G3; null if its recipe couldn't be saved), and its stack's master (null if none). */
         Recipe recipe;
         Master.Meta master;
+        /** North's direction at the photo's centre (x right, y down), for turning it north up; null if the sky wasn't solved. */
+        double[] north;
         /** When developing finished (Unix ms): "Add 5 minutes" is offered for a while after. */
         long endedMs;
         /** A merge's parts, coverage and total (G1); null for one session. */
@@ -296,8 +301,10 @@ final class SessionController {
 
     private volatile Status status = new Status();
     private volatile Bitmap preview;
-    /** The result's preview without the tracks and names drawn on it. */
+    /** The result's preview without the tracks and names drawn on it, before its crop and turn ({@link #previewFraming}). */
     private Bitmap previewBase;
+    /** How the preview is cut and turned (G3), or null for as it is. */
+    private Framing previewFraming;
     private int previewVersion;
     private long statusVersion;
 
@@ -589,7 +596,7 @@ final class SessionController {
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        runDevelop(base, brightness, dng, null, true, "Reading the sessions", new Maker() {
+                        runDevelop(base, brightness, dng, null, JOB_MERGE, 0, "Reading the sessions", new Maker() {
                             @Override
                             public Made make(Progress progress) throws IOException {
                                 List<SessionStore> st = new ArrayList<SessionStore>();
@@ -607,7 +614,15 @@ final class SessionController {
      * Shows a kept session's latest photo again from its master (G1, G3): no stacking, so it's quick, and the
      * brightness can change as after developing.
      */
-    void openSession(final File dir) {
+    void openSession(File dir) {
+        openRender(dir, 0);
+    }
+
+    /**
+     * Shows one of a kept session's renders (G3; 0 for the latest kept): from its stack's master, or made again from
+     * its recipe when that master was deleted to make room and the frames are still kept.
+     */
+    void openRender(final File dir, final int number) {
         h.post(new Runnable() {
             @Override
             public void run() {
@@ -618,7 +633,7 @@ final class SessionController {
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        doOpen(dir);
+                        doOpen(dir, number, null, null);
                     }
                 }, "open").start();
             }
@@ -655,6 +670,7 @@ final class SessionController {
         result = null;
         preview = null;
         previewBase = null;
+        previewFraming = null;
         cancelDevelop = false;
         resetCapture();
         settings = new Settings();
@@ -670,83 +686,45 @@ final class SessionController {
         }
     }
 
-    /** On a thread of its own: the session's latest render's master, shown as a result. */
-    private void doOpen(File dir) {
+    /**
+     * On a thread of its own: render {@code number} of the session (0: the latest whose stack is kept) shown as a
+     * result, from its stack's master; a render whose master was deleted to make room is made again from its recipe.
+     * {@code headline} and {@code detail} say why it's shown (null for the usual words).
+     */
+    private void doOpen(File dir, int number, String headline, String detail) {
         final SessionStore st = new SessionStore(dir);
         try {
             Properties props = st.readSettings();
-            final SensorSpec sp = SensorSpec.fromProperties(props);
-            Recipe rc = Recipe.latest(dir);
-            Master.Loaded l = rc != null && !rc.stackKey.isEmpty() ? Master.read(dir, rc.stackKey) : null;
-            if (l == null) {
-                for (Master.Meta mm : Master.list(dir)) {
-                    l = Master.read(dir, mm.key);
-                    if (l != null) break;
+            SensorSpec sp = SensorSpec.fromProperties(props);
+            List<Recipe> all = Recipe.list(dir);
+            Recipe rc = null;
+            Master.Loaded l = null;
+            if (number > 0) {
+                for (Recipe x : all) if (x.number == number) rc = x;
+                if (rc == null) throw new IOException("render " + number + " isn't in the session's folder");
+                if (!rc.stackKey.isEmpty()) l = Master.read(dir, rc.stackKey);
+                if (l == null) {
+                    // its stack was deleted to make room: made again from its recipe while the frames are kept
+                    makeAgain(st, rc);
+                    return;
+                }
+            } else {
+                for (int i = all.size() - 1; i >= 0 && l == null; i--) {
+                    Recipe x = all.get(i);
+                    if (!x.stackKey.isEmpty()) l = Master.read(dir, x.stackKey);
+                    if (l != null) rc = x;
+                }
+                if (l == null) {
+                    for (Master.Meta mm : Master.list(dir)) {
+                        l = Master.read(dir, mm.key);
+                        if (l != null) break;
+                    }
                 }
             }
             if (l == null) throw new IOException("it has no stacked picture kept (it was developed before version 1.2)");
-            final PostProcessor.Output o = new PostProcessor.Output();
-            o.image = l.image;
-            SensorSpec cs = Master.colourSpec(sp, l.meta);
-            if (l.meta.colourFromStars) o.colourSpec = cs;
-            o.analysis = Master.analyze(l.image, cs, l.meta.trails);
-            o.summary = l.meta.summary;
-            o.integrationSeconds = l.meta.integrationSeconds;
-            o.unitsUsed = l.meta.unitsUsed;
-            o.unitsTotal = l.meta.unitsTotal;
-            o.maxGain = l.meta.maxGain;
-            o.model = l.meta.model;
-            o.aligned = true;
-            final float brightness = rc != null ? rc.brightness : parseFloat(props.getProperty("brightness"), prefs.brightness());
-            int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
-            final RgbImage sm = o.image.binned(f);
-            Renderer.Params rp = new Renderer.Params();
-            rp.brightness = brightness;
-            int[] px = Renderer.renderSmall(sm, o.analysis, rp, f);
-            final Bitmap bmp = Bitmap.createBitmap(px, sm.cropWidth(), sm.cropHeight(), Bitmap.Config.ARGB_8888);
-            final Result r = new Result();
-            r.summary = o.summary;
-            r.name = rc != null && !rc.name.isEmpty() ? rc.name : "NightSky_" + st.id();
-            r.session = dir.getName();
-            r.trails = l.meta.trails;
-            r.startedMs = parseLong(props.getProperty("capture.startWallMs"));
-            r.durationSec = (int) Math.round(l.meta.integrationSeconds);
-            if (rc != null && !rc.uri.isEmpty()) r.jpeg = Uri.parse(rc.uri);
-            r.jpegFactor = rc != null && rc.quick ? 2 : 1;
-            r.canAdjust = true;
-            r.brightness = brightness;
-            // the report made with this stack; the develop step's from before reports were kept with masters
-            r.merge = MergeProcessor.readDescription(l.meta.merge);
-            String rj = Master.readReport(dir, l.meta.key);
-            if (rj == null && l.meta.develop && l.meta.sessions.size() <= 1) rj = st.readText("report.json");
-            if (rj != null) {
-                try {
-                    r.report = ReportCard.fromJson(rj);
-                    r.reportJson = rj;
-                } catch (RuntimeException ignored) {
-                }
-            }
-            r.recipe = rc;
-            r.master = l.meta;
-            r.repeatOf = props.getProperty("repeatOf", "");
-            final int ff = f;
+            Opened op = open(st, props, sp, rc, l);
             st.log("opened from master " + l.meta.key + (rc != null ? String.format(Locale.US, " (render r%03d)", rc.number) : ""));
-            h.post(new Runnable() {
-                @Override
-                public void run() {
-                    output = o;
-                    outSpec = sp;
-                    small = sm;
-                    smallFactor = ff;
-                    result = r;
-                    previewBase = bmp;
-                    preview = decorate(bmp);
-                    previewVersion++;
-                    phase = Phase.DONE;
-                    publish("Session of " + (r.startedMs > 0 ? nightLabel(r.startedMs) : st.id()), r.summary, -1);
-                    host.onIdle();
-                }
-            });
+            show(op, headline, detail);
         } catch (final Throwable t) {
             st.log("opening failed: " + t);
             h.post(new Runnable() {
@@ -756,6 +734,104 @@ final class SessionController {
                 }
             });
         }
+    }
+
+    /** A stack and how it's shown, ready to be the result (made off the session thread). */
+    private static final class Opened {
+        PostProcessor.Output o;
+        SensorSpec spec;
+        RgbImage small;
+        int factor;
+        Bitmap bmp;
+        Framing framing;
+        Result r;
+        String headline = "";
+    }
+
+    /** A master read back, with the session's report for it, rendered as {@code rc} says (null: the develop step's settings). */
+    private Opened open(SessionStore st, Properties props, SensorSpec sp, Recipe rc, Master.Loaded l) {
+        PostProcessor.Output o = outputOf(l, sp);
+        float brightness = rc != null ? rc.brightness : parseFloat(props.getProperty("brightness"), prefs.brightness());
+        int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
+        RgbImage sm = o.image.binned(f);
+        double[] north = northOf(o, l.meta.solutionR);
+        Result r = new Result();
+        r.summary = o.summary;
+        r.name = rc != null && !rc.name.isEmpty() ? rc.name : "NightSky_" + st.id();
+        r.session = st.dir.getName();
+        r.trails = l.meta.trails;
+        r.startedMs = parseLong(props.getProperty("capture.startWallMs"));
+        r.durationSec = (int) Math.round(l.meta.integrationSeconds);
+        if (rc != null && !rc.uri.isEmpty()) r.jpeg = Uri.parse(rc.uri);
+        r.jpegFactor = rc != null && rc.quick ? 2 : 1;
+        r.canAdjust = true;
+        r.brightness = brightness;
+        // the report made with this stack; the develop step's from before reports were kept with masters
+        r.merge = MergeProcessor.readDescription(l.meta.merge);
+        String rj = Master.readReport(st.dir, l.meta.key);
+        if (rj == null && l.meta.develop && l.meta.sessions.size() <= 1) rj = st.readText("report.json");
+        if (rj != null) {
+            try {
+                r.report = ReportCard.fromJson(rj);
+                r.reportJson = rj;
+            } catch (RuntimeException ignored) {
+            }
+        }
+        // the sky's names are where the stack put them; the satellites' tracks aren't kept
+        r.canLabel = r.report != null && r.report.sky != null && !r.report.sky.items.isEmpty();
+        r.recipe = rc;
+        r.master = l.meta;
+        r.north = north;
+        r.repeatOf = props.getProperty("repeatOf", "");
+        Opened op = new Opened();
+        op.o = o;
+        op.spec = sp;
+        op.small = sm;
+        op.factor = f;
+        op.r = r;
+        op.bmp = previewBitmap(sm, o.analysis, paramsOf(rc, brightness), f);
+        op.framing = frameFor(rc, north, sm.cropWidth(), sm.cropHeight());
+        op.headline = "Session of " + (r.startedMs > 0 ? nightLabel(r.startedMs) : st.id());
+        return op;
+    }
+
+    /** A master as developing's output: the stack, its colour and analysis, its lens model and reference frame. */
+    private static PostProcessor.Output outputOf(Master.Loaded l, SensorSpec sp) {
+        PostProcessor.Output o = new PostProcessor.Output();
+        o.image = l.image;
+        SensorSpec cs = Master.colourSpec(sp, l.meta);
+        if (l.meta.colourFromStars) o.colourSpec = cs;
+        o.analysis = Master.analyze(l.image, cs, l.meta.trails);
+        o.summary = l.meta.summary;
+        o.integrationSeconds = l.meta.integrationSeconds;
+        o.unitsUsed = l.meta.unitsUsed;
+        o.unitsTotal = l.meta.unitsTotal;
+        o.maxGain = l.meta.maxGain;
+        o.model = l.meta.model;
+        o.referenceUnit = l.meta.referenceUnit;
+        o.aligned = true;
+        return o;
+    }
+
+    /** Makes {@code op} the result on screen ({@code headline} and {@code detail} null: the usual words). */
+    private void show(final Opened op, final String headline, final String detail) {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                output = op.o;
+                outSpec = op.spec;
+                small = op.small;
+                smallFactor = op.factor;
+                result = op.r;
+                previewFraming = op.framing;
+                previewBase = op.bmp;
+                preview = decorate(op.bmp);
+                previewVersion++;
+                phase = Phase.DONE;
+                publish(headline != null ? headline : op.headline, detail != null ? detail : op.r.summary, -1);
+                host.onIdle();
+            }
+        });
     }
 
     /** Develop a session left unfinished by a crash or a dead battery. */
@@ -775,10 +851,7 @@ final class SessionController {
             @Override
             public void run() {
                 if (tk != rerenderToken || output == null || small == null) return;
-                Renderer.Params p = new Renderer.Params();
-                p.brightness = brightness;
-                int[] px = Renderer.renderSmall(small, output.analysis, p, smallFactor);
-                previewBase = Bitmap.createBitmap(px, small.cropWidth(), small.cropHeight(), Bitmap.Config.ARGB_8888);
+                previewBase = previewBitmap(small, output.analysis, paramsOf(result != null ? result.recipe : null, brightness), smallFactor);
                 preview = decorate(previewBase);
                 previewVersion++;
                 if (result != null) result.brightness = brightness;
@@ -806,14 +879,16 @@ final class SessionController {
                         try {
                             String name = r.name + "_b" + Math.round(brightness * 100);
                             String[] hash = new String[1];
-                            r.jpeg = saveJpeg(o, sp, brightness, name, null, r.jpegFactor, hash);
-                            r.brightness = brightness;
-                            prefs.setLastResultUri(r.jpeg.toString());
-                            if (r.recipe != null) {
-                                // a new render of the same stack: its own recipe, the earlier ones untouched
-                                Recipe nr = r.recipe.edit();
+                            // a new render of the same stack: its own recipe, the earlier ones untouched
+                            Recipe nr = r.recipe != null ? r.recipe.edit() : null;
+                            if (nr != null) {
                                 nr.brightness = brightness;
                                 nr.note = "brightness changed";
+                            }
+                            r.jpeg = saveJpeg(o, sp, paramsOf(nr, brightness), nr, r.north, name, null, r.jpegFactor, hash);
+                            r.brightness = brightness;
+                            prefs.setLastResultUri(r.jpeg.toString());
+                            if (nr != null) {
                                 SessionStore st = new SessionStore(new File(root, r.session));
                                 Recipe saved = saveRecipe(st, nr, r.master, o, name, r.jpeg, hash[0]);
                                 if (saved != null) r.recipe = saved;
@@ -875,7 +950,8 @@ final class SessionController {
                     public void run() {
                         String err = null;
                         try {
-                            r.labelled = saveJpeg(o, sp, brightness, r.name + "_labelled", d, r.jpegFactor);
+                            r.labelled = saveJpeg(o, sp, paramsOf(r.recipe, brightness), r.recipe, r.north, r.name + "_labelled", d,
+                                    r.jpegFactor, null);
                         } catch (Throwable t) {
                             err = "Could not save: " + (t instanceof OutOfMemoryError ? "out of memory" : t.getMessage());
                         }
@@ -893,18 +969,449 @@ final class SessionController {
         });
     }
 
-    /** The preview with the satellites' tracks and the sky's names, as the result screen's switches say. */
+    /**
+     * The preview with the satellites' tracks and the sky's names, as the result screen's switches say, then cut and
+     * turned as its render says.
+     */
     private Bitmap decorate(Bitmap base) {
         Result r = result;
         PostProcessor.Output o = output;
         if (base == null || r == null || o == null) return base;
+        Bitmap b = base;
         try {
-            return TrackPainter.paint(base, o.analysis.cx0, o.analysis.cy0, smallFactor, r.tracks,
+            b = TrackPainter.paint(base, o.analysis.cx0, o.analysis.cy0, smallFactor, r.tracks,
                     r.report != null ? r.report.sky : null, prefs.showTracks(), prefs.showLabels());
         } catch (RuntimeException | OutOfMemoryError e) {
             android.util.Log.w("NightSky", "could not draw the tracks and names: " + e);
-            return base;
         }
+        return frame(b, previewFraming);
+    }
+
+    /** The bitmap cut and turned as {@code f} says (the same one when f leaves it as it is, or doesn't fit it). */
+    private static Bitmap frame(Bitmap b, Framing f) {
+        if (b == null || f == null || f.identity() || b.getWidth() != f.w || b.getHeight() != f.h) return b;
+        int[] px = new int[f.w * f.h];
+        b.getPixels(px, 0, f.w, 0, 0, f.w, f.h);
+        return Bitmap.createBitmap(f.apply(px), f.outW, f.outH, Bitmap.Config.ARGB_8888);
+    }
+
+    /** The on-screen copy of the small stack rendered as {@code rc} says (before its framing). */
+    private static Bitmap previewBitmap(RgbImage sm, Renderer.Analysis a, Renderer.Params p, int factor) {
+        int[] px = Renderer.renderSmall(sm, a, p, factor);
+        return Bitmap.createBitmap(px, sm.cropWidth(), sm.cropHeight(), Bitmap.Config.ARGB_8888);
+    }
+
+    /** How a recipe cuts and turns a w x h copy of the photo, {@code north} its north (null: as it is). */
+    private static Framing frameFor(Recipe rc, double[] north, int w, int h) {
+        if (rc == null) return null;
+        Framing f = rc.framing(w, h, rc.northUp ? north : null);
+        return f.identity() ? null : f;
+    }
+
+    /** North's direction at the centre of the output's photo, from where the stack pointed ({@code R}); null if unknown. */
+    private static double[] northOf(PostProcessor.Output o, double[] R) {
+        Renderer.Analysis a = o.analysis;
+        return a == null ? null : Framing.north(o.model, R, a.cx0 + a.cw / 2.0, a.cy0 + a.ch / 2.0);
+    }
+
+    /** A render's settings: the recipe's (with {@code brightness} when it isn't NaN), else the develop step's. */
+    private static Renderer.Params paramsOf(Recipe rc, float brightness) {
+        Renderer.Params p = rc != null ? rc.params() : new Renderer.Params();
+        if (!Float.isNaN(brightness)) p.brightness = brightness;
+        return p;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Editing (G3): every change is a new render with its own recipe; nothing saved is written over
+    // ------------------------------------------------------------------------------------------------
+
+    /** What the edit screen shows and changes, read off the main thread ({@link #editInfo}). */
+    static final class EditInfo {
+        /** The photo's recipe, and a copy of it to change. */
+        Recipe was, recipe;
+        /** The session's frames as developing graded them, in time order (empty when the stack can't change). */
+        ReportCard.Frame[] frames = new ReportCard.Frame[0];
+        /** The frame the stack was lined up on (-1 if unknown). */
+        int referenceUnit = -1;
+        /** Why the stack can't change, so only how it's rendered can ("" when it can). */
+        String noRestack = "";
+        /** Why it can't be turned north up ("" when it can). */
+        String noNorth = "";
+        /** The automatic foreground, in cells of the sensor (null if none was found or it couldn't be looked for). */
+        boolean[] autoGround;
+        /** The painting to start from (blank when the recipe has none; null when the stack can't change). */
+        EdgeMask painting;
+        /** The photo's crop of the sensor, and sensor pixels per pixel of the preview. */
+        int cx0, cy0, cw, ch, factor;
+        /** The sensor's size. */
+        int width, height;
+        /** The session's renders, oldest first, and its folder. */
+        List<Recipe> renders = new ArrayList<Recipe>();
+        File dir;
+    }
+
+    interface EditCallback {
+        /** On the main thread: what editing needs, or why it can't be edited (info null). */
+        void ready(EditInfo info, String why);
+    }
+
+    /** Reads what the edit screen needs (slow: the session's average, for the foreground), then calls back on the main thread. */
+    void editInfo(final EditCallback cb) {
+        final Handler ui = new Handler(Looper.getMainLooper());
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                final Result r = result;
+                final PostProcessor.Output o = output;
+                final SensorSpec sp = outSpec;
+                final int f = smallFactor;
+                final String why = r == null || o == null || phase != Phase.DONE ? "There's no photo to edit."
+                        : r.recipe == null ? "This photo's recipe wasn't kept, so it can't be edited." : null;
+                if (why != null) {
+                    ui.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            cb.ready(null, why);
+                        }
+                    });
+                    return;
+                }
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final EditInfo in = editInfo(r, o, sp, f);
+                        ui.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                cb.ready(in, null);
+                            }
+                        });
+                    }
+                }, "edit-info").start();
+            }
+        });
+    }
+
+    private EditInfo editInfo(Result r, PostProcessor.Output o, SensorSpec sp, int factor) {
+        EditInfo in = new EditInfo();
+        in.was = r.recipe;
+        in.recipe = r.recipe.edit();
+        in.dir = new File(root, r.session);
+        SessionStore st = new SessionStore(in.dir);
+        Renderer.Analysis a = o.analysis;
+        in.cx0 = a.cx0;
+        in.cy0 = a.cy0;
+        in.cw = a.cw;
+        in.ch = a.ch;
+        in.factor = factor;
+        in.width = sp.width;
+        in.height = sp.height;
+        in.referenceUnit = r.master != null && r.master.referenceUnit >= 0 ? r.master.referenceUnit : o.referenceUnit;
+        in.renders = Recipe.list(in.dir);
+        in.noNorth = r.north == null ? "The sky wasn't recognised in this photo, so where north is isn't known." : "";
+        if (r.recipe.isMerge()) {
+            in.noRestack = "It's sessions stacked together: here only how it's rendered can change.";
+        } else if (!framesKept(st)) {
+            in.noRestack = "Its frames were deleted to make room (Settings: frames kept), so only how it's rendered can change.";
+        }
+        if (!in.noRestack.isEmpty()) return in;
+        in.frames = sessionFrames(st);
+        if (!r.trails) {
+            try {
+                in.autoGround = EdgeMask.automatic(st, sp);
+            } catch (RuntimeException | OutOfMemoryError e) {
+                st.log("edit: the foreground couldn't be looked for: " + e);
+            }
+            EdgeMask m = r.recipe.mask.isEmpty() ? null : EdgeMask.load(in.dir, r.recipe.mask);
+            in.painting = m != null ? m : new EdgeMask(sp.width, sp.height);
+        }
+        return in;
+    }
+
+    /** The session's frames as developing graded them (its report); from its frames' records if the report is gone. */
+    private static ReportCard.Frame[] sessionFrames(SessionStore st) {
+        String rj = st.readText("report.json");
+        if (rj != null) {
+            try {
+                ReportCard rc = ReportCard.fromJson(rj);
+                if (rc.frames.length > 0) return rc.frames;
+            } catch (RuntimeException ignored) {
+            }
+        }
+        List<ReportCard.Frame> out = new ArrayList<ReportCard.Frame>();
+        try {
+            for (UnitRecord u : st.readUnits()) {
+                ReportCard.Frame f = new ReportCard.Frame();
+                f.index = u.index;
+                int sec = (int) Math.round(u.t);
+                f.time = String.format(Locale.US, "%d:%02d", sec / 60, sec % 60);
+                f.used = true;
+                f.score = 100;
+                out.add(f);
+            }
+        } catch (IOException ignored) {
+        }
+        return out.toArray(new ReportCard.Frame[0]);
+    }
+
+    /** Whether a session's frames are still on the phone (its stack can be made again). */
+    static boolean framesKept(SessionStore st) {
+        String[] l = st.framesDir.list();
+        if (l == null) return false;
+        for (String n : l) if (n.endsWith(".raw")) return true;
+        return false;
+    }
+
+    /**
+     * Shows the photo as an edit renders it (quick, from the small copy): its settings, crop and turn, or with
+     * {@code whole} neither cut nor turned (for painting the foreground). Null shows the photo as it is again.
+     */
+    void previewEdit(final Recipe e, final boolean whole) {
+        final Recipe c = e != null ? e.edit() : null;
+        final int tk = ++rerenderToken;
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (tk != rerenderToken || output == null || small == null || result == null) return;
+                Recipe rc = c != null ? c : result.recipe;
+                previewFraming = whole ? null : frameFor(rc, result.north, small.cropWidth(), small.cropHeight());
+                previewBase = previewBitmap(small, output.analysis, paramsOf(rc, c != null ? Float.NaN : result.brightness), smallFactor);
+                preview = decorate(previewBase);
+                previewVersion++;
+                Status cur = status;
+                publish(cur.headline, cur.detail, -1);
+            }
+        });
+    }
+
+    /**
+     * Saves an edit of the photo shown as a new render, never over one: from the stack shown when only how it's
+     * rendered changed, from the kept master of the stack it asks for, or else stacked again from the frames.
+     * {@code painting}: the foreground as painted by hand, kept in the session folder for the recipe (null: as the
+     * recipe says).
+     */
+    void saveEdit(Recipe edit, EdgeMask painting) {
+        final Recipe e = edit.edit();
+        final EdgeMask pm = painting != null ? painting.copy() : null;
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (output == null || result == null || phase != Phase.DONE) return;
+                Result r = result;
+                final Recipe cur = r.recipe;
+                if (cur == null) {
+                    publish("Not saved", "This photo's recipe wasn't kept, so it can't be edited.", -1);
+                    return;
+                }
+                final SessionStore st = new SessionStore(new File(root, r.session));
+                if (pm != null) {
+                    try {
+                        e.mask = pm.isBlank() ? "" : pm.save(st.dir);
+                    } catch (IOException ex) {
+                        publish("Not saved", "The painting couldn't be kept: " + ex.getMessage(), -1);
+                        return;
+                    }
+                }
+                String what = e.changes(cur);
+                if (what.isEmpty()) {
+                    publish("Nothing to save", "The edit is the photo as it is.", -1);
+                    return;
+                }
+                if (e.sameStack(cur)) {
+                    e.note = "edited: " + what;
+                    st.log("edit: " + what + ", rendered from the same stack");
+                    final Opened op = current();
+                    phase = Phase.DEVELOPING;
+                    publish("Saving", "The edit, as a new render", -1);
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            renderEdit(st, e, op, true, 0);
+                        }
+                    }, "edit").start();
+                    return;
+                }
+                if (cur.isMerge()) {
+                    publish("Not saved", "It's sessions stacked together: only how it's rendered can change.", -1);
+                    return;
+                }
+                // a new stack: made by this version's processing
+                e.restacked();
+                e.note = "edited: " + e.changes(cur);
+                st.log("edit: " + e.changes(cur));
+                final int back = cur.number;
+                clearForJob(); // the new stack needs the memory
+                phase = Phase.FINISHING;
+                publish("Stacking the edit", "Looking for its stack", -1);
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            Master.Loaded l = Master.read(st.dir, e.stackKey());
+                            if (l != null) {
+                                // an earlier edit made that stack: rendered from its master, not stacked again
+                                st.log("edit: its stack " + l.meta.key + " is kept, so it isn't stacked again");
+                                Properties props = st.readSettings();
+                                renderEdit(st, e, open(st, props, SensorSpec.fromProperties(props), e, l), false, back);
+                                return;
+                            }
+                        } catch (IOException | RuntimeException | OutOfMemoryError ex) {
+                            st.log("edit: the kept stack couldn't be read: " + ex);
+                        }
+                        if (!framesKept(st)) {
+                            doOpen(st.dir, back, "Not saved", "The frames were deleted to make room, so the stack can't change now; only "
+                                    + "how it's rendered can.");
+                            return;
+                        }
+                        restack(st, e, null, back);
+                    }
+                }, "edit").start();
+            }
+        });
+    }
+
+    /** The photo shown, as {@link #renderEdit} takes it (on the session thread). */
+    private Opened current() {
+        Opened op = new Opened();
+        op.o = output;
+        op.spec = outSpec;
+        op.small = small;
+        op.factor = smallFactor;
+        op.r = result;
+        return op;
+    }
+
+    /**
+     * Saves an edit rendered from a stack already made, with its recipe, and shows it (on a thread of its own). If it
+     * fails, the photo stays ({@code shown}) or render {@code backTo} is opened again.
+     */
+    private void renderEdit(SessionStore st, Recipe e, Opened op, boolean shown, int backTo) {
+        try {
+            String name = editName(st, e.trails);
+            String[] hash = new String[1];
+            Renderer.Params p = paramsOf(e, Float.NaN);
+            int factor = e.quick ? 2 : 1;
+            Uri jpeg = saveJpeg(op.o, op.spec, p, e, op.r.north, name, null, factor, hash);
+            Recipe saved = saveRecipe(st, e, op.r.master, op.o, name, jpeg, hash[0]);
+            Bitmap bmp = previewBitmap(op.small, op.o.analysis, p, op.factor);
+            Framing pf = frameFor(e, op.r.north, op.small.cropWidth(), op.small.cropHeight());
+            saveThumb(st, frame(bmp, pf));
+            Result r = edited(op.r);
+            r.name = name;
+            r.jpeg = jpeg;
+            r.jpegFactor = factor;
+            r.recipe = saved != null ? saved : e;
+            r.brightness = e.brightness;
+            prefs.setLastResultUri(jpeg.toString());
+            Opened done = new Opened();
+            done.o = op.o;
+            done.spec = op.spec;
+            done.small = op.small;
+            done.factor = op.factor;
+            done.r = r;
+            done.bmp = bmp;
+            done.framing = pf;
+            show(done, saved != null ? String.format(Locale.US, "Saved as render %d", saved.number) : "Saved", r.summary);
+        } catch (Throwable t) {
+            st.log("edit: not saved: " + t);
+            final String why = t instanceof OutOfMemoryError ? "out of memory" : t.getMessage();
+            if (!shown) {
+                doOpen(st.dir, backTo, "Edit not saved", "Could not save it: " + why + ". The photo is as it was.");
+                return;
+            }
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    phase = Phase.DONE;
+                    publish("Not saved", "Could not save the edit: " + why, -1);
+                }
+            });
+        }
+    }
+
+    /** The result after an edit rendered from {@code was}'s stack: the same stack, report and place on the sky. */
+    private static Result edited(Result was) {
+        Result r = new Result();
+        r.summary = was.summary;
+        r.session = was.session;
+        r.startedMs = was.startedMs;
+        r.durationSec = was.durationSec;
+        r.trails = was.trails;
+        r.canAdjust = was.canAdjust;
+        r.report = was.report;
+        r.reportJson = was.reportJson;
+        r.tracks = was.tracks;
+        r.canLabel = was.canLabel;
+        r.master = was.master;
+        r.north = was.north;
+        r.merge = was.merge;
+        return r;
+    }
+
+    /**
+     * A render whose stack was deleted to make room, made again from its recipe while the frames are kept (on the
+     * calling thread, a job's own): the same picture, unless the processing changed since.
+     */
+    private void makeAgain(SessionStore st, Recipe rc) throws IOException {
+        if (!framesKept(st)) {
+            throw new IOException(String.format(Locale.US, "render %d's stacked picture was deleted to make room, and so were the frames",
+                    rc.number));
+        }
+        Recipe e = rc.edit();
+        e.note = String.format(Locale.US, "render r%03d made again", rc.number);
+        if (rc.outdated()) {
+            e.restacked();
+            e.note += " with the new processing";
+        }
+        st.log("decision: " + e.note + " from its recipe: its stacked picture was deleted to make room");
+        restack(st, e, rc, 0);
+    }
+
+    /** Stacks the session again as {@code e} says and shows it (on the calling thread, a job's own); {@code again}: the render it remakes. */
+    private void restack(final SessionStore st, final Recipe e, final Recipe again, int backTo) {
+        boolean dng = !"false".equals(readProperty(st, "saveDng"));
+        runDevelop(st, e.brightness, dng, null, JOB_EDIT, backTo, e.trails ? "Building the star trails" : "Lining up the stars", new Maker() {
+            @Override
+            public Made make(Progress progress) throws IOException {
+                Made m = developEdit(st, e, progress);
+                m.again = again;
+                return m;
+            }
+        });
+    }
+
+    /** The session stacked again as an edit's recipe says. */
+    private Made developEdit(SessionStore st, Recipe e, Progress progress) throws IOException {
+        Properties props = st.readSettings();
+        SensorSpec sp = SensorSpec.fromProperties(props);
+        PostProcessor pp = new PostProcessor(st, sp);
+        if (!e.mask.isEmpty() && EdgeMask.load(st.dir, e.mask) == null) {
+            st.log("decision: edit: the foreground painting " + e.mask + " is missing, so it's stacked without it");
+            e.mask = "";
+        }
+        String missing = e.configure(pp, st.dir);
+        if (!missing.isEmpty()) st.log("decision: edit: " + missing);
+        SessionSky sk = skyFor(pp, props, st, e.trails);
+        Made m = new Made();
+        m.o = pp.run(e.trails, progress);
+        m.spec = sp;
+        m.home = st;
+        m.session = st;
+        m.props = props;
+        m.sky = sk;
+        m.trails = e.trails;
+        m.quick = e.quick;
+        m.recipe = e;
+        m.edit = true;
+        m.name = editName(st, e.trails);
+        return m;
+    }
+
+    /** An edit's photo's name: the session's, then the render's number ("NightSky_20261022_2315_r4"). */
+    private static String editName(SessionStore st, boolean trails) {
+        int n = 1;
+        for (Recipe x : Recipe.list(st.dir)) n = Math.max(n, x.number + 1);
+        return "NightSky_" + st.id() + (trails ? "_trails" : "") + "_r" + n;
     }
 
     /** Forget the developed result (frees memory). */
@@ -919,6 +1426,7 @@ final class SessionController {
                     reading = null;
                     preview = null;
                     previewBase = null;
+                    previewFraming = null;
                     phase = Phase.IDLE;
                     publish("", "", -1);
                 }
@@ -1147,6 +1655,7 @@ final class SessionController {
         result = null;
         preview = null;
         previewBase = null;
+        previewFraming = null;
         if (up != null) up.abort();
         up = null;
         store = null;
@@ -3531,6 +4040,7 @@ final class SessionController {
         result = null;
         preview = null;
         previewBase = null;
+        previewFraming = null;
         resetCapture();
         settings = new Settings();
         settings.trails = "trails".equals(p.getProperty("mode"));
@@ -3579,6 +4089,10 @@ final class SessionController {
         MergeProcessor.Result merge;
         /** A merge of nights chosen in the library (no report card, that is a session's), not minutes added to one. */
         boolean nights;
+        /** Stacked again as an edit says (G3): the session's own report, frames and learning are left as they were. */
+        boolean edit;
+        /** The saved render this one makes again (its stack was deleted), to compare with; null otherwise. */
+        Recipe again;
     }
 
     /** How a develop job makes its stack (on the develop thread). */
@@ -3589,7 +4103,7 @@ final class SessionController {
     /** Runs on the develop thread. */
     private void develop(final SessionStore st, final SensorSpec sp, final boolean trails, final float brightness,
                          final boolean saveDng, final Sounds snd) {
-        runDevelop(st, brightness, saveDng, snd, false, trails ? "Building the star trails" : "Lining up the stars", new Maker() {
+        runDevelop(st, brightness, saveDng, snd, JOB_DEVELOP, 0, trails ? "Building the star trails" : "Lining up the stars", new Maker() {
             @Override
             public Made make(Progress progress) throws IOException {
                 Properties props = new Properties();
@@ -3621,10 +4135,7 @@ final class SessionController {
         PostProcessor pp = new PostProcessor(st, sp);
         // the rejection chosen when the session started, so redeveloping a session gives the same result
         pp.rejection = Rejection.Method.parse(props.getProperty("rejection"));
-        // where and when: lets the stars be named and the frames placed on the sky
-        SessionSky sk = SessionSky.fromProperties(props);
-        sk.catalog = SkyCatalog.get(ctx);
-        pp.sky = sk;
+        SessionSky sk = skyFor(pp, props, st, trails);
         // the satellites: named where they crossed, and taken out (or kept, as set when it started)
         pp.keepSatellites = "true".equals(props.getProperty("keepSatellites"));
         // the cloud-blur version (C7), and quick developing (Quick look), as set when it started
@@ -3633,19 +4144,6 @@ final class SessionController {
         if (quick) {
             pp.patternCleanup = false;
             pp.streakCorridors = false;
-        }
-        if (!trails) {
-            if (!prefs.satelliteData()) {
-                pp.satellitesMissing = "satellite data is off in the settings";
-            } else {
-                try {
-                    long ms = sk.clockValid ? sk.clockWallMs : System.currentTimeMillis();
-                    pp.satellites = Satellites.catalog(ctx, Astro.jdUtc(ms / 1000.0));
-                } catch (RuntimeException e) {
-                    pp.satellitesMissing = "the satellite data couldn't be read";
-                    st.log("satellites: the data couldn't be read: " + e);
-                }
-            }
         }
         Made m = new Made();
         m.o = pp.run(trails, progress);
@@ -3665,6 +4163,30 @@ final class SessionController {
         m.recipe = developRecipe(st, props, trails, brightness);
         m.name = "NightSky_" + st.id() + (trails ? "_trails" : "");
         return m;
+    }
+
+    /**
+     * Where and when the session was (for naming the stars and placing the frames on the sky) and the satellites that
+     * crossed it (named where they did), as developing sets them up.
+     */
+    private SessionSky skyFor(PostProcessor pp, Properties props, SessionStore st, boolean trails) {
+        SessionSky sk = SessionSky.fromProperties(props);
+        sk.catalog = SkyCatalog.get(ctx);
+        pp.sky = sk;
+        if (!trails) {
+            if (!prefs.satelliteData()) {
+                pp.satellitesMissing = "satellite data is off in the settings";
+            } else {
+                try {
+                    long ms = sk.clockValid ? sk.clockWallMs : System.currentTimeMillis();
+                    pp.satellites = Satellites.catalog(ctx, Astro.jdUtc(ms / 1000.0));
+                } catch (RuntimeException e) {
+                    pp.satellitesMissing = "the satellite data couldn't be read";
+                    st.log("satellites: the data couldn't be read: " + e);
+                }
+            }
+        }
+        return sk;
     }
 
     /**
@@ -3754,14 +4276,20 @@ final class SessionController {
         return new java.text.SimpleDateFormat("d MMM", Locale.US).format(new java.util.Date(ms - 12 * 3600_000L));
     }
 
+    /** What a develop job is: a session (or minutes added to one), sessions merged, or an edit stacked again (G3). */
+    private static final int JOB_DEVELOP = 0, JOB_MERGE = 1, JOB_EDIT = 2;
+
     /**
      * The develop thread's frame: progress on the screen, the stack from {@code maker}, then everything saved and shown
-     * ({@link #finishDevelop}); a cancel or a failure leaves the frames as they were.
+     * ({@link #finishDevelop}); a cancel or a failure leaves the frames as they were (an edit's goes back to render
+     * {@code backTo}, 0 for the latest).
      */
-    private void runDevelop(final SessionStore st, final float brightness, final boolean saveDng, final Sounds snd, final boolean merging,
-                            String firstStage, Maker maker) {
+    private void runDevelop(final SessionStore st, final float brightness, final boolean saveDng, final Sounds snd, final int job,
+                            int backTo, String firstStage, Maker maker) {
+        final boolean merging = job == JOB_MERGE;
+        final String verb = merging ? "Merging" : job == JOB_EDIT ? "Stacking the edit" : "Developing";
         final long t0 = SystemClock.elapsedRealtime();
-        post(Phase.DEVELOPING, merging ? "Merging" : "Developing", firstStage, 0f);
+        post(Phase.DEVELOPING, verb, firstStage, 0f);
         Progress progress = new Progress() {
             long last;
 
@@ -3770,7 +4298,7 @@ final class SessionController {
                 long now = SystemClock.elapsedRealtime();
                 if (now - last < 300 && fraction < 1f) return;
                 last = now;
-                post(Phase.DEVELOPING, merging ? "Merging" : "Developing", stage, fraction);
+                post(Phase.DEVELOPING, verb, stage, fraction);
             }
 
             @Override
@@ -3782,7 +4310,11 @@ final class SessionController {
             Made m = maker.make(progress);
             finishDevelop(m, brightness, saveDng, snd, t0);
         } catch (final CancelledException e) {
-            st.log(merging ? "merging cancelled" : "developing cancelled");
+            st.log(merging ? "merging cancelled" : job == JOB_EDIT ? "stacking the edit cancelled" : "developing cancelled");
+            if (job == JOB_EDIT) {
+                doOpen(st.dir, backTo, "Cancelled", "The edit wasn't saved; the photo is as it was.");
+                return;
+            }
             h.post(new Runnable() {
                 @Override
                 public void run() {
@@ -3796,8 +4328,13 @@ final class SessionController {
                 }
             });
         } catch (final Throwable t) {
-            st.log((merging ? "merging" : "developing") + " failed: " + t);
+            st.log((merging ? "merging" : job == JOB_EDIT ? "stacking the edit" : "developing") + " failed: " + t);
             for (StackTraceElement el : t.getStackTrace()) st.log("  at " + el);
+            if (job == JOB_EDIT) {
+                doOpen(st.dir, backTo, "Edit not saved", "Stacking it again failed: " + (t instanceof OutOfMemoryError ? "out of memory"
+                        : t.getMessage()) + ". The photo is as it was.");
+                return;
+            }
             h.post(new Runnable() {
                 @Override
                 public void run() {
@@ -3820,10 +4357,12 @@ final class SessionController {
         SessionStore st = m.session, home = m.home;
         // the stack as its master keeps it (half floats), so the photo saved below is the one the master gives again
         Master.quantize(o, sp, m.trails);
-        Master.Meta master = saveMaster(home, o, sp, m.recipe, m.props, !m.nights, m.merge);
-        if (m.merge == null) learnFromSession(m.props, o, sp, st);
-        // a merge of nights isn't one session: its own summary and coverage map stand for the report card
-        ReportCard card = m.nights ? null : report(o, m.sky, m.props, st);
+        Master.Meta master = saveMaster(home, o, sp, m.recipe, m.props, !m.nights && !m.edit, m.merge);
+        if (m.edit && master != null) pruneMasters(home, master.key);
+        if (m.merge == null && !m.edit) learnFromSession(m.props, o, sp, st);
+        // a merge of nights isn't one session: its own summary and coverage map stand for the report card; an edit's is
+        // kept with its stack, the session's own stays the develop step's
+        ReportCard card = m.nights ? null : report(o, m.sky, m.props, st, !m.edit);
         if (card != null && master != null) {
             // with the stack it describes, for opening the photo again from the sessions page
             try {
@@ -3838,8 +4377,15 @@ final class SessionController {
         int factor = m.quick ? 2 : 1;
         post(Phase.DEVELOPING, "Saving", m.quick ? "Half-size photo" : "Full-size photo", -1f);
         String[] hash = new String[1];
-        Uri jpeg = saveJpeg(o, sp, brightness, name, null, factor, hash);
+        // rendered as its recipe says: the develop step's settings, or an edit's (G3)
+        Renderer.Params params = paramsOf(m.recipe, brightness);
+        final double[] north = northOf(o, master != null ? master.solutionR : o.solution != null ? o.solution.R : null);
+        Uri jpeg = saveJpeg(o, sp, params, m.recipe, north, name, null, factor, hash);
         Recipe recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
+        if (m.again != null) {
+            home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s", m.again.number,
+                    sameAs(m.again, master, hash[0])));
+        }
         Uri blendUri = null;
         if (o.blend != null) {
             post(Phase.DEVELOPING, "Saving", "The cloud-blur version", -1f);
@@ -3856,26 +4402,26 @@ final class SessionController {
             dng = saveDng(o, sp, name);
         }
         if (!"developed".equals(st.state())) st.setState("developed");
-        st.log(String.format(Locale.US, "%s in %.1f s: %s", m.merge == null ? "developed" : m.nights ? "merged" : "stacked with the session "
-                + "it adds to", (SystemClock.elapsedRealtime() - t0) / 1000.0, o.summary));
+        st.log(String.format(Locale.US, "%s in %.1f s: %s", m.edit ? "edit stacked" : m.merge == null ? "developed" : m.nights ? "merged"
+                : "stacked with the session it adds to", (SystemClock.elapsedRealtime() - t0) / 1000.0, o.summary));
         if (home != st) home.log(String.format(Locale.US, "%s: %s", m.recipe.note, o.summary));
         Uri log = null;
-        try {
-            String text = st.readLog();
-            if (home != st) text = home.readLog() + "\n---- " + st.dir.getName() + " ----\n" + text;
-            log = MediaSaver.saveText(ctx, name + "_log.txt", text);
-        } catch (IOException | RuntimeException ignored) {
+        if (!m.edit) {
+            try {
+                String text = st.readLog();
+                if (home != st) text = home.readLog() + "\n---- " + st.dir.getName() + " ----\n" + text;
+                log = MediaSaver.saveText(ctx, name + "_log.txt", text);
+            } catch (IOException | RuntimeException ignored) {
+            }
         }
-        // the photo is saved: the frames stay for editing and merging while the budget allows
-        if (m.merge == null || home != st) keepOrDeleteFrames(st, home);
-        // on-screen copy, about 1600 pixels wide, kept with the stack for brightness changes
+        // the photo is saved: the frames stay for editing and merging while the budget allows (an edit leaves them be)
+        if (!m.edit && (m.merge == null || home != st)) keepOrDeleteFrames(st, home);
+        // on-screen copy, about 1600 pixels wide, kept with the stack for brightness changes and edits
         int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
         RgbImage sm = o.image.binned(f);
-        Renderer.Params rp = new Renderer.Params();
-        rp.brightness = brightness;
-        int[] px = Renderer.renderSmall(sm, o.analysis, rp, f);
-        final Bitmap bmp = Bitmap.createBitmap(px, sm.cropWidth(), sm.cropHeight(), Bitmap.Config.ARGB_8888);
-        saveThumb(home, bmp);
+        final Bitmap bmp = previewBitmap(sm, o.analysis, params, f);
+        final Framing pf = frameFor(m.recipe, north, sm.cropWidth(), sm.cropHeight());
+        saveThumb(home, frame(bmp, pf));
         final Result r = new Result();
         r.summary = o.summary;
         r.name = name;
@@ -3884,7 +4430,8 @@ final class SessionController {
         r.startedMs = parseLong(m.props.getProperty("capture.startWallMs"));
         r.durationSec = m.merge != null ? (int) Math.round(o.integrationSeconds)
                 : (int) parseLong(m.props.getProperty("capture.durationSec", m.props.getProperty("durationSec")));
-        r.endedMs = System.currentTimeMillis();
+        // an edit isn't a new capture: no "Add 5 minutes" after it
+        r.endedMs = m.edit ? 0 : System.currentTimeMillis();
         r.jpeg = jpeg;
         r.jpegFactor = factor;
         r.blend = blendUri;
@@ -3896,10 +4443,11 @@ final class SessionController {
         r.reportJson = card != null ? card.toJson() : null;
         r.tracks = tracks;
         r.canLabel = card != null && card.sky != null && !card.sky.items.isEmpty();
-        r.recipe = recipe;
+        r.recipe = recipe != null ? recipe : m.recipe;
         r.master = master;
         r.merge = m.merge;
-        r.repeatOf = m.merge == null ? m.props.getProperty("repeatOf", "") : "";
+        r.north = north;
+        r.repeatOf = m.merge == null && !m.edit ? m.props.getProperty("repeatOf", "") : "";
         prefs.setLastResultUri(jpeg.toString());
         final RgbImage smf = sm;
         final int ff = f;
@@ -3911,13 +4459,14 @@ final class SessionController {
                 small = smf;
                 smallFactor = ff;
                 result = r;
+                previewFraming = pf;
                 previewBase = bmp;
                 preview = decorate(bmp);
                 previewVersion++;
                 phase = Phase.DONE;
                 outcome = NightPlan.Outcome.DONE;
                 outcomeDetail = doneWords(r, o);
-                publish(m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
+                publish(m.edit ? "Your edit is ready" : m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
                         : m.trails ? "Your star trails are ready" : "Your photo is ready", r.summary, -1);
                 if (snd != null) {
                     snd.say(m.merge != null ? (m.nights ? "The merged photo is ready: " : "The longer photo is ready: ") + m.merge.total
@@ -3931,6 +4480,30 @@ final class SessionController {
                 host.onIdle();
             }
         });
+    }
+
+    /** Masters of edits kept beside the develop step's and the newest: older ones go (their recipes can make them again). */
+    private static final int EDIT_MASTERS = 2;
+
+    private static void pruneMasters(SessionStore st, String newest) {
+        java.util.Set<String> keep = new java.util.HashSet<String>();
+        keep.add(newest);
+        long before = Master.bytes(st.dir);
+        List<String> gone = Master.prune(st.dir, EDIT_MASTERS, keep);
+        if (gone.isEmpty()) return;
+        st.log(String.format(Locale.US, "decision: %d older stacked picture%s of edits deleted (%s), keeping the develop step's and the "
+                        + "newest %d; their recipes can make them again while the frames are kept", gone.size(), gone.size() == 1 ? "" : "s",
+                SessionLibrary.gb(before - Master.bytes(st.dir)), EDIT_MASTERS + 1));
+    }
+
+    /** Whether a render made again came out as the first time: its stack (the master's hash) and its pixels. */
+    private static String sameAs(Recipe was, Master.Meta master, String pixelHash) {
+        boolean stack = master != null && !was.masterHash.isEmpty() && was.masterHash.equals(master.hash);
+        boolean pixels = pixelHash != null && pixelHash.equals(was.pixelHash);
+        if (stack && pixels) return "the same stack and the same picture, pixel for pixel";
+        if (was.outdated()) return "with the new processing, so it differs from the first";
+        if (stack) return "the same stack, but the picture differs (the rendering changed since)";
+        return "a different stack (the satellite data or the app changed since it was made)";
     }
 
     /** A small copy of the photo in the session folder, for the sessions page. */
@@ -3950,8 +4523,11 @@ final class SessionController {
         }
     }
 
-    /** The session's report card, saved with the session and in its log; null if it couldn't be made. */
-    private ReportCard report(PostProcessor.Output o, SessionSky sk, Properties props, SessionStore st) {
+    /**
+     * The session's report card, in its log and (with {@code own}) saved as the session's report; null if it couldn't
+     * be made.
+     */
+    private ReportCard report(PostProcessor.Output o, SessionSky sk, Properties props, SessionStore st, boolean own) {
         try {
             ReportCard.Input in = new ReportCard.Input();
             in.out = o;
@@ -3961,6 +4537,7 @@ final class SessionController {
             in.catalog = sk.catalog;
             ReportCard card = ReportCard.build(in);
             st.log("report:\n" + card.describe());
+            if (!own) return card;
             try {
                 st.writeText("report.json", card.toJson());
             } catch (IOException e) {
@@ -4037,14 +4614,18 @@ final class SessionController {
 
     /** The photo as a JPEG, {@code factor} photo pixels to a JPEG pixel each way (1: full size), with {@code d} drawn on. */
     private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor) throws IOException {
-        return saveJpeg(o, sp, brightness, name, d, factor, null);
+        return saveJpeg(o, sp, paramsOf(null, brightness), null, null, name, d, factor, null);
     }
 
-    /** Saves the photo; with {@code hash}, its rendered pixels' SHA-256 goes in hash[0] (before anything is drawn on it). */
-    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor, String[] hash)
-            throws IOException {
-        final Renderer.Params p = new Renderer.Params();
-        p.brightness = brightness;
+    /**
+     * Saves the photo rendered with {@code p}, cut and turned as {@code rc} says ({@code north} its north; rc null: as
+     * it is); with {@code hash}, the photo's pixels' SHA-256 goes in hash[0] (before anything is drawn on it, which is
+     * drawn before the framing).
+     */
+    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Recipe rc, double[] north, String name, Decor d,
+                         int factor, String[] hash) throws IOException {
+        Framing f = frameFor(rc, north, o.analysis.cw / factor, o.analysis.ch / factor);
+        if (f != null) return saveFramed(o, sp, p, f, name, d, factor, hash);
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
         final int cw = sm != null ? sm.cropWidth() : o.analysis.cw, ch = sm != null ? sm.cropHeight() : o.analysis.ch;
         final Bitmap bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
@@ -4066,20 +4647,56 @@ final class SessionController {
             }
             if (hash != null) hash[0] = pixelHash(bmp);
             if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
-            MediaSaver.Exif ex = new MediaSaver.Exif();
-            ex.make = sp.deviceMake;
-            ex.model = sp.deviceModel;
-            ex.description = o.summary;
-            ex.exposureSeconds = o.integrationSeconds;
-            ex.iso = sp.iso;
-            ex.fNumber = sp.fNumber;
-            ex.focalLengthMm = sp.focalLengthMm;
-            ex.width = cw;
-            ex.height = ch;
-            return MediaSaver.saveJpeg(ctx, bmp, name, ex);
+            return MediaSaver.saveJpeg(ctx, bmp, name, exif(o, sp, cw, ch));
         } finally {
             bmp.recycle();
         }
+    }
+
+    /** {@link #saveJpeg} with a crop or a turn: rendered whole (and drawn on), then framed. */
+    private Uri saveFramed(PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Framing f, String name, Decor d, int factor,
+                           String[] hash) throws IOException {
+        RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
+        int[] px = sm != null ? Renderer.renderSmall(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
+        int pw = sm != null ? sm.cropWidth() : o.analysis.cw, ph = sm != null ? sm.cropHeight() : o.analysis.ch;
+        sm = null;
+        if (pw != f.w || ph != f.h) throw new IOException("the framing is for a " + f.w + "x" + f.h + " photo, not " + pw + "x" + ph);
+        int[] out = f.apply(px);
+        if (hash != null) hash[0] = Master.pixelHash(out);
+        if (d != null) {
+            Bitmap whole = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888);
+            try {
+                whole.setPixels(px, 0, pw, 0, 0, pw, ph);
+                TrackPainter.draw(whole, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
+                whole.getPixels(px, 0, pw, 0, 0, pw, ph);
+            } finally {
+                whole.recycle();
+            }
+            out = f.apply(px);
+        }
+        px = null;
+        Bitmap bmp = Bitmap.createBitmap(f.outW, f.outH, Bitmap.Config.ARGB_8888);
+        try {
+            bmp.setPixels(out, 0, f.outW, 0, 0, f.outW, f.outH);
+            out = null;
+            return MediaSaver.saveJpeg(ctx, bmp, name, exif(o, sp, f.outW, f.outH));
+        } finally {
+            bmp.recycle();
+        }
+    }
+
+    private static MediaSaver.Exif exif(PostProcessor.Output o, SensorSpec sp, int w, int h) {
+        MediaSaver.Exif ex = new MediaSaver.Exif();
+        ex.make = sp.deviceMake;
+        ex.model = sp.deviceModel;
+        ex.description = o.summary;
+        ex.exposureSeconds = o.integrationSeconds;
+        ex.iso = sp.iso;
+        ex.fNumber = sp.fNumber;
+        ex.focalLengthMm = sp.focalLengthMm;
+        ex.width = w;
+        ex.height = h;
+        return ex;
     }
 
     /** SHA-256 of a rendered photo's pixels, row after row, as {@link Master#pixelHash} makes it. */
