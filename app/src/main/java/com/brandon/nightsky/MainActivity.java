@@ -144,6 +144,7 @@ public final class MainActivity extends Activity {
     // the daylight focus calibration, the sessions kept, and merging some of them
     private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4, PAGE_FOCUS = 5,
             PAGE_SESSIONS = 6, PAGE_MERGE = 7;
+    private static final String STATE_PAGE = "page";
     /** The merge page's session to merge into, and the one ticked alone (folder names; null for all). */
     private String mergeBase, mergePick;
     /** Drops the sessions read for a page Brandon has left. */
@@ -249,9 +250,28 @@ public final class MainActivity extends Activity {
         });
         setContentView(root);
         Plans.channel(this);
-        handleIntent(getIntent());
+        Intent in = getIntent();
+        if (state != null || (in != null && (in.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0)) {
+            // made again after Android reclaimed the app, or reopened from the recent apps: with the intent it was
+            // first opened by, whose request (a session from the widget, re-arming the plan) was done back then
+            if (in != null) setShowWhenLocked(state != null && in.getBooleanExtra(EXTRA_OVER_LOCK, false));
+            if (state != null) {
+                int p = state.getInt(STATE_PAGE, PAGE_HOME);
+                page = p >= PAGE_HOME && p <= PAGE_MERGE ? p : PAGE_HOME;
+            }
+        } else {
+            handleIntent(in);
+        }
         showHome();
         bindService(new Intent(this, CaptureService.class), conn, Context.BIND_AUTO_CREATE);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        // the page to come back to if the screen is made again (a session being added goes back to the plan, a merge
+        // being set up to the sessions)
+        out.putInt(STATE_PAGE, page == PAGE_EDIT ? PAGE_PLAN : page == PAGE_MERGE ? PAGE_SESSIONS : page);
     }
 
     @Override
