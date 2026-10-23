@@ -4,14 +4,87 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 
-/** Saved choices and what the app has learned about this phone's camera. */
+import com.brandon.nightsky.processing.Preset;
+import com.brandon.nightsky.processing.SettingsFile;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Saved choices and what the app has learned about this phone's camera. They carry a version (E6): the first time
+ * an updated app reads them, settings from an older version are brought up to date ({@link SettingsFile#migrate}),
+ * never reset. Every key is either in {@link SettingsFile}'s lists (and so in the settings file) or there as kept
+ * on the phone only.
+ */
 final class Prefs {
-    static final int[] DURATIONS_MIN = {1, 3, 5, 10, 20, 30};
+    static final int[] DURATIONS_MIN = {1, 2, 3, 5, 10, 20, 30};
 
     private final SharedPreferences sp;
+    /** Whether this process has checked the settings' version. */
+    private static boolean checked;
 
     Prefs(Context c) {
         sp = c.getApplicationContext().getSharedPreferences("nightsky", Context.MODE_PRIVATE);
+        synchronized (Prefs.class) {
+            if (!checked) {
+                checked = true;
+                migrate();
+            }
+        }
+    }
+
+    /**
+     * Settings from an older version (1.1 and before had no version; nothing stored at all is a new install) are
+     * brought up to {@link SettingsFile#VERSION}. A newer version's settings (after going back to an older app)
+     * are left as they are.
+     */
+    private void migrate() {
+        int v = sp.getInt(SettingsFile.VERSION_KEY, 0);
+        if (v >= SettingsFile.VERSION) return;
+        Map<String, ?> all = sp.getAll();
+        int from = v > 0 ? v : all.isEmpty() ? SettingsFile.VERSION : 1;
+        Map<String, Object> m = new HashMap<String, Object>(all);
+        List<String> notes = SettingsFile.migrate(m, from);
+        SharedPreferences.Editor e = sp.edit();
+        for (Map.Entry<String, Object> x : m.entrySet()) {
+            Object old = all.get(x.getKey());
+            if (old == null || !old.equals(x.getValue())) put(e, x.getKey(), x.getValue());
+        }
+        e.putInt(SettingsFile.VERSION_KEY, SettingsFile.VERSION);
+        e.putString("settingsMigrated", from == SettingsFile.VERSION ? "" : "from version " + from + " on "
+                + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date())
+                + (notes.isEmpty() ? "" : ": " + android.text.TextUtils.join("; ", notes)));
+        // at once, before anything reads the new settings
+        e.commit();
+        if (from != SettingsFile.VERSION) android.util.Log.i("NightSky", "settings brought up from version " + from + ": " + notes);
+    }
+
+    /** Stores a value with its own type. */
+    static void put(SharedPreferences.Editor e, String k, Object v) {
+        if (v instanceof Boolean) e.putBoolean(k, (Boolean) v);
+        else if (v instanceof Integer) e.putInt(k, (Integer) v);
+        else if (v instanceof Long) e.putLong(k, (Long) v);
+        else if (v instanceof Float) e.putFloat(k, (Float) v);
+        else if (v instanceof String) e.putString(k, (String) v);
+    }
+
+    /** Everything stored, for the settings file. */
+    Map<String, ?> all() {
+        return sp.getAll();
+    }
+
+    SharedPreferences.Editor edit() {
+        return sp.edit();
+    }
+
+    /** What the last update did to the settings ("" if nothing), for the next session's log. */
+    String settingsMigrated() {
+        return sp.getString("settingsMigrated", "");
+    }
+
+    void clearSettingsMigrated() {
+        sp.edit().putString("settingsMigrated", "").apply();
     }
 
     boolean trails() {
@@ -84,6 +157,104 @@ final class Prefs {
 
     int countdownSec() {
         return sp.getInt("countdownSec", 5);
+    }
+
+    // ---- presets and sites (E6) ----
+
+    /** The preset whose settings are in place ("" when they were set by hand and match none). */
+    String preset() {
+        return sp.getString("preset", "");
+    }
+
+    void setPreset(String id) {
+        sp.edit().putString("preset", id).apply();
+    }
+
+    /** When a setting was last changed by hand (Unix ms): a saved site's preset doesn't replace it for an hour. */
+    long handPickedMs() {
+        return sp.getLong("handPickedMs", 0L);
+    }
+
+    void setHandPicked(long ms) {
+        sp.edit().putLong("handPickedMs", ms).apply();
+    }
+
+    /** At a saved site, use its preset by itself (and say so). */
+    boolean autoSite() {
+        return sp.getBoolean("autoSite", true);
+    }
+
+    void setAutoSite(boolean v) {
+        sp.edit().putBoolean("autoSite", v).apply();
+    }
+
+    /** Keep capturing until the session's length of clear sky is in, for up to three times as long (A3). */
+    boolean collectClear() {
+        return sp.getBoolean("collectClear", false);
+    }
+
+    void setCollectClear(boolean v) {
+        sp.edit().putBoolean("collectClear", v).apply();
+    }
+
+    /** Also save the cloud-blur version: the plain average, where drifting clouds turn into soft streaks (C7). */
+    boolean blend() {
+        return sp.getBoolean("blend", false);
+    }
+
+    void setBlend(boolean v) {
+        sp.edit().putBoolean("blend", v).apply();
+    }
+
+    /** Quick developing: one stacking pass and a half-size photo (the Quick look preset). */
+    boolean quick() {
+        return sp.getBoolean("quick", false);
+    }
+
+    void setQuick(boolean v) {
+        sp.edit().putBoolean("quick", v).apply();
+    }
+
+    /** The settings a preset holds, as they are now; its id is {@link #preset()}. */
+    Preset currentPreset() {
+        Preset p = new Preset();
+        p.id = preset();
+        p.trails = trails();
+        p.durationMin = durationMin();
+        p.brightness = brightness();
+        p.saveDng = saveDng();
+        p.rejection = rejection();
+        p.keepSatellites = keepSatellites();
+        p.collectClear = collectClear();
+        p.blend = blend();
+        p.quick = quick();
+        return p;
+    }
+
+    /** Puts a preset's settings in place, all at once. */
+    void applyPreset(Preset p) {
+        sp.edit().putBoolean("trails", p.trails).putInt("durationMin", p.durationMin).putFloat("brightness", p.brightness)
+                .putBoolean("saveDng", p.saveDng).putString("rejection", p.rejection).putBoolean("keepSatellites", p.keepSatellites)
+                .putBoolean("collectClear", p.collectClear).putBoolean("blend", p.blend).putBoolean("quick", p.quick)
+                .putString("preset", p.id).apply();
+    }
+
+    /** Brandon's own presets and the saved sites, as JSON lists ("" for none). */
+    String userPresetsJson() {
+        return sp.getString(SettingsFile.PRESETS_KEY, "");
+    }
+
+    String sitesJson() {
+        return sp.getString(SettingsFile.SITES_KEY, "");
+    }
+
+    void setUserPresetsJson(String json) {
+        sp.edit().putString(SettingsFile.PRESETS_KEY, json).apply();
+    }
+
+    /** Saved at once: sites are written from the session thread and the screen (see Sites). */
+    void setSitesJson(String json) {
+        sp.edit().putString(SettingsFile.SITES_KEY, json).commit();
     }
 
     /** Key for facts about one camera under the current system build (a system update can change limits). */

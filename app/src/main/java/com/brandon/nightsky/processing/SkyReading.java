@@ -45,6 +45,8 @@ public final class SkyReading {
     public String why = "";
     public int stars, expected, seen;
     public double sunAltDeg = Double.NaN, moonAltDeg = Double.NaN, moonIllum = Double.NaN, hazeMag = Double.NaN;
+    /** The saved site it was taken at ("" if none). */
+    public String site = "";
     /** "20.41 mag/arcsec²: a suburban sky", for the screen. */
     public String headline = "";
     public final List<String> lines = new ArrayList<String>();
@@ -194,7 +196,7 @@ public final class SkyReading {
     public static String csvHeader() {
         return "time,latitude,longitude,sky_mag_arcsec2_with_stars,sky_mag_arcsec2_between_stars,naked_eye_limit,valid,why_not,"
                 + "frames,spread,exposure_s,iso,offset,faintest_star_mag,stars_seen,stars_expected,sun_altitude_deg,moon_altitude_deg,"
-                + "moon_lit_percent,haze_mag";
+                + "moon_lit_percent,haze_mag,site";
     }
 
     public String csvRow(TimeZone zone) {
@@ -204,7 +206,7 @@ public final class SkyReading {
                 + "," + num(nelm, 1) + "," + (valid ? "yes" : "no") + "," + quote(why) + "," + frames + "," + num(spread, 2) + ","
                 + num(exposureS, 1) + "," + (iso > 0 ? Integer.toString(iso) : "") + "," + num(offset, 2) + "," + num(faintestMag, 1) + ","
                 + seen + "," + expected + "," + num(sunAltDeg, 1) + "," + num(moonAltDeg, 1) + ","
-                + (Double.isNaN(moonIllum) ? "" : Long.toString(Math.round(100 * moonIllum))) + "," + num(hazeMag, 2);
+                + (Double.isNaN(moonIllum) ? "" : Long.toString(Math.round(100 * moonIllum))) + "," + num(hazeMag, 2) + "," + quote(site);
     }
 
     private static String num(double v, int digits) {

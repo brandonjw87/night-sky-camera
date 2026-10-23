@@ -192,6 +192,10 @@ final class PlanRunner {
         s.saveDng = prefs.saveDng();
         s.preflight = prefs.preflight();
         s.keepSatellites = prefs.keepSatellites();
+        s.rejection = prefs.rejection();
+        s.blend = prefs.blend();
+        // the plan sets its own times, so "collect clear minutes" and quick developing stay off; a saved site still
+        // gives "only if clear" its share of stars
         s.sounds = p.sounds;
         s.scheduled = true;
         s.onlyIfClear = it.onlyIfClear;

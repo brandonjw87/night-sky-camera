@@ -46,11 +46,14 @@ import android.window.OnBackInvokedDispatcher;
 
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Preflight;
+import com.brandon.nightsky.processing.Preset;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
 import com.brandon.nightsky.processing.SatPlanner;
 import com.brandon.nightsky.processing.SatSky;
+import com.brandon.nightsky.processing.SettingsFile;
+import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.remote.QrCode;
@@ -58,6 +61,9 @@ import com.brandon.nightsky.remote.QrCode;
 import java.io.File;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -110,8 +116,15 @@ public final class MainActivity extends Activity {
     private static long lastOutlookMs;
     private Boolean windowActive;
 
-    // the idle screen's pages: home, tonight's plan, a session being added, last night's summary
-    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3;
+    // the idle screen's pages: home, tonight's plan, a session being added, last night's summary, the saved sites
+    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4;
+    /** Asking for a settings file to load, and for the location on the sites page. */
+    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8;
+    /** The home screen's scroll view, and its presets card (filled again when a setting changes). */
+    private ScrollView homeScroll;
+    private LinearLayout presetBox;
+    /** What the home screen said about the saved site whose preset it put in place ("" if nothing). */
+    private String sitePicked = "";
     private int page = PAGE_HOME;
     /** The plan being edited (not armed), the session being added, and the night being summarised. */
     private NightPlan editPlan, summaryPlan;
@@ -133,8 +146,8 @@ public final class MainActivity extends Activity {
 
     // views of the current screen (whichever exist)
     private TextView headline, detail, stage;
-    /** The pre-flight check's findings, on the arming screen. */
-    private TextView checks;
+    /** The pre-flight check's findings, and the saved site and preset, on the arming screen. */
+    private TextView checks, siteView;
     private Preflight.Report shownChecks;
     private ProgressBar bar;
     private ImageView live;
@@ -327,6 +340,10 @@ public final class MainActivity extends Activity {
         shownPhase = p;
         if (headline != null) headline.setText(s.headline);
         if (detail != null) detail.setText(s.detail);
+        if (siteView != null) {
+            siteView.setText(s.siteLine);
+            siteView.setVisibility(s.siteLine.isEmpty() ? View.GONE : View.VISIBLE);
+        }
         if (checks != null && s.preflight != shownChecks) {
             shownChecks = s.preflight;
             checks.setText(s.preflight != null ? s.preflight.describe() : "");
@@ -391,6 +408,9 @@ public final class MainActivity extends Activity {
         nightBox = null;
         headline = detail = stage = null;
         checks = null;
+        siteView = null;
+        presetBox = null;
+        homeScroll = null;
         shownChecks = null;
         bar = null;
         live = null;
@@ -420,6 +440,9 @@ public final class MainActivity extends Activity {
             case PAGE_SUMMARY:
                 showSummary();
                 break;
+            case PAGE_SITES:
+                showSites();
+                break;
             default:
                 showHomePage();
                 break;
@@ -434,6 +457,7 @@ public final class MainActivity extends Activity {
         LinearLayout col = column();
         sv.addView(col);
         root.addView(sv, match());
+        homeScroll = sv;
 
         TextView title = text("Night Sky", 30, RED, true);
         col.addView(title);
@@ -499,6 +523,15 @@ public final class MainActivity extends Activity {
             col.addView(card, gap(16));
         }
 
+        // presets (E6): one tap for the mode, the length, the brightness and the rest; at a saved site, its own
+        String picked = autoPickSite();
+        if (picked != null) sitePicked = picked;
+        col.addView(label("Preset"), gap(22));
+        presetBox = new LinearLayout(this);
+        presetBox.setOrientation(LinearLayout.VERTICAL);
+        col.addView(presetBox, gap(8));
+        fillPresets();
+
         // mode
         col.addView(label("Mode"), gap(22));
         final Button deep = chip("Deep sky", !prefs.trails());
@@ -513,6 +546,7 @@ public final class MainActivity extends Activity {
                 styleChip(trails, t);
                 modeHelp.setText(modeHelp(t));
                 showSatellites();
+                handChanged();
             }
         };
         deep.setOnClickListener(modeClick);
@@ -549,6 +583,7 @@ public final class MainActivity extends Activity {
                     prefs.setDurationMin(min);
                     for (int j = 0; j < lenChips.length; j++) styleChip(lenChips[j], Prefs.DURATIONS_MIN[j] == min);
                     showSatellites();
+                    handChanged();
                 }
             });
             lens.addView(b, weight());
@@ -573,6 +608,7 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onStopTrackingTouch(SeekBar s) {
+                handChanged();
             }
         });
         col.addView(sb, gap(4));
@@ -591,6 +627,7 @@ public final class MainActivity extends Activity {
             @Override
             public void onCheckedChanged(CompoundButton b, boolean on) {
                 prefs.setSaveDng(on);
+                handChanged();
             }
         });
         CheckBox viewer = check("Viewer: watch and stop it from a laptop or another phone on the same Wi-Fi", prefs.remoteViewer());
@@ -789,6 +826,7 @@ public final class MainActivity extends Activity {
                     prefs.setRejection(m.name());
                     for (int j = 0; j < ms.length; j++) styleChip(chips[j], ms[j] == m);
                     help.setText(rejectionHelp(m));
+                    handChanged();
                 }
             });
             (k < 3 ? r1 : r2).addView(b, weight());
@@ -853,6 +891,7 @@ public final class MainActivity extends Activity {
                 styleChip(keep, k);
                 keepHelp.setText(keepHelp(k));
                 showSatellites();
+                handChanged();
             }
         };
         out.setOnClickListener(keepClick);
@@ -862,6 +901,63 @@ public final class MainActivity extends Activity {
         kr.addView(keep, weight());
         box.addView(kr, gap(6));
         box.addView(keepHelp, gap(6));
+
+        // what the Partly cloudy and Quick look presets turn on (E6)
+        box.addView(label("Clouds and quick looks"), gap(20));
+        CheckBox collect = check("Keep going until the chosen minutes of clear sky are in, for up to three times as long",
+                prefs.collectClear());
+        collect.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setCollectClear(on);
+                handChanged();
+            }
+        });
+        CheckBox blend = check("Also save a cloud-blur version: the plain average, where passing clouds turn into soft streaks "
+                + "(the stars trail a little)", prefs.blend());
+        blend.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setBlend(on);
+                handChanged();
+            }
+        });
+        CheckBox quick = check("Quick developing: one stacking pass, about twice as fast, and a half-size photo", prefs.quick());
+        quick.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setQuick(on);
+                handChanged();
+            }
+        });
+        box.addView(collect, gap(6));
+        box.addView(blend);
+        box.addView(quick);
+
+        // the settings file (E6)
+        box.addView(label("Settings file"), gap(20));
+        box.addView(text("All the settings, your presets and your sites in one file in Documents/NightSky: keep a copy, or "
+                + "load it after reinstalling or on a new phone. Nothing is sent anywhere.", 13, RED_DIM, false), gap(4));
+        LinearLayout io = row();
+        Button exp = button("Save to a file", false);
+        exp.setTextSize(15);
+        exp.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportSettings();
+            }
+        });
+        Button imp = button("Load a file…", false);
+        imp.setTextSize(15);
+        imp.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                importSettings();
+            }
+        });
+        io.addView(exp, weight());
+        io.addView(imp, weight());
+        box.addView(io, gap(6));
 
         // the Quick Settings tile (E3)
         box.addView(label("Quick Settings tile"), gap(20));
@@ -935,6 +1031,8 @@ public final class MainActivity extends Activity {
      * this session only (null: as saved).
      */
     static final class Launch {
+        /** A preset's settings, for this session (its id; null for none). */
+        String preset;
         Boolean trails, saveDng;
         Integer durationMin;
         /** A sky reading: the check only, no photo. */
@@ -956,10 +1054,8 @@ public final class MainActivity extends Activity {
                     l.origin = "shortcut: Star trails 30 min";
                     return l;
                 case "quick":
-                    // the Quick look preset: two minutes, JPEG only
-                    l.trails = false;
-                    l.durationMin = 2;
-                    l.saveDng = false;
+                    // the Quick look preset: two minutes, JPEG only, quick developing
+                    l.preset = Preset.QUICK;
                     l.origin = "shortcut: Quick look";
                     return l;
                 case "reading":
@@ -1050,22 +1146,19 @@ public final class MainActivity extends Activity {
             return;
         }
         pendingLaunchSettings = null;
-        boolean trails = l != null && l.trails != null ? l.trails : prefs.trails();
-        int min = l != null && l.durationMin != null ? l.durationMin : prefs.durationMin();
-        boolean dng = l != null && l.saveDng != null ? l.saveDng : prefs.saveDng();
         boolean reading = l != null && l.reading;
+        // the service starts from the saved settings; a shortcut changes some for this session only
         Intent i = new Intent(this, CaptureService.class).setAction(CaptureService.ACTION_START)
-                .putExtra(CaptureService.EXTRA_TRAILS, trails)
-                .putExtra(CaptureService.EXTRA_DURATION, min * 60)
-                .putExtra(CaptureService.EXTRA_BRIGHTNESS, prefs.brightness())
-                .putExtra(CaptureService.EXTRA_SOUNDS, prefs.sounds())
-                .putExtra(CaptureService.EXTRA_DNG, dng)
-                .putExtra(CaptureService.EXTRA_PREFLIGHT, prefs.preflight() || reading)
                 .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer() && !reading)
-                .putExtra(CaptureService.EXTRA_KEEP_SATELLITES, prefs.keepSatellites())
                 .putExtra(CaptureService.EXTRA_START_AT, startAtMs)
                 .putExtra(CaptureService.EXTRA_READING, reading)
                 .putExtra(CaptureService.EXTRA_ORIGIN, l != null ? l.origin : "");
+        if (l != null) {
+            if (l.preset != null) i.putExtra(CaptureService.EXTRA_PRESET, l.preset);
+            if (l.trails != null) i.putExtra(CaptureService.EXTRA_TRAILS, (boolean) l.trails);
+            if (l.durationMin != null) i.putExtra(CaptureService.EXTRA_DURATION, l.durationMin * 60);
+            if (l.saveDng != null) i.putExtra(CaptureService.EXTRA_DNG, (boolean) l.saveDng);
+        }
         startForegroundService(i);
     }
 
@@ -1084,6 +1177,11 @@ public final class MainActivity extends Activity {
         if (code == 5) {
             // location for tonight's sky
             if (screenOf(shownPhase) == 0 || shownPhase == null) showHome();
+            return;
+        }
+        if (code == REQ_SITES_LOCATION) {
+            if (!Locator.allowed(this)) toastish("Location is off for the app: allow it in Settings > Apps > Night Sky > Permissions");
+            if (page == PAGE_SITES && screenOf(shownPhase) <= 0) showSites();
             return;
         }
         if (pendingArm) {
@@ -2048,8 +2146,12 @@ public final class MainActivity extends Activity {
         checks = text("", 15, RED, false);
         checks.setVisibility(View.GONE);
         checks.setLineSpacing(dp(3), 1f);
+        siteView = text("", 15, RED_DIM, true);
+        siteView.setGravity(Gravity.CENTER);
+        siteView.setVisibility(View.GONE);
         col.addView(spacer(), new LinearLayout.LayoutParams(1, 0, 1f));
-        col.addView(headline);
+        col.addView(siteView);
+        col.addView(headline, gap(6));
         col.addView(detail, gap(14));
         col.addView(checks, gap(16));
         col.addView(spacer(), new LinearLayout.LayoutParams(1, 0, 1f));
@@ -2309,7 +2411,21 @@ public final class MainActivity extends Activity {
             row2.addView(rep, weight());
         }
         col.addView(row2, gap(6));
+        if (r != null && r.blend != null) {
+            // the cloud-blur version (C7), saved beside the photo
+            Button bl2 = button("Open the cloud-blur version", false);
+            bl2.setTextSize(15);
+            bl2.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    view(r.blend);
+                }
+            });
+            col.addView(bl2, gap(6));
+        }
         String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG" : " (JPEG")
+                + (r != null && r.jpegFactor > 1 ? ", half size" : "")
+                + (r != null && r.blend != null ? ", the cloud-blur version" : "")
                 + (r != null && r.labelled != null ? ", and a copy with names)" : ")");
         col.addView(text(where, 12, RED_DIM, false), gap(4));
         viewerBox = new LinearLayout(this);
@@ -2747,6 +2863,478 @@ public final class MainActivity extends Activity {
             });
         }
         b.show();
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Presets, saved sites and the settings file (E6)
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * At a saved site (by a fix from the last half hour), its preset goes in place before the home screen shows,
+     * unless a setting was changed by hand in the last hour. What to say about it, or null if it did nothing.
+     */
+    private String autoPickSite() {
+        Locator.Place pl = Locator.best(this, prefs);
+        if (pl == null || pl.ageMinutes() > 30) return null;
+        Site here = Sites.at(Sites.load(prefs), pl);
+        if (here == null) return null;
+        Site.Pick k = Sites.decide(prefs, here, prefs.preset(), true, System.currentTimeMillis());
+        if (!k.use) return null;
+        Presets.pick(prefs, k.preset, false);
+        return "At the " + here.name + " site: its preset, " + k.preset.name + ", is in place.";
+    }
+
+    /** The presets card: a chip for each, what the one in place does, and the saved site here. */
+    private void fillPresets() {
+        final LinearLayout box = presetBox;
+        if (box == null) return;
+        box.removeAllViews();
+        List<Preset> all = Presets.all(prefs);
+        String cur = prefs.preset();
+        LinearLayout r = null;
+        for (int k = 0; k < all.size(); k++) {
+            if (k % 2 == 0) {
+                r = row();
+                box.addView(r, gap(k == 0 ? 0 : 6));
+            }
+            final Preset p = all.get(k);
+            Button b = chip(p.name, p.id.equals(cur));
+            b.setTextSize(15);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Presets.pick(prefs, p, true);
+                    sitePicked = "";
+                    rebuildHome();
+                }
+            });
+            if (!p.builtIn) {
+                b.setOnLongClickListener(new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        ownPreset(p);
+                        return true;
+                    }
+                });
+            }
+            r.addView(b, weight());
+        }
+        if (r != null && all.size() % 2 == 1) r.addView(new View(this), weight());
+        Preset in = Presets.find(prefs, cur);
+        box.addView(text(in != null ? in.describe() + "." : "Your own settings: no preset has them.", 13, RED_DIM, false), gap(6));
+        if (in == null) {
+            Button save = button("Save them as a preset", false);
+            save.setTextSize(15);
+            save.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    askText("Name this preset", null, "", new TextAnswer() {
+                        @Override
+                        public void answer(String name) {
+                            if (Presets.nameTaken(prefs, name, "")) {
+                                toastish("There's a preset called " + name + " already");
+                                return;
+                            }
+                            Presets.saveOwn(prefs, name);
+                            fillPresets();
+                            toastish("Saved the " + name + " preset");
+                        }
+                    });
+                }
+            });
+            box.addView(save, gap(6));
+        } else if (!in.builtIn) {
+            box.addView(text("Touch and hold it to rename or delete it.", 12, RED_DIM, false), gap(2));
+        }
+        LinearLayout sr = row();
+        sr.setGravity(Gravity.CENTER_VERTICAL);
+        Button sb = button("Sites", false);
+        sb.setTextSize(15);
+        sb.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPage(PAGE_SITES);
+            }
+        });
+        sr.addView(text(siteWords(), 13, RED_DIM, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(8);
+        sr.addView(sb, lp);
+        box.addView(sr, gap(8));
+    }
+
+    /** The presets card's line about the saved sites. */
+    private String siteWords() {
+        List<Site> sites = Sites.load(prefs);
+        if (sites.isEmpty()) return "Save the places you shoot from as sites: a session at one uses its preset by itself.";
+        Locator.Place pl = Locator.best(this, prefs);
+        if (pl == null) return sites.size() + (sites.size() == 1 ? " saved site" : " saved sites") + ": a session finds the one it's at.";
+        Site here = Sites.at(sites, pl);
+        if (here == null) return sites.size() == 1 ? "1 saved site, not here." : sites.size() + " saved sites, none here.";
+        if (!sitePicked.isEmpty()) return sitePicked;
+        String pn = Presets.name(prefs, here.presetId);
+        return "At the " + here.name + " site" + (pn.isEmpty() ? "." : " (its preset: " + pn + ").");
+    }
+
+    /** The home screen again, scrolled where it was (a preset changes most of it). */
+    private void rebuildHome() {
+        final int y = homeScroll != null ? homeScroll.getScrollY() : 0;
+        showHomePage();
+        final ScrollView sv = homeScroll;
+        if (sv != null) {
+            sv.post(new Runnable() {
+                @Override
+                public void run() {
+                    sv.scrollTo(0, y);
+                }
+            });
+        }
+    }
+
+    /** A setting was changed by hand: the presets card shows which preset that makes it, if any. */
+    private void handChanged() {
+        Presets.handChanged(prefs);
+        sitePicked = "";
+        fillPresets();
+    }
+
+    /** One of Brandon's presets, touched and held: rename or delete it. */
+    private void ownPreset(final Preset p) {
+        new AlertDialog.Builder(this).setTitle(p.name).setItems(new String[]{"Rename", "Delete"}, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface d, int w) {
+                if (w == 0) {
+                    askText("Rename the preset", null, p.name, new TextAnswer() {
+                        @Override
+                        public void answer(String name) {
+                            if (Presets.nameTaken(prefs, name, p.id)) {
+                                toastish("There's a preset called " + name + " already");
+                                return;
+                            }
+                            Presets.rename(prefs, p.id, name);
+                            fillPresets();
+                        }
+                    });
+                } else {
+                    confirm("Delete the " + p.name + " preset? The settings in place stay as they are.", new Runnable() {
+                        @Override
+                        public void run() {
+                            Presets.delete(prefs, p.id);
+                            fillPresets();
+                        }
+                    });
+                }
+            }
+        }).show();
+    }
+
+    interface TextAnswer {
+        void answer(String text);
+    }
+
+    /** Asks for a name (at most 40 characters); an empty answer does nothing. */
+    private void askText(String title, String message, String initial, final TextAnswer a) {
+        final EditText in = new EditText(this);
+        in.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
+        in.setSingleLine(true);
+        in.setText(initial);
+        in.setSelection(initial.length());
+        in.setTextColor(RED);
+        FrameLayout pad = new FrameLayout(this);
+        pad.setPadding(dp(20), dp(8), dp(20), 0);
+        pad.addView(in);
+        AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle(title).setView(pad)
+                .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        String t = in.getText().toString().trim();
+                        if (t.length() > 40) t = t.substring(0, 40).trim();
+                        if (!t.isEmpty()) a.answer(t);
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+        if (message != null) b.setMessage(message);
+        b.show();
+    }
+
+    /** The saved sites: save this place, and each site's preset, name and what it has learned. */
+    private void showSites() {
+        page = PAGE_SITES;
+        LinearLayout col = pageColumn("Home");
+        col.addView(text("Saved sites", 26, RED, true));
+        col.addView(text("A site is a place you shoot from. A session that starts within about 2 km of one uses the site's preset "
+                + "and says so (\"Backyard site, Backyard preset.\"), and the site keeps what the app learns there: how dark its "
+                + "sky is, how many stars a clear night shows, and what blocks the view.", 14, RED_DIM, false), gap(6));
+        CheckBox auto = check("Use a site's preset by itself when a session starts there", prefs.autoSite());
+        auto.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setAutoSite(on);
+            }
+        });
+        col.addView(auto, gap(10));
+        final long now = System.currentTimeMillis();
+        final Locator.Place pl = Locator.best(this, prefs);
+        List<Site> sites = Sites.load(prefs);
+        final Site here = Sites.at(sites, pl);
+        Button add = button(here == null ? "Save this place as a site" : "Save this place as another site", true);
+        add.setEnabled(pl != null);
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                addSite(pl);
+            }
+        });
+        col.addView(add, gap(14));
+        col.addView(text(pl == null ? "Where the phone is isn't known: allow location (approximate is enough), then find it."
+                : "Here: " + pl.describe(), 12, RED_DIM, false), gap(4));
+        if (!Locator.allowed(this)) {
+            Button allow = button("Allow location", false);
+            allow.setTextSize(15);
+            allow.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setAskedLocation();
+                    requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_SITES_LOCATION);
+                }
+            });
+            col.addView(allow, gap(6));
+        } else if (pl == null || pl.ageMinutes() > 30) {
+            final Button find = button("Find where the phone is now", false);
+            find.setTextSize(15);
+            find.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    find.setEnabled(false);
+                    find.setText("Finding…");
+                    Locator.refresh(MainActivity.this, prefs, main, 30_000L, new Locator.Listener() {
+                        @Override
+                        public void onPlace(Locator.Place p) {
+                            if (p == null) toastish("No fix came: try outside, or check that location is on");
+                            if (page == PAGE_SITES && screenOf(shownPhase) <= 0) showSites();
+                        }
+                    });
+                }
+            });
+            col.addView(find, gap(6));
+        }
+        if (sites.isEmpty()) {
+            col.addView(text("No sites yet.", 15, RED_DIM, false), gap(18));
+            return;
+        }
+        if (pl != null) {
+            Collections.sort(sites, new Comparator<Site>() {
+                @Override
+                public int compare(Site a, Site b) {
+                    return Double.compare(a.distanceKm(pl.latDeg, pl.lonDeg), b.distanceKm(pl.latDeg, pl.lonDeg));
+                }
+            });
+        }
+        for (final Site s : sites) {
+            LinearLayout card = card();
+            card.addView(text(s.name + (s == here ? "  · here" : ""), 18, RED, true));
+            String pn = s.presetId.isEmpty() ? "none, the settings stay as they are" : Presets.name(prefs, s.presetId);
+            if (pn.isEmpty()) pn = "deleted, so none";
+            String dist = pl != null ? String.format(Locale.US, " · %.1f km away", s.distanceKm(pl.latDeg, pl.lonDeg)) : "";
+            card.addView(text("Preset: " + pn + dist, 14, RED, false), gap(4));
+            for (String line : s.describe(now)) card.addView(text(line, 13, RED_DIM, false), gap(4));
+            LinearLayout br = row();
+            Button pb = button("Preset", false);
+            Button rn = button("Rename", false);
+            Button del = button("Delete", false);
+            for (Button b : new Button[]{pb, rn, del}) {
+                b.setTextSize(14);
+                b.setPadding(dp(6), dp(8), dp(6), dp(8));
+                br.addView(b, weight());
+            }
+            pb.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    pickSitePreset(s);
+                }
+            });
+            rn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    askText("Rename the site", null, s.name, new TextAnswer() {
+                        @Override
+                        public void answer(final String name) {
+                            Sites.changeOne(prefs, s.id, new Sites.Change() {
+                                @Override
+                                public void apply(List<Site> one) {
+                                    one.get(0).name = name;
+                                }
+                            });
+                            showSites();
+                        }
+                    });
+                }
+            });
+            del.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    confirm("Delete the " + s.name + " site and what the app learned there?", new Runnable() {
+                        @Override
+                        public void run() {
+                            Sites.delete(prefs, s.id);
+                            showSites();
+                        }
+                    });
+                }
+            });
+            card.addView(br, gap(8));
+            col.addView(card, gap(12));
+        }
+    }
+
+    /** Saves the place as a site, with the preset in place as its own (asks for the name). */
+    private void addSite(final Locator.Place pl) {
+        if (pl == null) return;
+        List<Site> sites = Sites.load(prefs);
+        final String presetId = prefs.preset();
+        String pn = Presets.name(prefs, presetId);
+        String msg = "Its preset: " + (pn.isEmpty() ? "none (your own settings are in place)" : pn + ", the one in place now")
+                + ". You can change it on the site's card.";
+        if (pl.ageMinutes() > 30) {
+            msg += String.format(Locale.US, " The place is from a fix %d minutes old: if the phone has moved since, find where it is first.",
+                    Math.round(pl.ageMinutes()));
+        }
+        askText("Name this site", msg, sites.isEmpty() ? "Backyard" : "Site " + (sites.size() + 1), new TextAnswer() {
+            @Override
+            public void answer(String name) {
+                Sites.add(prefs, name, pl, presetId);
+                toastish("Saved the " + name + " site");
+                showSites();
+            }
+        });
+    }
+
+    /** Picks a site's preset (or none). */
+    private void pickSitePreset(final Site s) {
+        final List<Preset> all = Presets.all(prefs);
+        String[] names = new String[all.size() + 1];
+        names[0] = "None: the settings stay as they are";
+        int checked = 0;
+        for (int i = 0; i < all.size(); i++) {
+            names[i + 1] = all.get(i).name;
+            if (all.get(i).id.equals(s.presetId)) checked = i + 1;
+        }
+        new AlertDialog.Builder(this).setTitle("Preset for " + s.name).setSingleChoiceItems(names, checked, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface d, int w) {
+                final String id = w == 0 ? "" : all.get(w - 1).id;
+                Sites.changeOne(prefs, s.id, new Sites.Change() {
+                    @Override
+                    public void apply(List<Site> one) {
+                        one.get(0).presetId = id;
+                    }
+                });
+                d.dismiss();
+                showSites();
+            }
+        }).setNegativeButton("Cancel", null).show();
+    }
+
+    /** Saves all the settings, presets and sites as a file in Documents/NightSky (off the main thread). */
+    private void exportSettings() {
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try {
+                    String name = SettingsIO.fileName("settings", System.currentTimeMillis());
+                    SettingsIO.export(app, name);
+                    msg = "Saved in Documents/NightSky as " + name;
+                } catch (Exception e) {
+                    msg = "Not saved: " + e.getMessage();
+                }
+                final String m = msg;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        toastish(m);
+                    }
+                });
+            }
+        }, "export").start();
+    }
+
+    /** Asks for a settings file to load (the system's file picker). */
+    private void importSettings() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
+        try {
+            startActivityForResult(i, REQ_IMPORT);
+        } catch (android.content.ActivityNotFoundException e) {
+            toastish("This phone has no file picker");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int code, int result, Intent data) {
+        super.onActivityResult(code, result, data);
+        if (code != REQ_IMPORT || result != RESULT_OK || data == null || data.getData() == null) return;
+        final Uri uri = data.getData();
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                SettingsFile.Parsed p = null;
+                String err = null;
+                try {
+                    p = SettingsIO.read(app, uri);
+                } catch (IllegalArgumentException e) {
+                    err = e.getMessage();
+                } catch (Exception e) {
+                    err = "The file couldn't be read: " + e.getMessage();
+                }
+                final SettingsFile.Parsed pp = p;
+                final String ee = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (ee != null) new AlertDialog.Builder(MainActivity.this).setMessage(ee).setPositiveButton("OK", null).show();
+                        else confirmImport(pp);
+                    }
+                });
+            }
+        }, "import").start();
+    }
+
+    /** Says what a settings file holds and loads it if Brandon says so. */
+    private void confirmImport(final SettingsFile.Parsed p) {
+        String msg = String.format(Locale.US, "This file%s has %d settings, %d %s of your own and %d %s%s. Load them? The settings as "
+                        + "they are now are saved to a file first.",
+                p.exported.isEmpty() ? "" : " (saved " + p.exported + (p.appVersion.isEmpty() ? "" : " by version " + p.appVersion) + ")",
+                p.settingCount(), p.presets.size(), p.presets.size() == 1 ? "preset" : "presets", p.sites.size(),
+                p.sites.size() == 1 ? "site" : "sites",
+                p.skipped.isEmpty() ? "" : "; " + p.skipped.size() + " entries this version can't use will be left out");
+        new AlertDialog.Builder(this).setTitle("Load settings").setMessage(msg).setPositiveButton("Load", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface d, int w) {
+                final Context app = getApplicationContext();
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        String m;
+                        try {
+                            m = SettingsIO.apply(app, p);
+                        } catch (Exception e) {
+                            m = "Not loaded: " + e.getMessage();
+                        }
+                        final String mm = m;
+                        main.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                new AlertDialog.Builder(MainActivity.this).setMessage(mm).setPositiveButton("OK", null).show();
+                                if (page == PAGE_HOME && screenOf(shownPhase) <= 0) rebuildHome();
+                            }
+                        });
+                    }
+                }, "import").start();
+            }
+        }).setNegativeButton("Cancel", null).show();
     }
 
     private void showFailed(SessionController.Status s) {

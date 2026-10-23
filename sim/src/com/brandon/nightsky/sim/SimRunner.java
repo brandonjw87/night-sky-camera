@@ -206,6 +206,12 @@ public final class SimRunner {
         // SIM_F2=0: leave the sensor's pattern in (to compare)
         if ("0".equals(System.getenv("SIM_F2"))) pp.patternCleanup = false;
         if (System.getenv("SIM_REF") != null) pp.forceReference = Integer.parseInt(System.getenv("SIM_REF"));
+        // SIM_BLEND=1: also the long-exposure blend (C7); SIM_QUICK=1: the Quick look preset's one stacking pass
+        if (System.getenv("SIM_BLEND") != null) pp.blend = true;
+        if (System.getenv("SIM_QUICK") != null) {
+            pp.patternCleanup = false;
+            pp.streakCorridors = false;
+        }
         if (catalog != null) {
             SessionSky sky = new SessionSky();
             sky.latDeg = sim.latitudeDeg;
@@ -332,6 +338,7 @@ public final class SimRunner {
         // crops at native resolution: centre and a corner
         writeCrop(pix, cw, ch, cw / 2 - 300, ch / 2 - 200, 600, 400, new File(outDir, "crop_center.png"));
         writeCrop(pix, cw, ch, cw - 620, 20, 600, 400, new File(outDir, "crop_corner.png"));
+        if (pp.blend) blendCheck(o, spec, outDir);
 
         DngWriter.Meta meta = new DngWriter.Meta();
         meta.exposureSeconds = o.integrationSeconds;
@@ -346,6 +353,36 @@ public final class SimRunner {
         }
         System.out.printf(Locale.US, "dng: %d ms%n", System.currentTimeMillis() - t3);
         System.out.println("session log: " + store.logFile());
+    }
+
+    /**
+     * The long-exposure blend next to the stack: saved as blend.png, and its stars must be clearly softer than the
+     * stack's at the same size (they drift across it), so the two are different pictures.
+     */
+    static void blendCheck(PostProcessor.Output o, SensorSpec spec, File outDir) throws Exception {
+        if (o.blend == null) {
+            System.out.println("BLEND CHECK FAIL: no blend");
+            return;
+        }
+        RgbImage b = o.blend;
+        Renderer.Analysis a = Renderer.analyze(b, spec);
+        int[] px = Renderer.renderSmall(b.binned(1), a, new Renderer.Params(), 1);
+        writePng(px, b.cropWidth(), b.cropHeight(), new File(outDir, "blend.png"));
+        double ps = peak(o.image.binned(2)), pb = peak(b.binned(1));
+        System.out.printf(Locale.US, "blend: %d frames (%.0f s), %dx%d; star peaks above the sky: stack %.1f, blend %.1f (%.1f times)%n",
+                o.blendFrames, o.blendSeconds, b.cropWidth(), b.cropHeight(), ps, pb, ps / pb);
+        boolean ok = o.blendFrames > 0 && b.cropWidth() > 0 && ps > 2 * pb;
+        System.out.println("BLEND CHECK " + (ok ? "PASS" : "FAIL"));
+    }
+
+    /** The brightest 0.02% of the green channel, above its median: how much light the sharpest stars pack. */
+    static double peak(RgbImage im) {
+        float[] g = im.g.clone();
+        java.util.Arrays.sort(g);
+        int n = g.length, top = Math.max(1, n / 5000);
+        double s = 0;
+        for (int i = n - top; i < n; i++) s += g[i];
+        return s / top - g[n / 2];
     }
 
     /** "0.5,1.2" as {0.5, 1.2}; null when unset. */

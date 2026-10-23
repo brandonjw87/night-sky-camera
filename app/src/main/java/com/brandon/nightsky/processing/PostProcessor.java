@@ -59,6 +59,13 @@ public final class PostProcessor {
         public List<SatPredict.Track> satTracks;
         /** Whether the named satellites' streaks were kept in the picture rather than taken out. */
         public boolean satellitesKept;
+        /**
+         * The long-exposure blend at half size (null unless {@link PostProcessor#blend}), how many frames it averages
+         * and their exposure (s).
+         */
+        public RgbImage blend;
+        public int blendFrames;
+        public double blendSeconds;
         /** Why satellites couldn't be named ("" when they could, or weren't asked for). */
         public String satellitesNote = "";
     }
@@ -148,6 +155,8 @@ public final class PostProcessor {
     public boolean keepSatellites;
     /** Whether streaks get corridors in the next stack (tests switch it off to compare; they're still named). */
     public boolean streakCorridors = true;
+    /** Also make the long-exposure blend (C7): the plain average, where drifting clouds turn into soft streaks. */
+    public boolean blend;
     /** Faintest satellite looked for (magnitude), and how far outside the picture a track may start (pixels). */
     static final double SAT_MAG_LIMIT = 7;
     static final float SAT_PAD = 64;
@@ -264,6 +273,7 @@ public final class PostProcessor {
             out.analysis = Renderer.analyze(img, spec);
             out.analysis.colorSigma = 3f;
             store.log(out.summary + " " + out.analysis.describe());
+            makeBlend(out, units, fs, hot, progress);
             return out;
         }
 
@@ -516,7 +526,46 @@ public final class PostProcessor {
         }
         out.summary = sb.toString();
         store.log(out.summary + " " + out.analysis.describe());
+        makeBlend(out, units, fs, hot, progress);
         return out;
+    }
+
+    /**
+     * The long-exposure blend (C7), if asked for: every frame that wasn't moved, averaged as it is. A blend that
+     * fails or runs out of memory costs only itself.
+     */
+    private void makeBlend(Output out, List<Unit> units, FrameStore fs, HotPixels hot, Progress progress) throws IOException {
+        if (!blend) return;
+        List<BlendStacker.Unit> bu = new ArrayList<BlendStacker.Unit>();
+        double sec = 0;
+        int moved = 0;
+        for (int pass = 0; pass < 2 && bu.isEmpty(); pass++) {
+            moved = 0;
+            for (Unit u : units) {
+                if (pass == 0 && u.rec.disturbed) {
+                    moved++;
+                    continue;
+                }
+                BlendStacker.Unit b = new BlendStacker.Unit();
+                b.unit = u.rec.index;
+                b.invScale = u.rec.invScale;
+                System.arraycopy(u.rec.black, 0, b.black, 0, 4);
+                bu.add(b);
+                sec += u.rec.exposure;
+            }
+        }
+        long t0 = System.currentTimeMillis();
+        try {
+            out.blend = new BlendStacker(spec, fs, hot).stack(bu, progress);
+            out.blendFrames = bu.size();
+            out.blendSeconds = sec;
+            decide(out, String.format(Locale.US, "cloud blur: also saved as the plain average of %d frames (%s), not lined up and "
+                            + "nothing clipped, so clouds show as soft streaks; at half size%s (%d ms)", bu.size(), duration(sec),
+                    moved > 0 ? ", " + moved + " moved frame" + (moved == 1 ? "" : "s") + " left out" : "", System.currentTimeMillis() - t0));
+        } catch (OutOfMemoryError e) {
+            out.blend = null;
+            decide(out, "cloud blur: not made, ran out of memory");
+        }
     }
 
     /**

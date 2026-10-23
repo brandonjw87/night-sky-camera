@@ -42,9 +42,12 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_STOP_VIEWER = "com.brandon.nightsky.STOP_VIEWER";
     static final String ACTION_ARM_PLAN = "com.brandon.nightsky.ARM_PLAN";
     static final String ACTION_CANCEL_PLAN = "com.brandon.nightsky.CANCEL_PLAN";
-    static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_BRIGHTNESS = "brightness",
-            EXTRA_SOUNDS = "sounds", EXTRA_DNG = "dng", EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_PREFLIGHT = "preflight",
-            EXTRA_KEEP_SATELLITES = "keepSatellites", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin";
+    /**
+     * A session starts on the saved settings; these change them for that session only: a preset's settings
+     * (EXTRA_PRESET, its id), then a shortcut's own (EXTRA_TRAILS, EXTRA_DURATION, EXTRA_DNG).
+     */
+    static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_DNG = "dng", EXTRA_PRESET = "preset",
+            EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -132,14 +135,22 @@ public final class CaptureService extends Service implements SessionController.H
                 // a session is already running (a second tap, a shortcut): it carries on as it is
                 return START_NOT_STICKY;
             }
-            SessionController.Settings s = new SessionController.Settings();
-            s.trails = intent.getBooleanExtra(EXTRA_TRAILS, false);
-            s.durationSec = intent.getIntExtra(EXTRA_DURATION, 300);
-            s.brightness = intent.getFloatExtra(EXTRA_BRIGHTNESS, 0.5f);
-            s.sounds = intent.getBooleanExtra(EXTRA_SOUNDS, true);
-            s.saveDng = intent.getBooleanExtra(EXTRA_DNG, true);
-            s.preflight = intent.getBooleanExtra(EXTRA_PREFLIGHT, true);
-            s.keepSatellites = intent.getBooleanExtra(EXTRA_KEEP_SATELLITES, false);
+            Prefs prefs = new Prefs(this);
+            String presetId = intent.getStringExtra(EXTRA_PRESET);
+            SessionController.Settings s = Presets.session(prefs, presetId != null ? Presets.find(prefs, presetId) : null);
+            if (intent.hasExtra(EXTRA_TRAILS) || intent.hasExtra(EXTRA_DURATION) || intent.hasExtra(EXTRA_DNG)) {
+                // a shortcut's own settings: no longer a preset's, nor the saved ones
+                s.trails = intent.getBooleanExtra(EXTRA_TRAILS, s.trails);
+                s.durationSec = intent.getIntExtra(EXTRA_DURATION, s.durationSec);
+                s.saveDng = intent.getBooleanExtra(EXTRA_DNG, s.saveDng);
+                if (s.clearTargetSec > 0) {
+                    s.clearTargetSec = s.durationSec;
+                    s.maxDurationSec = Math.min(Presets.MAX_COLLECT_SEC, 3 * s.durationSec);
+                }
+                s.presetId = "";
+                s.presetName = "";
+                s.usesSaved = false;
+            }
             s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
             s.readingOnly = intent.getBooleanExtra(EXTRA_READING, false);
             String origin = intent.getStringExtra(EXTRA_ORIGIN);
@@ -389,15 +400,7 @@ public final class CaptureService extends Service implements SessionController.H
                         msg[0] = "Open the app on the phone to take another";
                         return;
                     }
-                    Prefs prefs = new Prefs(CaptureService.this);
-                    SessionController.Settings s = new SessionController.Settings();
-                    s.trails = prefs.trails();
-                    s.durationSec = prefs.durationMin() * 60;
-                    s.brightness = prefs.brightness();
-                    s.sounds = prefs.sounds();
-                    s.saveDng = prefs.saveDng();
-                    s.preflight = prefs.preflight();
-                    s.keepSatellites = prefs.keepSatellites();
+                    SessionController.Settings s = Presets.session(new Prefs(CaptureService.this), null);
                     s.fromViewer = true;
                     keepingForViewer = false;
                     acquireLocks(true);

@@ -26,6 +26,7 @@ import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
+import com.brandon.nightsky.processing.Preset;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.ReportCard;
@@ -38,6 +39,7 @@ import com.brandon.nightsky.processing.SatPredict;
 import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SessionStore;
+import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.Tonight;
@@ -125,6 +127,21 @@ final class SessionController {
         String origin = "";
         /** A sky reading (H3): pre-flight test frames only, read for the sky's brightness; no photo. */
         boolean readingOnly;
+        /** Outlier rejection (a Rejection.Method name; AUTO chooses from the session). */
+        String rejection = "AUTO";
+        /** Also save the cloud-blur version: the plain average, where drifting clouds turn into soft streaks (C7). */
+        boolean blend;
+        /** Quick developing (Quick look): one stacking pass and a half-size photo. */
+        boolean quick;
+        /** The preset these settings are ("" if none), and its name. */
+        String presetId = "", presetName = "";
+        /**
+         * The saved settings, not ones asked for (a shortcut's, a preset's or the night plan's): a saved site's preset
+         * may take their place.
+         */
+        boolean usesSaved;
+        /** The saved site the session is at ("" if none, or not known yet), and its name (E6). */
+        String siteId = "", siteName = "";
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -157,6 +174,8 @@ final class SessionController {
         boolean scheduled;
         /** A sky reading's result (null unless one just finished). */
         SkyReading reading;
+        /** The saved site and preset, as said at the start ("Backyard site, Backyard preset."; "" if not at one). */
+        String siteLine = "";
     }
 
     static final class Result {
@@ -177,6 +196,10 @@ final class SessionController {
         boolean canLabel;
         /** The full-size copy with the tracks and names, once saved. */
         volatile Uri labelled;
+        /** The cloud-blur version (C7), if one was saved. */
+        Uri blend;
+        /** Photo pixels per JPEG pixel (2 for Quick look's half-size photo). */
+        int jpegFactor = 1;
     }
 
     /** What to draw over a saved photo. */
@@ -312,6 +335,11 @@ final class SessionController {
     private SessionSky sky = new SessionSky();
     private Locator.Place place;
     private CancellationSignal locating;
+    /** Whether the saved site has been looked for (once a session), what was decided (for the log) and said. */
+    private boolean siteChecked;
+    private String siteLog = "", siteLine = "";
+    /** A place fix this fresh (minutes) is good enough to look for the saved site at the start. */
+    private static final double SITE_FRESH_MIN = 30;
     /** Battery at the start of capture (-1: unknown or charging), for learning how fast a session drains it. */
     private int batteryAtStart = -1;
     private long batteryAtStartMs;
@@ -465,7 +493,7 @@ final class SessionController {
                         String err = null;
                         try {
                             String name = r.name + "_b" + Math.round(brightness * 100);
-                            r.jpeg = saveJpeg(o, sp, brightness, name, null);
+                            r.jpeg = saveJpeg(o, sp, brightness, name, null, r.jpegFactor);
                             r.brightness = brightness;
                             prefs.setLastResultUri(r.jpeg.toString());
                         } catch (Throwable t) {
@@ -525,7 +553,7 @@ final class SessionController {
                     public void run() {
                         String err = null;
                         try {
-                            r.labelled = saveJpeg(o, sp, brightness, r.name + "_labelled", d);
+                            r.labelled = saveJpeg(o, sp, brightness, r.name + "_labelled", d, r.jpegFactor);
                         } catch (Throwable t) {
                             err = "Could not save: " + (t instanceof OutOfMemoryError ? "out of memory" : t.getMessage());
                         }
@@ -843,6 +871,7 @@ final class SessionController {
                     if (tk != token || p == null || phase.ordinal() >= Phase.CAPTURING.ordinal()) return;
                     place = p;
                     setPlace(p);
+                    if (phase.ordinal() < Phase.PREFLIGHT.ordinal()) checkSite("with a fresh fix", true);
                 }
             });
             cleanupOldSessions();
@@ -853,6 +882,8 @@ final class SessionController {
             motion.start();
             sounds = new Sounds(ctx, s.sounds);
             sounds.setMuted(muted);
+            // a recent fix that finds a saved site settles it straight away (else the fresh fix will)
+            if (place != null && place.ageMinutes() <= SITE_FRESH_MIN) checkSite("at the start", false);
             rig = new CameraRig(ctx, h, rigListener);
             rig.open(cameraId, cc, rawSize);
         } catch (CameraAccessException | SecurityException e) {
@@ -990,6 +1021,9 @@ final class SessionController {
         reading = null;
         startedAfterWarnings = false;
         storageShort = false;
+        siteChecked = false;
+        siteLog = "";
+        siteLine = "";
         placeSinceMs = 0;
         movedSaid = false;
         planLog = "";
@@ -1050,6 +1084,8 @@ final class SessionController {
                     publishPlace();
                 } else if (forced ? motion.quietNs() >= FORCED_STILL_NS : motion.stillNs() >= STILL_NS) {
                     placeSinceMs = 0;
+                    // the settings are used from here on: the saved site, with whatever place there is
+                    checkSite("when the phone was put down", true);
                     if (settings.readingOnly || (settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
                     else proceed(now);
                 } else if (settings.scheduled) {
@@ -1158,6 +1194,74 @@ final class SessionController {
             default:
                 break;
         }
+    }
+
+    /**
+     * Which saved site the session is at (E6), once the place is known well enough and before anything has used
+     * the settings: the site's clear-night share of stars goes to "only if clear", and a session on the saved
+     * settings takes the site's preset (as {@link Sites#decide} says). Said aloud: "Backyard site, Backyard preset."
+     * An earlier fix ({@code last} false) settles it only when it finds a site: finding none, a fresh fix may yet.
+     */
+    private void checkSite(String when, boolean last) {
+        if (siteChecked || settings == null) return;
+        List<Site> sites = Sites.load(prefs);
+        Site site = Sites.at(sites, place);
+        if (site == null && !last) return;
+        siteChecked = true;
+        if (sites.isEmpty()) return;
+        if (site == null) {
+            siteLog = place == null ? "site: the place isn't known, so no saved site was looked for"
+                    : String.format(Locale.US, "site: none of the %d saved within %.1f km of %s", sites.size(), Site.nearKm(place.accuracyM),
+                    place.describe());
+            android.util.Log.i("NightSky", siteLog);
+            return;
+        }
+        settings.siteId = site.id;
+        settings.siteName = site.name;
+        double share = site.clearShare();
+        if (!Double.isNaN(share)) settings.clearBaseline = share;
+        Site.Pick k;
+        if (settings.readingOnly) {
+            k = new Site.Pick();
+            k.why = "a sky reading takes no photo, so the preset doesn't matter";
+        } else {
+            k = Sites.decide(prefs, site, settings.presetId, settings.usesSaved, System.currentTimeMillis());
+        }
+        String changed = k.use ? usePreset(k.preset) : "";
+        siteLog = String.format(Locale.US, "%s: at the %s site, %.1f km away (%s, %s): %s%s%s", k.use ? "decision" : "site", site.name,
+                site.distanceKm(place.latDeg, place.lonDeg), place.describe(), when, k.why, changed,
+                Double.isNaN(share) ? "" : String.format(Locale.US, "; a clear night there shows %.0f%% of the catalogue's stars", 100 * share));
+        siteLine = Site.spoken(site.name, settings.readingOnly ? "" : settings.presetName);
+        android.util.Log.i("NightSky", siteLog);
+        if (sounds != null) sounds.say(siteLine, null);
+        republish();
+    }
+
+    /**
+     * Puts a saved site's preset in place of the session's settings (nothing has used them yet), and in place of
+     * the saved ones, as the home screen will show. Returns what changed, for the log.
+     */
+    private String usePreset(Preset p) {
+        int oldDur = settings.durationSec;
+        boolean oldTrails = settings.trails;
+        String before = settings.presetName.isEmpty() ? "the settings as they were" : "the " + settings.presetName + " preset";
+        Presets.fill(prefs, settings, p);
+        Presets.pick(prefs, p, false);
+        String note = "";
+        if (settings.durationSec != oldDur && plan != null) {
+            plan.setDuration(settings.durationSec);
+            if (settings.durationSec > oldDur && checkSpace() != null) {
+                settings.durationSec = oldDur;
+                if (settings.clearTargetSec > 0) {
+                    settings.clearTargetSec = oldDur;
+                    settings.maxDurationSec = Math.min(Presets.MAX_COLLECT_SEC, 3 * oldDur);
+                }
+                plan.setDuration(oldDur);
+                note = String.format(Locale.US, "; kept to %d minutes, as %d don't fit the free storage", oldDur / 60, p.durationMin);
+            }
+        }
+        if (oldTrails && !settings.trails && !settings.readingOnly) loadSatellites(token);
+        return " (instead of " + before + "): " + p.describe() + note;
     }
 
     private void publishPlace() {
@@ -1439,6 +1543,11 @@ final class SessionController {
         phase = Phase.DONE;
         outcome = NightPlan.Outcome.DONE;
         outcomeDetail = r.headline;
+        r.site = settings.siteName;
+        if (!settings.siteId.isEmpty() && r.frames > 0) {
+            Sites.learnReading(prefs, settings.siteId, r);
+            r.lines.add("Added to the " + settings.siteName + " site's sky history" + (r.valid ? "." : ", marked as not counting."));
+        }
         String saved = SkyReadings.append(ctx, r);
         if (saved != null) android.util.Log.w("NightSky", "sky reading not logged: " + saved);
         publish("Sky reading", r.headline, -1);
@@ -1601,6 +1710,8 @@ final class SessionController {
             readingFrame(rep);
             return;
         }
+        // the saved site learns what blocks its sky and how bright the sky is there
+        if (!settings.siteId.isEmpty()) Sites.learnCheck(prefs, settings.siteId, rep, prefs.sqmOffset(), System.currentTimeMillis());
         if (settings.onlyIfClear) {
             Preflight.Clear c = Preflight.clearEnough(rep, settings.clearBaseline);
             String line = "only if clear: " + c.seen + (c.clear ? ": clear enough, starting" : ": not clear enough");
@@ -1809,8 +1920,18 @@ final class SessionController {
         p.setProperty("saveDng", Boolean.toString(settings.saveDng));
         p.setProperty("durationSec", Integer.toString(settings.durationSec));
         p.setProperty("plan", plan.describe());
-        p.setProperty("rejection", Rejection.Method.parse(prefs.rejection()).name());
+        p.setProperty("rejection", Rejection.Method.parse(settings.rejection).name());
         p.setProperty("keepSatellites", Boolean.toString(settings.keepSatellites));
+        p.setProperty("blend", Boolean.toString(settings.blend));
+        p.setProperty("quick", Boolean.toString(settings.quick));
+        if (!settings.presetId.isEmpty()) {
+            p.setProperty("preset.id", settings.presetId);
+            p.setProperty("preset.name", settings.presetName);
+        }
+        if (!settings.siteId.isEmpty()) {
+            p.setProperty("site.id", settings.siteId);
+            p.setProperty("site.name", settings.siteName);
+        }
         p.setProperty("state", "capturing");
         sky.toProperties(p);
         Preflight.Report pf = preflightReport;
@@ -1821,6 +1942,11 @@ final class SessionController {
             if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
             Preflight.Item lens = pf.item("lens");
             p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
+            // for the site's clear-night share of stars, learned if the session goes well
+            Preflight.Item clouds = pf.item("clouds");
+            p.setProperty("preflight.cloudWarned", Boolean.toString(clouds != null && clouds.level != Preflight.Level.OK));
+            if (pf.expected >= 12 && !Double.isNaN(pf.seenFraction)) p.setProperty("preflight.seenFraction", Double.toString(pf.seenFraction));
+            if (!Double.isNaN(pf.sunAltDeg)) p.setProperty("preflight.sunAlt", Double.toString(pf.sunAltDeg));
             StringBuilder w = new StringBuilder();
             for (Preflight.Item it : pf.items) {
                 if (it.level != Preflight.Level.WARN && it.level != Preflight.Level.STOP) continue;
@@ -1860,6 +1986,15 @@ final class SessionController {
         }
         if (!waitLog.isEmpty()) store.log(waitLog);
         if (!settings.origin.isEmpty()) store.log(settings.origin);
+        store.log("settings: " + (settings.presetName.isEmpty() ? "set by hand" : "the " + settings.presetName + " preset")
+                + (settings.usesSaved ? "" : ", asked for this session"));
+        if (!siteLog.isEmpty()) store.log(siteLog);
+        if (!settings.siteId.isEmpty()) Sites.noteSession(prefs, settings.siteId, System.currentTimeMillis());
+        String migrated = prefs.settingsMigrated();
+        if (!migrated.isEmpty()) {
+            store.log("settings: brought up to date " + migrated + " (none reset)");
+            prefs.clearSettingsMigrated();
+        }
         if (settings.scheduled) {
             store.log(String.format(Locale.US, "scheduled session: %s; stops below %d%% battery%s%s", settings.sounds ? "with sounds" : "silent",
                     settings.minBatteryPct, settings.endAtMs > 0 ? ", at " + clockTime(settings.endAtMs) : "",
@@ -2446,6 +2581,13 @@ final class SessionController {
             pp.sky = sk;
             // the satellites: named where they crossed, and taken out (or kept, as set when it started)
             pp.keepSatellites = "true".equals(props.getProperty("keepSatellites"));
+            // the cloud-blur version (C7), and quick developing (Quick look), as set when it started
+            pp.blend = "true".equals(props.getProperty("blend"));
+            boolean quick = "true".equals(props.getProperty("quick"));
+            if (quick) {
+                pp.patternCleanup = false;
+                pp.streakCorridors = false;
+            }
             if (!trails) {
                 if (!prefs.satelliteData()) {
                     pp.satellitesMissing = "satellite data is off in the settings";
@@ -2460,13 +2602,30 @@ final class SessionController {
                 }
             }
             PostProcessor.Output o = pp.run(trails, progress);
+            if (quick) {
+                String q = "quick developing (Quick look): one stacking pass, the sensor's pattern not measured and the streaks' "
+                        + "faint edges not stacked out again, and a half-size photo";
+                o.decisions.add(q);
+                st.log("decision: " + q);
+            }
             learnFromSession(props, o, sp, st);
             ReportCard card = report(o, sk, props, st);
             List<SatOverlay.Line> tracks = SatOverlay.lines(o.satTracks, o.streaks, o.analysis.cx0, o.analysis.cy0, o.analysis.cw,
                     o.analysis.ch);
             String name = "NightSky_" + st.id() + (trails ? "_trails" : "");
-            post(Phase.DEVELOPING, "Saving", "Full-size photo", -1f);
-            Uri jpeg = saveJpeg(o, sp, brightness, name, null);
+            int factor = quick ? 2 : 1;
+            post(Phase.DEVELOPING, "Saving", quick ? "Half-size photo" : "Full-size photo", -1f);
+            Uri jpeg = saveJpeg(o, sp, brightness, name, null, factor);
+            Uri blendUri = null;
+            if (o.blend != null) {
+                post(Phase.DEVELOPING, "Saving", "The cloud-blur version", -1f);
+                try {
+                    blendUri = saveBlend(o, sp, brightness, name + "_blend");
+                } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                    st.log("cloud blur: not saved: " + e);
+                }
+                o.blend = null; // its memory, for the result screen
+            }
             Uri dng = null;
             if (saveDng) {
                 post(Phase.DEVELOPING, "Saving", "RAW (DNG) copy", -1f);
@@ -2496,6 +2655,8 @@ final class SessionController {
             r.startedMs = parseLong(props.getProperty("capture.startWallMs"));
             r.durationSec = (int) parseLong(props.getProperty("capture.durationSec", props.getProperty("durationSec")));
             r.jpeg = jpeg;
+            r.jpegFactor = factor;
+            r.blend = blendUri;
             r.dng = dng;
             r.log = log;
             r.canAdjust = true;
@@ -2600,6 +2761,16 @@ final class SessionController {
             st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f, clear night zero point %.2f",
                     prefs.haloBaseline(sp.cameraId), prefs.clearZeroPoint(sp.cameraId)));
         }
+        // a clear, dark night at a saved site: the share of the stars its check saw is what a clear night there shows
+        String siteId = props.getProperty("site.id", "");
+        double seen = parseDouble(props.getProperty("preflight.seenFraction"));
+        double sunAlt = parseDouble(props.getProperty("preflight.sunAlt"));
+        if (!siteId.isEmpty() && !Double.isNaN(seen) && !"true".equals(props.getProperty("preflight.cloudWarned"))
+                && o.unitsUsed >= 0.8 * o.unitsTotal && o.unitsPartly <= 0.2 * o.unitsTotal && !(sunAlt > -12)) {
+            Sites.learnClear(prefs, siteId, seen);
+            st.log(String.format(Locale.US, "learned for the %s site: a clear night there shows %.0f%% of the catalogue's stars",
+                    props.getProperty("site.name", ""), 100 * seen));
+        }
     }
 
     private static long parseLong(String s) {
@@ -2636,21 +2807,30 @@ final class SessionController {
         return "Done. Your photo is ready.";
     }
 
-    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d) throws IOException {
-        final int cw = o.analysis.cw, ch = o.analysis.ch;
+    /** The photo as a JPEG, {@code factor} photo pixels to a JPEG pixel each way (1: full size), with {@code d} drawn on. */
+    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor) throws IOException {
+        final Renderer.Params p = new Renderer.Params();
+        p.brightness = brightness;
+        RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
+        final int cw = sm != null ? sm.cropWidth() : o.analysis.cw, ch = sm != null ? sm.cropHeight() : o.analysis.ch;
         final Bitmap bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
         try {
-            Renderer.Params p = new Renderer.Params();
-            p.brightness = brightness;
-            Renderer.render(o.image, o.analysis, p, new Renderer.RowSink() {
-                @Override
-                public void rows(int y, int count, int[] argb, int width) {
-                    synchronized (bmp) {
-                        bmp.setPixels(argb, 0, width, 0, y, width, count);
+            if (sm != null) {
+                // smaller (Quick look): the full photo's stretch, on its binned copy
+                int[] px = Renderer.renderSmall(sm, o.analysis, p, factor);
+                sm = null;
+                bmp.setPixels(px, 0, cw, 0, 0, cw, ch);
+            } else {
+                Renderer.render(o.image, o.analysis, p, new Renderer.RowSink() {
+                    @Override
+                    public void rows(int y, int count, int[] argb, int width) {
+                        synchronized (bmp) {
+                            bmp.setPixels(argb, 0, width, 0, y, width, count);
+                        }
                     }
-                }
-            }, null);
-            if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, 1, d.tracks, d.sky, d.showTracks, d.showLabels);
+                }, null);
+            }
+            if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
             MediaSaver.Exif ex = new MediaSaver.Exif();
             ex.make = sp.deviceMake;
             ex.model = sp.deviceModel;
@@ -2665,6 +2845,17 @@ final class SessionController {
         } finally {
             bmp.recycle();
         }
+    }
+
+    /** The cloud-blur version (C7), with a stretch of its own: clouds and trails make it a different picture. */
+    private Uri saveBlend(PostProcessor.Output o, SensorSpec sp, float brightness, String name) throws IOException {
+        PostProcessor.Output b = new PostProcessor.Output();
+        b.image = o.blend;
+        b.analysis = Renderer.analyze(o.blend, sp);
+        b.integrationSeconds = o.blendSeconds;
+        b.summary = String.format(Locale.US, "Cloud blur: the plain average of %d frames (%s), not lined up", o.blendFrames,
+                PostProcessor.duration(o.blendSeconds));
+        return saveJpeg(b, sp, brightness, name, null, 1);
     }
 
     private Uri saveDng(final PostProcessor.Output o, final SensorSpec sp, String name) throws IOException {
@@ -2861,6 +3052,7 @@ final class SessionController {
         s.outcomeDetail = outcomeDetail;
         s.scheduled = settings != null && settings.scheduled;
         s.reading = reading;
+        s.siteLine = siteLine;
         return s;
     }
 
