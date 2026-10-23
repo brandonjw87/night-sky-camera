@@ -274,7 +274,8 @@ final class RemoteHost implements RemoteServer.Backend {
         j.put("startNow", arming && !s.forced);
         j.put("cancel", arming);
         j.put("stop", capturing);
-        j.put("addTime", capturing);
+        // during a session, and for a while after one (stacked with its photo; G1)
+        j.put("addTime", capturing || controller.canAddAfter());
         j.put("mute", s.soundsOn && !ended);
         j.put("arm", ended && service.canArmFromViewer());
         j.end();
@@ -449,7 +450,7 @@ final class RemoteHost implements RemoteServer.Backend {
         if ("start-now".equals(name)) msg = controller.remoteStartNow();
         else if ("stop".equals(name)) msg = controller.remoteStop();
         else if ("cancel".equals(name)) msg = controller.remoteCancel();
-        else if ("add-time".equals(name)) msg = controller.remoteAddTime(5 * 60);
+        else if ("add-time".equals(name)) msg = controller.canAddAfter() ? service.addAfterFromViewer() : controller.remoteAddTime(5 * 60);
         else if ("mute".equals(name)) msg = controller.remoteMute(true);
         else if ("unmute".equals(name)) msg = controller.remoteMute(false);
         else if ("arm".equals(name)) msg = service.armFromViewer();

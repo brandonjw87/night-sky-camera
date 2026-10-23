@@ -15,6 +15,12 @@ import java.util.Map;
  * final stack. Works from what is on disk, so it can also finish a session after a crash.
  */
 public final class PostProcessor {
+    /**
+     * The processing's version: raised whenever a change makes the same frames give a different picture. Saved with
+     * every master and recipe (G3), so a photo made by an older version can be offered again with the new one.
+     */
+    public static final int PIPELINE = 1;
+
     public static final class Output {
         public RgbImage image;
         public Renderer.Analysis analysis;

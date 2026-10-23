@@ -78,6 +78,32 @@ public final class LiveStats {
         return u;
     }
 
+    /**
+     * What the units add to the stack, in clear units (E5's N_eff, estimated live): a usable unit counts by its
+     * starlight squared (haze and thin cloud dim it) times its sky's noise against the darkest clear sky so far,
+     * squared (moonlight, dawn or lights make the sky brighter), each at most 1, as the stack weighs frames; an
+     * unusable one counts nothing.
+     */
+    public static double worth(List<Unit> us) {
+        float[] nz = new float[us.size()];
+        int n = 0;
+        for (Unit u : us) {
+            if (u.ok && u.reason == null && u.noise > 0 && !(u.transparency < CLEAR_T)) nz[n++] = u.noise;
+        }
+        float ref = n > 0 ? Stats.quantile(nz, n, 0.2) : Float.NaN;
+        double w = 0;
+        for (Unit u : us) {
+            if (!u.ok || u.reason != null) continue;
+            double t = Float.isNaN(u.transparency) ? 1 : Math.min(1, u.transparency);
+            double q = !Float.isNaN(ref) && u.noise > 0 ? Math.min(1, ref / u.noise) : 1;
+            w += t * t * q * q;
+        }
+        return w;
+    }
+
+    /** Units at least this clear set the darkest sky for {@link #worth}. */
+    static final float CLEAR_T = 0.9f;
+
     /** Copies of the units from position {@code from} on. */
     public synchronized List<Unit> from(int from) {
         List<Unit> out = new ArrayList<Unit>();

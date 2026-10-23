@@ -33,6 +33,7 @@ public final class SettingsFile {
             {"satelliteData", "b"}, {"keepSatellites", "b"}, {"showTracks", "b"}, {"showLabels", "b"}, {"forecast", "b"},
             {"planSounds", "b"}, {"planMinBattery", "i"}, {"tileUnlocks", "b"}, {"sqmOffset", "f"}, {"preset", "s"},
             {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"}, {"focusAssist", "b"},
+            {"keepFramesGb", "i"}, {"remoteKey", "b"},
     };
     /** What the app learned about the camera: keys starting with these (camera and system build follow), or equal. */
     static final String[][] LEARNED = {

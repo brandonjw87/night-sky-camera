@@ -11,6 +11,7 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -28,7 +29,9 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -49,6 +52,8 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import com.brandon.nightsky.processing.FocusModel;
+import com.brandon.nightsky.processing.Master;
+import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
@@ -57,6 +62,8 @@ import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
 import com.brandon.nightsky.processing.SatPlanner;
 import com.brandon.nightsky.processing.SatSky;
+import com.brandon.nightsky.processing.SessionLibrary;
+import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.SettingsFile;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyReading;
@@ -67,11 +74,14 @@ import java.io.File;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.TimeZone;
 
 /**
@@ -122,8 +132,13 @@ public final class MainActivity extends Activity {
     private Boolean windowActive;
 
     // the idle screen's pages: home, tonight's plan, a session being added, last night's summary, the saved sites,
-    // the daylight focus calibration
-    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4, PAGE_FOCUS = 5;
+    // the daylight focus calibration, the sessions kept, and merging some of them
+    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4, PAGE_FOCUS = 5,
+            PAGE_SESSIONS = 6, PAGE_MERGE = 7;
+    /** The merge page's session to merge into, and the one ticked alone (folder names; null for all). */
+    private String mergeBase, mergePick;
+    /** Drops the sessions read for a page Brandon has left. */
+    private int libraryToken;
     /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate. */
     private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9;
     /** The daylight focus calibration's camera while its page shows (null otherwise); the camera sessions use. */
@@ -458,6 +473,12 @@ public final class MainActivity extends Activity {
             case PAGE_FOCUS:
                 showFocus();
                 break;
+            case PAGE_SESSIONS:
+                showSessions();
+                break;
+            case PAGE_MERGE:
+                showMergePage();
+                break;
             default:
                 showHomePage();
                 break;
@@ -690,6 +711,14 @@ public final class MainActivity extends Activity {
             });
             col.addView(open, gap(18));
         }
+        Button sessions = button("Sessions: open, merge nights, free space", false);
+        sessions.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPage(PAGE_SESSIONS);
+            }
+        });
+        col.addView(sessions, gap(last != null ? 10 : 18));
         Button reading = button("Sky reading: how dark is it here?", false);
         reading.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -697,7 +726,7 @@ public final class MainActivity extends Activity {
                 startSession(0, Launch.of("reading"));
             }
         });
-        col.addView(reading, gap(last != null ? 10 : 18));
+        col.addView(reading, gap(10));
         col.addView(text("Version " + BuildInfo.VERSION + " · photos are saved in Pictures/NightSky", 12, RED_DIM, false), gap(24));
     }
 
@@ -941,8 +970,8 @@ public final class MainActivity extends Activity {
 
         // what the Partly cloudy and Quick look presets turn on (E6)
         box.addView(label("Clouds and quick looks"), gap(20));
-        CheckBox collect = check("Keep going until the chosen minutes of clear sky are in, for up to three times as long",
-                prefs.collectClear());
+        CheckBox collect = check("Keep going until the chosen minutes of clear sky are in, for up to three times as long (hazy "
+                + "frames count in part)", prefs.collectClear());
         collect.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(CompoundButton b, boolean on) {
@@ -970,6 +999,70 @@ public final class MainActivity extends Activity {
         box.addView(collect, gap(6));
         box.addView(blend);
         box.addView(quick);
+
+        // the sessions' frames kept for merging and adding minutes, and the volume key (G1)
+        box.addView(label("Sessions and storage"), gap(20));
+        box.addView(text("After developing, a session's frames stay on the phone so it can be merged with other nights of the "
+                + "same sky, or have minutes added. Beyond this much, the oldest sessions' frames go first (their photos stay), "
+                + "when the next session starts or is developed:", 13, RED_DIM, false), gap(4));
+        LinearLayout kr1 = row(), kr2 = row();
+        final Button[] kchips = new Button[Prefs.KEEP_FRAMES_GB.length];
+        for (int k = 0; k < Prefs.KEEP_FRAMES_GB.length; k++) {
+            final int g = Prefs.KEEP_FRAMES_GB[k];
+            Button b = chip(g == 0 ? "Off" : g + " GB", prefs.keepFramesGb() == g);
+            b.setTextSize(14);
+            kchips[k] = b;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setKeepFramesGb(g);
+                    for (int j = 0; j < kchips.length; j++) styleChip(kchips[j], Prefs.KEEP_FRAMES_GB[j] == g);
+                    if (g == 0) toastish("Off: each session's frames are deleted once its photo is saved, as before version 1.2");
+                }
+            });
+            (k < 3 ? kr1 : kr2).addView(b, weight());
+        }
+        box.addView(kr1, gap(8));
+        box.addView(kr2, gap(6));
+        final TextView keptNow = text("", 13, RED_DIM, false);
+        box.addView(keptNow, gap(6));
+        final File sroot = SessionController.sessionsRoot(this);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long n = 0;
+                int with = 0;
+                for (SessionStore st : SessionStore.list(sroot)) {
+                    long b = SessionLibrary.frameBytes(st);
+                    n += b;
+                    if (b > 0) with++;
+                }
+                final String t = "Kept now: " + SessionLibrary.gb(n) + " of frames in " + with + (with == 1 ? " session." : " sessions.");
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        keptNow.setText(t);
+                    }
+                });
+            }
+        }, "kept").start();
+        CheckBox key = check("Volume up, or a Bluetooth remote's button, adds 5 minutes while capturing", prefs.remoteKey());
+        key.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setRemoteKey(on);
+            }
+        });
+        box.addView(key, gap(8));
+        Button ses = button("Sessions\u2026", false);
+        ses.setTextSize(15);
+        ses.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPage(PAGE_SESSIONS);
+            }
+        });
+        box.addView(ses, gap(6));
 
         // the settings file (E6)
         box.addView(label("Settings file"), gap(20));
@@ -1076,6 +1169,16 @@ public final class MainActivity extends Activity {
         boolean reading;
         /** For the session's log: "shortcut: Star trails 30 min". */
         String origin = "";
+        /** "Add 5 minutes" after a session (G1): the folder of the session they add to (null: a session of its own). */
+        String continueFrom;
+
+        /** Five more minutes of the session in {@code folder}, stacked with it when they're developed. */
+        static Launch addTo(String folder) {
+            Launch l = new Launch();
+            l.continueFrom = folder;
+            l.durationMin = 5;
+            return l;
+        }
 
         static Launch of(String what) {
             Launch l = new Launch();
@@ -1195,6 +1298,7 @@ public final class MainActivity extends Activity {
             if (l.trails != null) i.putExtra(CaptureService.EXTRA_TRAILS, (boolean) l.trails);
             if (l.durationMin != null) i.putExtra(CaptureService.EXTRA_DURATION, l.durationMin * 60);
             if (l.saveDng != null) i.putExtra(CaptureService.EXTRA_DNG, (boolean) l.saveDng);
+            if (l.continueFrom != null) i.putExtra(CaptureService.EXTRA_CONTINUE, l.continueFrom);
         }
         startForegroundService(i);
     }
@@ -1414,10 +1518,10 @@ public final class MainActivity extends Activity {
         showHome();
     }
 
-    /** Back from a page: the editor goes back to the plan, the rest to the home screen. */
+    /** Back from a page: the editor goes back to the plan, merging to the sessions, the rest to the home screen. */
     private boolean pageBack() {
         if (page == PAGE_HOME) return false;
-        openPage(page == PAGE_EDIT ? PAGE_PLAN : PAGE_HOME);
+        openPage(page == PAGE_EDIT ? PAGE_PLAN : page == PAGE_MERGE ? PAGE_SESSIONS : PAGE_HOME);
         return true;
     }
 
@@ -2067,7 +2171,7 @@ public final class MainActivity extends Activity {
                 rb.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        showReport(rc);
+                        showReport(rc, null);
                     }
                 });
                 r.addView(rb, weight());
@@ -2319,7 +2423,21 @@ public final class MainActivity extends Activity {
             link.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    showReport(rc);
+                    showReport(rc, r.merge);
+                }
+            });
+            col.addView(link, gap(6));
+        } else if (r != null && r.merge != null) {
+            // nights merged (G1): their total and coverage map stand for the report card
+            final MergeProcessor.Result mr = r.merge;
+            LinearLayout link = card();
+            link.setPadding(dp(12), dp(8), dp(12), dp(8));
+            link.addView(text(mr.total, 14, RED, false));
+            link.addView(text("The nights and where they overlap \u203a", 13, RED_DIM, true));
+            link.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showMergeInfo(mr);
                 }
             });
             col.addView(link, gap(6));
@@ -2430,18 +2548,25 @@ public final class MainActivity extends Activity {
                 if (rr != null && rr.jpeg != null) view(rr.jpeg);
             }
         });
-        Button again = button("New photo", false);
+        // a photo opened or merged on the sessions page goes back there; a new one goes to the start screen
+        final boolean fromLibrary = r != null && (r.endedMs <= 0 || (r.merge != null && !r.merge.added));
+        Button again = button(fromLibrary ? "Sessions" : "New photo", false);
         again.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                if (fromLibrary) page = PAGE_SESSIONS;
+                else if (page == PAGE_SESSIONS || page == PAGE_MERGE) page = PAGE_HOME;
                 if (service != null) service.controller().clearResult();
             }
         });
         row2.addView(open, weight());
         row2.addView(again, weight());
-        if (r != null && r.startedMs > 0 && !s.scheduled) {
+        col.addView(row2, gap(6));
+        // the rest, smaller: minutes added, tomorrow night, other nights, the cloud blur, the sessions
+        List<Button> more = new ArrayList<Button>();
+        if (r != null && r.startedMs > 0 && r.endedMs > 0 && !s.scheduled && !fromLibrary) {
             // the same stars at the same height tomorrow night: 3 min 56 s earlier by the clock
-            final Button rep = button("Repeat tomorrow", false);
+            final Button rep = smallButton("Repeat tomorrow", false);
             rep.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -2452,21 +2577,20 @@ public final class MainActivity extends Activity {
                     }
                 }
             });
-            row2.addView(rep, weight());
+            more.add(rep);
         }
-        col.addView(row2, gap(6));
         if (r != null && r.blend != null) {
             // the cloud-blur version (C7), saved beside the photo
-            Button bl2 = button("Open the cloud-blur version", false);
-            bl2.setTextSize(15);
+            Button bl2 = smallButton("Cloud-blur version", false);
             bl2.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     view(r.blend);
                 }
             });
-            col.addView(bl2, gap(6));
+            more.add(bl2);
         }
+        addMoreRow(col, r, fromLibrary, more);
         String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG" : " (JPEG")
                 + (r != null && r.jpegFactor > 1 ? ", half size" : "")
                 + (r != null && r.blend != null ? ", the cloud-blur version" : "")
@@ -2484,8 +2608,8 @@ public final class MainActivity extends Activity {
     // Session report
     // ------------------------------------------------------------------------------------------------
 
-    /** The report card over the result screen, until Close or Back. */
-    private void showReport(ReportCard rc) {
+    /** The report card over the result screen, until Close or Back; with the sessions stacked when it's a merge. */
+    private void showReport(ReportCard rc, MergeProcessor.Result merge) {
         if (rc == null || reportOverlay != null) return;
         FrameLayout ov = new FrameLayout(this);
         ov.setBackgroundColor(BG);
@@ -2527,6 +2651,8 @@ public final class MainActivity extends Activity {
         col.addView(strip, slp);
         col.addView(fcap, gap(4));
 
+        if (merge != null) addMergeSection(col, merge);
+
         if (!rc.registration.isEmpty()) {
             col.addView(label("Lining up"), gap(18));
             col.addView(text(rc.registration + " Confidence: " + rc.confidence + ".", 14, RED, false), gap(4));
@@ -2557,6 +2683,11 @@ public final class MainActivity extends Activity {
             }
         });
         col.addView(close, gap(20));
+        openOverlay(ov);
+    }
+
+    /** Shows a page over the result screen until Close or Back (the report card, a merge's details). */
+    private void openOverlay(FrameLayout ov) {
         root.addView(ov, match());
         reportOverlay = ov;
         if (Build.VERSION.SDK_INT >= 33) {
@@ -2580,6 +2711,28 @@ public final class MainActivity extends Activity {
             getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback((OnBackInvokedCallback) reportBack);
         }
         reportBack = null;
+    }
+
+    /** While capturing, volume up (or a Bluetooth remote's button) adds 5 minutes (G1), unless that's off in the settings. */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP && service != null && prefs.remoteKey()) {
+            SessionController.Phase p = service.controller().status().phase;
+            if (p == SessionController.Phase.CAPTURING || p == SessionController.Phase.PAUSED) {
+                if (event.getRepeatCount() == 0) service.controller().addTimeFromKey();
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP && service != null && prefs.remoteKey()) {
+            SessionController.Phase p = service.controller().status().phase;
+            if (p == SessionController.Phase.CAPTURING || p == SessionController.Phase.PAUSED) return true;
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override
@@ -3627,12 +3780,610 @@ public final class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // Sessions kept on the phone, and merging them (G1)
+    // ------------------------------------------------------------------------------------------------
+
+    /** The sessions as the sessions and merge pages show them, read off the main thread. */
+    private static final class Library {
+        List<SessionLibrary.Entry> all = new ArrayList<SessionLibrary.Entry>();
+        final Map<String, Bitmap> thumbs = new HashMap<String, Bitmap>();
+        final Map<String, List<SessionLibrary.Entry>> candidates = new HashMap<String, List<SessionLibrary.Entry>>();
+        long frameBytes;
+
+        static Library read(File root) {
+            Library l = new Library();
+            l.all = SessionLibrary.list(root);
+            for (SessionLibrary.Entry e : l.all) {
+                l.frameBytes += e.frameBytes;
+                File t = new File(e.store.dir, "thumb.jpg");
+                if (t.isFile()) {
+                    Bitmap b = BitmapFactory.decodeFile(t.getAbsolutePath());
+                    if (b != null) l.thumbs.put(e.folder(), b);
+                }
+                l.candidates.put(e.folder(), SessionLibrary.mergeCandidates(e, l.all));
+            }
+            return l;
+        }
+
+        /** The session in this folder, or null. */
+        SessionLibrary.Entry get(String folder) {
+            for (SessionLibrary.Entry e : all) if (e.folder().equals(folder)) return e;
+            return null;
+        }
+
+        /** Sessions that could be merged with this one, less those its latest photo already has. */
+        List<SessionLibrary.Entry> mergeable(String folder, Collection<String> already) {
+            List<SessionLibrary.Entry> out = new ArrayList<SessionLibrary.Entry>();
+            List<SessionLibrary.Entry> c = candidates.get(folder);
+            if (c == null) return out;
+            for (SessionLibrary.Entry e : c) if (already == null || !already.contains(e.id)) out.add(e);
+            return out;
+        }
+    }
+
+    /** Reads the sessions on a thread, then hands them over on the main thread unless the screen moved on. */
+    private void readLibrary(final int pageNow, final LibraryReady ready) {
+        final int tk = ++libraryToken;
+        final File sroot = SessionController.sessionsRoot(this);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final Library lib = Library.read(sroot);
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (tk != libraryToken || page != pageNow || screenOf(shownPhase) > 0) return;
+                        ready.ready(lib);
+                    }
+                });
+            }
+        }, "sessions").start();
+    }
+
+    private interface LibraryReady {
+        void ready(Library lib);
+    }
+
+    /** The sessions page: every session kept, newest first, to open, merge, develop, or free space. */
+    private void showSessions() {
+        page = PAGE_SESSIONS;
+        LinearLayout col = pageColumn("Home");
+        col.addView(text("Sessions", 26, RED, true));
+        col.addView(text("Every session kept on the phone, newest first. While its frames are kept, a session can be merged "
+                + "with other nights of the same sky. Without them, its photo still opens and its brightness can still change.",
+                14, RED_DIM, false), gap(6));
+        final TextView storage = text("Reading the sessions…", 13, RED_DIM, false);
+        col.addView(storage, gap(10));
+        final LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        col.addView(list, gap(4));
+        readLibrary(PAGE_SESSIONS, new LibraryReady() {
+            @Override
+            public void ready(Library lib) {
+                long budget = prefs.keepFramesBytes();
+                long free = freeBytes();
+                storage.setText("Frames kept: " + SessionLibrary.gb(lib.frameBytes)
+                        + (budget > 0 ? " of the " + SessionLibrary.gb(budget) + " set in Advanced settings" : " (keeping frames is off in Advanced settings)")
+                        + (free >= 0 ? ". " + SessionLibrary.gb(free) + " free on the phone." : "."));
+                int shown = 0;
+                for (SessionLibrary.Entry e : lib.all) {
+                    // minutes added show with the session they add to
+                    if (!e.continuesFrom.isEmpty() && lib.get(e.continuesFrom) != null) continue;
+                    list.addView(sessionCard(e, lib), gap(shown == 0 ? 6 : 10));
+                    shown++;
+                }
+                if (shown == 0) list.addView(text("No sessions kept yet.", 15, RED_DIM, false), gap(12));
+            }
+        });
+    }
+
+    /**
+     * "Night of Wed 22 Oct · 01:30": the night a session belongs to (the evening's date, as merging counts nights) and
+     * when it started; the folder's id when the time isn't known.
+     */
+    private static String when(SessionLibrary.Entry e) {
+        if (e.startMs <= 0) return e.id;
+        return "Night of " + new SimpleDateFormat("EEE d MMM", Locale.US).format(new Date(e.startMs - 12 * 3600_000L)) + " \u00b7 "
+                + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(e.startMs));
+    }
+
+    /** The text with a full stop at its end ("" stays ""). */
+    private static String sentence(String s) {
+        s = s.trim();
+        return s.isEmpty() || s.endsWith(".") || s.endsWith("!") || s.endsWith("?") ? s : s + ".";
+    }
+
+    /** One session on the sessions page. */
+    private LinearLayout sessionCard(final SessionLibrary.Entry e, final Library lib) {
+        LinearLayout c = card();
+        LinearLayout top = row();
+        Bitmap thumb = lib.thumbs.get(e.folder());
+        if (thumb != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(thumb);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(96), dp(72));
+            lp.rightMargin = dp(12);
+            top.addView(iv, lp);
+        }
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        top.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        List<SessionLibrary.Entry> added = SessionLibrary.continuations(e, lib.all);
+        int minutes = Math.round(e.durationSec / 60f);
+        for (SessionLibrary.Entry a : added) minutes += Math.round(a.durationSec / 60f);
+        words.addView(text(when(e), 16, RED, true));
+        words.addView(text((e.trails ? "Star trails" : "Deep sky") + (minutes > 0 ? " · " + minutes + " min" : "")
+                + (added.isEmpty() ? "" : " · " + (added.size() == 1 ? "5 minutes added" : added.size() + " times 5 minutes added"))
+                + (e.siteName.isEmpty() ? "" : " · " + e.siteName), 13, RED_DIM, false), gap(2));
+        c.addView(top);
+
+        Master.Meta newest = e.newestMaster();
+        MergeProcessor.Result merged = newest != null ? MergeProcessor.readDescription(newest.merge) : null;
+        StringBuilder sb = new StringBuilder();
+        if (!e.developed()) {
+            sb.append(e.units > 0 ? "Not developed yet: " + e.units + (e.units == 1 ? " frame" : " frames") + " saved."
+                    : "Not developed, and no frames were saved.");
+        } else {
+            if (merged != null && !merged.added) sb.append("Latest photo: ").append(sentence(merged.total)).append(' ');
+            else if (!e.summary.isEmpty()) sb.append(sentence(e.summary)).append(' ');
+            sb.append(e.hasFrames ? "Frames kept (" + SessionLibrary.gb(e.frameBytes) + ")." : "Photo only: its frames were deleted.");
+            if (e.renders.size() > 1) sb.append(" ").append(e.renders.size()).append(" versions saved.");
+            if (newest == null) sb.append(" Developed before version 1.2, so it can't be opened here.");
+        }
+        c.addView(text(sb.toString(), 13, RED_DIM, false), gap(8));
+
+        final List<SessionLibrary.Entry> cands = lib.mergeable(e.folder(), newest != null ? newest.sessions : null);
+        LinearLayout r1 = row();
+        if (newest != null) {
+            Button open = smallButton("Open", true);
+            open.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    jobOnSession(CaptureService.ACTION_OPEN, e.folder());
+                }
+            });
+            r1.addView(open, weight());
+        }
+        if (!e.developed() && e.units > 0) {
+            Button dev = smallButton("Develop", true);
+            dev.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Intent i = new Intent(MainActivity.this, CaptureService.class).setAction(CaptureService.ACTION_RECOVER)
+                            .putExtra(CaptureService.EXTRA_DIR, e.store.dir.getAbsolutePath());
+                    startForegroundService(i);
+                }
+            });
+            r1.addView(dev, weight());
+        }
+        if (!cands.isEmpty()) {
+            Button m = smallButton(cands.size() == 1 ? "Merge with " + SessionController.nightLabel(cands.get(0).startMs) : "Merge…", false);
+            m.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    mergeBase = e.folder();
+                    mergePick = null;
+                    openPage(PAGE_MERGE);
+                }
+            });
+            r1.addView(m, weight());
+        }
+        if (r1.getChildCount() > 0) c.addView(r1, gap(10));
+        LinearLayout r2 = row();
+        if (e.developed() && e.hasFrames) {
+            Button df = smallButton("Delete frames", false);
+            df.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    long b = e.frameBytes;
+                    for (SessionLibrary.Entry a : SessionLibrary.continuations(e, lib.all)) b += a.frameBytes;
+                    confirm("Delete this session's frames (" + SessionLibrary.gb(b) + ")? Its photos stay and it still opens, but it "
+                            + "can't be merged or have minutes added any more.", new Runnable() {
+                        @Override
+                        public void run() {
+                            deleteFrames(e, lib);
+                            showSessions();
+                        }
+                    });
+                }
+            });
+            r2.addView(df, weight());
+        }
+        Button del = smallButton("Delete", false);
+        del.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                List<SessionLibrary.Entry> adds = SessionLibrary.continuations(e, lib.all);
+                long b = e.bytes;
+                for (SessionLibrary.Entry a : adds) b += a.bytes;
+                confirm("Delete this session" + (adds.isEmpty() ? "" : " and the minutes added to it") + " from the phone ("
+                        + SessionLibrary.gb(b) + ")? The photos saved in Pictures/NightSky stay.", new Runnable() {
+                    @Override
+                    public void run() {
+                        for (SessionLibrary.Entry a : SessionLibrary.continuations(e, lib.all)) SessionController.delete(a.store.dir);
+                        SessionController.delete(e.store.dir);
+                        showSessions();
+                    }
+                });
+            }
+        });
+        r2.addView(del, weight());
+        c.addView(r2, gap(6));
+        return c;
+    }
+
+    /** Deletes a session's frames (and those of the minutes added to it) when Brandon asks; its photos and masters stay. */
+    private static void deleteFrames(SessionLibrary.Entry e, Library lib) {
+        List<SessionLibrary.Entry> all = new ArrayList<SessionLibrary.Entry>(SessionLibrary.continuations(e, lib.all));
+        all.add(0, e);
+        for (SessionLibrary.Entry a : all) {
+            long b = a.frameBytes;
+            a.store.deleteBulk();
+            a.store.log("frames deleted by you from the sessions page (" + SessionLibrary.gb(b) + "); the photos and masters stay");
+        }
+    }
+
+    /** Opens or merges kept sessions in the capture service (the app is on screen, so a plain start is allowed). */
+    private void jobOnSession(String action, String folders) {
+        if (service != null) {
+            SessionController.Phase p = service.controller().status().phase;
+            if (screenOf(p) >= 1 && screenOf(p) <= 3) {
+                toastish("A session is running: wait until it's finished");
+                return;
+            }
+        }
+        startService(new Intent(this, CaptureService.class).setAction(action).putExtra(CaptureService.EXTRA_DIR, folders));
+    }
+
+    /** The merge page: a session, the others of the same sky it can be merged with, and Merge. */
+    private void showMergePage() {
+        page = PAGE_MERGE;
+        final LinearLayout col = pageColumn("Sessions");
+        col.addView(text("Merge nights", 26, RED, true));
+        col.addView(text("Sessions of the same patch of sky from the same place (centres within 5°, sites within 5 km), stacked "
+                + "as one photo: more minutes, less noise. Each night is lined up on the stars and keeps its own darks and "
+                + "sky; a night under a brighter or hazier sky counts for less. It takes about as long as developing them all.",
+                14, RED_DIM, false), gap(6));
+        final TextView wait = text("Reading the sessions…", 13, RED_DIM, false);
+        col.addView(wait, gap(10));
+        final String baseFolder = mergeBase;
+        final String pick = mergePick;
+        readLibrary(PAGE_MERGE, new LibraryReady() {
+            @Override
+            public void ready(Library lib) {
+                col.removeView(wait);
+                final SessionLibrary.Entry base = baseFolder != null ? lib.get(baseFolder) : null;
+                if (base == null) {
+                    col.addView(text("That session isn't on the phone any more.", 15, RED_DIM, false), gap(12));
+                    return;
+                }
+                Master.Meta newest = base.newestMaster();
+                final List<SessionLibrary.Entry> cands = lib.mergeable(base.folder(), newest != null ? newest.sessions : null);
+                col.addView(label("Into"), gap(16));
+                col.addView(mergeRow(base, lib, null), gap(6));
+                if (cands.isEmpty()) {
+                    col.addView(text("No other session of this sky is kept with its frames. Tap Repeat tomorrow on the photo's "
+                            + "screen: the same stars come back to the same place 3 min 56 s earlier each night, and the app offers "
+                            + "to merge the two.", 14, RED_DIM, false), gap(14));
+                    return;
+                }
+                col.addView(label("With"), gap(18));
+                final List<CheckBox> boxes = new ArrayList<CheckBox>();
+                final Button go = button("", true);
+                final Runnable count = new Runnable() {
+                    @Override
+                    public void run() {
+                        int n = 1;
+                        for (CheckBox b : boxes) if (b.isChecked()) n++;
+                        go.setText(n < 2 ? "Pick a session to merge" : "Merge " + n + " sessions");
+                        go.setEnabled(n >= 2);
+                    }
+                };
+                for (SessionLibrary.Entry e : cands) {
+                    CheckBox cb = new CheckBox(MainActivity.this);
+                    cb.setButtonTintList(ColorStateList.valueOf(RED));
+                    cb.setChecked(pick == null || pick.equals(e.folder()));
+                    cb.setTag(e.folder());
+                    cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                        @Override
+                        public void onCheckedChanged(CompoundButton b, boolean on) {
+                            count.run();
+                        }
+                    });
+                    boxes.add(cb);
+                    col.addView(mergeRow(e, lib, cb), gap(6));
+                }
+                go.setTextSize(18);
+                go.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        List<String> folders = new ArrayList<String>();
+                        folders.add(base.folder());
+                        for (CheckBox b : boxes) if (b.isChecked()) folders.add((String) b.getTag());
+                        if (folders.size() < 2) return;
+                        // back on the sessions page once the merged photo is closed
+                        page = PAGE_SESSIONS;
+                        jobOnSession(CaptureService.ACTION_MERGE, TextUtils.join("|", folders));
+                    }
+                });
+                count.run();
+                col.addView(go, gap(18));
+                col.addView(text("The merged photo is saved as a new photo; the sessions and their own photos stay as they are. "
+                        + "Minutes added to a session come along with it.", 13, RED_DIM, false), gap(8));
+            }
+        });
+    }
+
+    /** A session on the merge page: its picture, when, how long and how far from the base; a tick box to include it. */
+    private LinearLayout mergeRow(SessionLibrary.Entry e, Library lib, CheckBox box) {
+        LinearLayout c = card();
+        c.setPadding(dp(10), dp(8), dp(12), dp(8));
+        LinearLayout r = row();
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        if (box != null) r.addView(box);
+        Bitmap thumb = lib.thumbs.get(e.folder());
+        if (thumb != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(thumb);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(72), dp(54));
+            lp.rightMargin = dp(10);
+            r.addView(iv, lp);
+        }
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        int minutes = Math.round(e.durationSec / 60f);
+        for (SessionLibrary.Entry a : SessionLibrary.continuations(e, lib.all)) minutes += Math.round(a.durationSec / 60f);
+        words.addView(text(when(e), 15, RED, true));
+        String apart = "";
+        SessionLibrary.Entry base = mergeBase != null ? lib.get(mergeBase) : null;
+        if (box != null && base != null && base.centre != null && e.centre != null) {
+            double d = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, base.centre[0] * e.centre[0] + base.centre[1] * e.centre[1]
+                    + base.centre[2] * e.centre[2]))));
+            apart = String.format(Locale.US, " · %.1f° from it", d);
+        }
+        words.addView(text(minutes + " min" + apart + (e.summary.isEmpty() ? "" : " · " + e.summary), 12, RED_DIM, false), gap(2));
+        r.addView(words, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        c.addView(r);
+        if (box != null) {
+            final CheckBox b = box;
+            c.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    b.setChecked(!b.isChecked());
+                }
+            });
+        }
+        return c;
+    }
+
+    /** The sessions merged into a photo: their minutes, how each was lined up and matched, and where they overlap. */
+    private void addMergeSection(LinearLayout col, MergeProcessor.Result m) {
+        col.addView(label(m.added ? "The session and the minutes added" : "Nights merged"), gap(18));
+        if (!m.total.isEmpty()) col.addView(text(m.total, 16, RED, true), gap(6));
+        Bitmap cover = coverageBitmap(m, getResources().getDisplayMetrics().widthPixels - dp(40));
+        if (cover != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(cover);
+            iv.setAdjustViewBounds(true);
+            iv.setMaxHeight(dp(220));
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            iv.setContentDescription("Coverage map");
+            col.addView(iv, gap(8));
+            col.addView(text(coverageWords(m), 13, RED_DIM, false), gap(4));
+        }
+        int k = 0;
+        for (MergeProcessor.Part p : m.parts) {
+            LinearLayout c = card();
+            String name = p.label.isEmpty() ? "Session " + p.id : Character.toUpperCase(p.label.charAt(0)) + p.label.substring(1);
+            c.addView(text(name, 15, RED, true));
+            if (p.skipped != null) {
+                c.addView(text("Left out: " + p.skipped, 13, RED_DIM, false), gap(2));
+            } else {
+                c.addView(text(String.format(Locale.US, "%d of %d frames, %s", p.framesUsed, p.framesTotal, minutesWords(p.seconds)),
+                        13, RED_DIM, false), gap(2));
+                if (k == 0) {
+                    c.addView(text("The others are lined up on this one.", 13, RED_DIM, false), gap(2));
+                } else {
+                    if (p.matched > 0) {
+                        c.addView(text(String.format(Locale.US, "Lined up on %d stars both share (%.1f px apart on average)", p.matched,
+                                Double.isNaN(p.rms) ? 0 : p.rms), 13, RED_DIM, false), gap(2));
+                    }
+                    c.addView(text(p.photometryStars > 0
+                            ? String.format(Locale.US, "Its starlight: %.0f%% of the first's, from %d stars", 100 * p.signal, p.photometryStars)
+                            : "Too few shared stars to compare the starlight: taken as equal", 13, RED_DIM, false), gap(2));
+                }
+            }
+            col.addView(c, gap(8));
+            k++;
+        }
+    }
+
+    private static String minutesWords(double seconds) {
+        long m = Math.round(seconds / 60);
+        return m >= 1 ? m + " min" : Math.round(seconds) + " s";
+    }
+
+    /** "All 3 nights cover 86% of the frame; the edges have fewer." */
+    private static String coverageWords(MergeProcessor.Result m) {
+        int merged = 0;
+        for (MergeProcessor.Part p : m.parts) if (p.skipped == null) merged++;
+        int all = 0;
+        for (byte b : m.coverage) if ((b & 0xFF) >= Math.min(9, merged)) all++;
+        int pct = (int) Math.round(100.0 * all / Math.max(1, m.coverage.length));
+        String who = m.added ? "all " + merged + " parts" : m.nights > 1 && m.nights == merged ? "all " + merged + " nights" : "all " + merged + " sessions";
+        return "Brighter where more of them overlap: " + who + " cover " + pct + "% of the frame"
+                + (pct < 100 ? ", the edges have fewer, so they're a little noisier." : ".");
+    }
+
+    /** The coverage map, cells scaled up to about {@code targetW} pixels across: dark red for one session, brighter for more. */
+    private static Bitmap coverageBitmap(MergeProcessor.Result m, int targetW) {
+        if (m.coverage == null || m.coverW <= 0 || m.coverH <= 0) return null;
+        int max = 1;
+        for (byte b : m.coverage) max = Math.max(max, b & 0xFF);
+        int s = Math.max(1, targetW / m.coverW), w = m.coverW * s, h = m.coverH * s;
+        int[] px = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            int row = (y / s) * m.coverW;
+            for (int x = 0; x < w; x++) {
+                int v = m.coverage[row + x / s] & 0xFF;
+                int c;
+                if (v == 0) {
+                    c = 0xFF0C0303;
+                } else {
+                    // dark red for one session up to a dim red for all: no glare at night
+                    float t = max <= 1 ? 1f : (v - 1) / (float) (max - 1);
+                    c = 0xFF000000 | Math.round(0x3A + t * (0xB3 - 0x3A)) << 16 | Math.round(0x0B + t * (0x33 - 0x0B)) << 8
+                            | Math.round(0x09 + t * (0x2C - 0x09));
+                }
+                px[y * w + x] = c;
+            }
+        }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+    }
+
+    /** A merge's details over the result screen (nights merged have no report card). */
+    private void showMergeInfo(MergeProcessor.Result m) {
+        if (m == null || reportOverlay != null) return;
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(BG);
+        ov.setClickable(true);
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        ov.addView(sv, match());
+        addMergeSection(col, m);
+        Button close = button("Close", true);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeReport();
+            }
+        });
+        col.addView(close, gap(20));
+        openOverlay(ov);
+    }
+
+    /** A smaller button for rows of two or three: one line, its text shrinking to fit if it must. */
+    private Button smallButton(String s, boolean primary) {
+        Button b = button(s, primary);
+        b.setTextSize(14);
+        b.setPadding(dp(6), dp(8), dp(6), dp(8));
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setMaxLines(1);
+        b.setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, TypedValue.COMPLEX_UNIT_SP);
+        return b;
+    }
+
+    /** Small buttons in rows: one row for up to three, else rows of two or three. */
+    private void layoutButtons(LinearLayout grid, List<Button> buttons) {
+        for (Button b : buttons) {
+            if (b.getParent() instanceof ViewGroup) ((ViewGroup) b.getParent()).removeView(b);
+        }
+        grid.removeAllViews();
+        int n = buttons.size(), per = n <= 3 ? n : n == 4 ? 2 : 3;
+        for (int i = 0; i < n; i += per) {
+            LinearLayout row = row();
+            for (int k = i; k < Math.min(n, i + per); k++) row.addView(buttons.get(k), weight());
+            grid.addView(row, gap(i == 0 ? 0 : 6));
+        }
+        grid.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * The result screen's smaller buttons (G1): five more minutes of the session (for half an hour after, while its
+     * frames are kept), {@code others} (tomorrow night, the cloud blur), merging it with other nights of the same sky
+     * (offered once found, by the night a "Repeat tomorrow" session repeats when that's one), and the sessions page.
+     */
+    private void addMoreRow(LinearLayout col, final SessionController.Result r, boolean fromLibrary, List<Button> others) {
+        final LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        final List<Button> buttons = new ArrayList<Button>();
+        if (r != null && service != null && service.controller().canAddAfter()) {
+            Button add = smallButton("Add 5 minutes", false);
+            add.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (service == null || !service.controller().canAddAfter()) {
+                        toastish("Minutes can be added only within half an hour, while the frames are kept");
+                        return;
+                    }
+                    toastish("Put the phone back as it was, screen-down: the 5 minutes are stacked with this photo");
+                    startSession(0, Launch.addTo(r.session));
+                }
+            });
+            buttons.add(add);
+        }
+        buttons.addAll(others);
+        if (!fromLibrary) {
+            Button lib = smallButton("Sessions", false);
+            lib.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    page = PAGE_SESSIONS;
+                    if (service != null) service.controller().clearResult();
+                }
+            });
+            buttons.add(lib);
+        }
+        col.addView(grid, gap(6));
+        layoutButtons(grid, buttons);
+        if (r == null || r.trails || r.session.isEmpty()) return;
+        // other nights of this sky, found off the main thread
+        final String folder = r.session;
+        final List<String> already = r.master != null ? new ArrayList<String>(r.master.sessions) : null;
+        final File sroot = SessionController.sessionsRoot(this);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                List<SessionLibrary.Entry> all = SessionLibrary.list(sroot);
+                SessionLibrary.Entry base = null;
+                for (SessionLibrary.Entry e : all) if (e.folder().equals(folder)) base = e;
+                if (base == null) return;
+                final List<SessionLibrary.Entry> c = new ArrayList<SessionLibrary.Entry>();
+                for (SessionLibrary.Entry e : SessionLibrary.mergeCandidates(base, all)) {
+                    if (already == null || !already.contains(e.id)) c.add(e);
+                }
+                if (c.isEmpty()) return;
+                SessionLibrary.Entry p = null;
+                for (SessionLibrary.Entry e : c) if (e.folder().equals(r.repeatOf)) p = e;
+                final SessionLibrary.Entry pick = p;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!grid.isAttachedToWindow()) return;
+                        SessionLibrary.Entry one = pick != null ? pick : c.size() == 1 ? c.get(0) : null;
+                        Button mb = smallButton(one != null && one.startMs > 0 ? "Merge with " + SessionController.nightLabel(one.startMs)
+                                : "Merge\u2026", false);
+                        mb.setOnClickListener(new View.OnClickListener() {
+                            @Override
+                            public void onClick(View v) {
+                                mergeBase = folder;
+                                mergePick = pick != null ? pick.folder() : null;
+                                page = PAGE_MERGE;
+                                if (service != null) service.controller().clearResult();
+                            }
+                        });
+                        // before the sessions button, after the rest
+                        int at = buttons.size() > 0 && !buttons.get(buttons.size() - 1).getText().toString().equals("Sessions")
+                                ? buttons.size() : Math.max(0, buttons.size() - 1);
+                        buttons.add(at, mb);
+                        layoutButtons(grid, buttons);
+                    }
+                });
+            }
+        }, "mergeable").start();
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Lists the sessions whose frames are still on the phone (never developed) with their size, and deletes
-     * those frames only if the person says yes.
+     * Lists the sessions whose frames are on the phone, never developed or kept after developing, with their size,
+     * and deletes those frames only if Brandon says yes (or opens the sessions page to choose).
      */
     private void offerCleanup() {
         SessionController.Phase ph = service != null ? service.controller().status().phase : null;
@@ -3641,30 +4392,60 @@ public final class MainActivity extends Activity {
             return;
         }
         final List<File> dirs = SessionController.unfinished(this);
-        if (dirs.isEmpty()) {
-            new AlertDialog.Builder(this).setMessage("No old session frames are left on the phone. To free space, "
+        final List<SessionLibrary.Entry> kept = new ArrayList<SessionLibrary.Entry>();
+        for (SessionLibrary.Entry e : SessionLibrary.list(SessionController.sessionsRoot(this))) {
+            if (e.developed() && e.hasFrames) kept.add(e);
+        }
+        if (dirs.isEmpty() && kept.isEmpty()) {
+            new AlertDialog.Builder(this).setMessage("No session frames are left on the phone. To free space, "
                     + "delete photos or videos you no longer need, or use Files > Clean.").setPositiveButton("OK", null).show();
             return;
         }
-        StringBuilder sb = new StringBuilder("These sessions were never developed, so their frames are still on the phone:\n\n");
+        StringBuilder sb = new StringBuilder();
         long total = 0;
-        for (File d : dirs) {
-            long b = SessionController.sizeOf(d);
-            total += b;
-            sb.append("• ").append(sessionName(d)).append(": ").append(SessionController.unitCount(d)).append(" frames, ")
-                    .append(String.format(Locale.US, "%.1f GB", b / 1e9)).append('\n');
+        if (!dirs.isEmpty()) {
+            sb.append("Never developed, so their frames are still on the phone:\n");
+            for (File d : dirs) {
+                long b = SessionController.sizeOf(d);
+                total += b;
+                sb.append("• ").append(sessionName(d)).append(": ").append(SessionController.unitCount(d)).append(" frames, ")
+                        .append(SessionLibrary.gb(b)).append('\n');
+            }
         }
-        sb.append(String.format(Locale.US, "\nDelete their frames to free %.1f GB? They can't be developed afterwards.", total / 1e9));
+        if (!kept.isEmpty()) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append("Developed, with their frames kept for merging and adding minutes:\n");
+            for (SessionLibrary.Entry e : kept) {
+                total += e.frameBytes;
+                sb.append("• ").append(when(e)).append(": ").append(SessionLibrary.gb(e.frameBytes)).append('\n');
+            }
+        }
+        sb.append("\nDelete all these frames to free ").append(SessionLibrary.gb(total)).append('?')
+                .append(dirs.isEmpty() ? "" : " Sessions never developed can't be developed afterwards.")
+                .append(kept.isEmpty() ? "" : " Developed sessions keep their photos.");
         new AlertDialog.Builder(this).setTitle("Free up space").setMessage(sb.toString())
                 .setPositiveButton("Delete the frames", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface di, int w) {
                         for (File d : dirs) SessionController.delete(d);
-                        toastish(String.format(Locale.US, "%.1f GB free now", freeBytes() / 1e9));
+                        for (SessionLibrary.Entry e : kept) {
+                            long b = e.frameBytes;
+                            e.store.deleteBulk();
+                            e.store.log("frames deleted by you to free space (" + SessionLibrary.gb(b) + "); the photos and masters stay");
+                        }
+                        toastish(SessionLibrary.gb(Math.max(0, freeBytes())) + " free now");
                         SessionController.Phase p = service != null ? service.controller().status().phase : null;
                         if (p == null || p == SessionController.Phase.IDLE) showHome();
                     }
-                }).setNegativeButton("Keep them", null).show();
+                })
+                .setNeutralButton("Choose…", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface di, int w) {
+                        SessionController.Phase p = service != null ? service.controller().status().phase : null;
+                        if (p == null || p == SessionController.Phase.IDLE) openPage(PAGE_SESSIONS);
+                    }
+                })
+                .setNegativeButton("Keep them", null).show();
     }
 
     /** "15 Oct, 21:30" from a session folder's name. */

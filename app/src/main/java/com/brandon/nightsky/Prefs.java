@@ -335,6 +335,34 @@ final class Prefs {
         sp.edit().putBoolean("keepSatellites", v).apply();
     }
 
+    /** Choices for {@link #keepFramesGb} (0: off). */
+    static final int[] KEEP_FRAMES_GB = {0, 5, 10, 20, 50, 100};
+
+    /**
+     * Gigabytes of developed sessions' frames kept so they can be edited and merged later (G1, G3); the oldest go
+     * first. 0 deletes a session's frames once its photo is saved, as before.
+     */
+    int keepFramesGb() {
+        return Math.max(0, sp.getInt("keepFramesGb", 20));
+    }
+
+    void setKeepFramesGb(int v) {
+        sp.edit().putInt("keepFramesGb", v).apply();
+    }
+
+    long keepFramesBytes() {
+        return keepFramesGb() * (1L << 30);
+    }
+
+    /** While capturing, the volume-up key (or a Bluetooth remote's button) adds 5 minutes (G1). */
+    boolean remoteKey() {
+        return sp.getBoolean("remoteKey", true);
+    }
+
+    void setRemoteKey(boolean v) {
+        sp.edit().putBoolean("remoteKey", v).apply();
+    }
+
     /** On the result: dashed satellite tracks, and names of stars, planets and constellations. */
     boolean showTracks() {
         return sp.getBoolean("showTracks", true);

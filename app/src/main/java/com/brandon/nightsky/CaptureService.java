@@ -12,6 +12,10 @@ import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Build;
+import android.media.AudioManager;
+import android.media.VolumeProvider;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -19,6 +23,8 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -42,12 +48,15 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_STOP_VIEWER = "com.brandon.nightsky.STOP_VIEWER";
     static final String ACTION_ARM_PLAN = "com.brandon.nightsky.ARM_PLAN";
     static final String ACTION_CANCEL_PLAN = "com.brandon.nightsky.CANCEL_PLAN";
+    /** A kept session's photo shown again (EXTRA_DIR: its folder's name), and sessions merged (folder names, "|" between; G1). */
+    static final String ACTION_OPEN = "com.brandon.nightsky.OPEN", ACTION_MERGE = "com.brandon.nightsky.MERGE";
     /**
      * A session starts on the saved settings; these change them for that session only: a preset's settings
      * (EXTRA_PRESET, its id), then a shortcut's own (EXTRA_TRAILS, EXTRA_DURATION, EXTRA_DNG).
      */
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_DNG = "dng", EXTRA_PRESET = "preset",
-            EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin";
+            EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin",
+            EXTRA_CONTINUE = "continue";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -138,7 +147,18 @@ public final class CaptureService extends Service implements SessionController.H
             Prefs prefs = new Prefs(this);
             String presetId = intent.getStringExtra(EXTRA_PRESET);
             SessionController.Settings s = Presets.session(prefs, presetId != null ? Presets.find(prefs, presetId) : null);
-            if (intent.hasExtra(EXTRA_TRAILS) || intent.hasExtra(EXTRA_DURATION) || intent.hasExtra(EXTRA_DNG)) {
+            String cont = intent.getStringExtra(EXTRA_CONTINUE);
+            if (cont != null) {
+                // "Add 5 minutes" after a session (G1): its settings, stacked with it when developed
+                try {
+                    s = SessionController.continuation(prefs, SessionController.sessionsRoot(this), cont,
+                            intent.getIntExtra(EXTRA_DURATION, 5 * 60));
+                } catch (IOException e) {
+                    android.util.Log.w("NightSky", "add minutes: " + e);
+                    return START_NOT_STICKY;
+                }
+            }
+            if (cont == null && (intent.hasExtra(EXTRA_TRAILS) || intent.hasExtra(EXTRA_DURATION) || intent.hasExtra(EXTRA_DNG))) {
                 // a shortcut's own settings: no longer a preset's, nor the saved ones
                 s.trails = intent.getBooleanExtra(EXTRA_TRAILS, s.trails);
                 s.durationSec = intent.getIntExtra(EXTRA_DURATION, s.durationSec);
@@ -154,7 +174,8 @@ public final class CaptureService extends Service implements SessionController.H
             s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
             s.readingOnly = intent.getBooleanExtra(EXTRA_READING, false);
             String origin = intent.getStringExtra(EXTRA_ORIGIN);
-            if (origin != null) s.origin = origin;
+            // minutes added keep their own origin (which session they add to)
+            if (origin != null && cont == null) s.origin = origin;
             keepingForViewer = false;
             if (!goForeground(true)) {
                 if (!plans.armed()) {
@@ -177,6 +198,23 @@ public final class CaptureService extends Service implements SessionController.H
             keepingForViewer = false;
             acquireLocks(false);
             controller.recover(new File(dir));
+        } else if (ACTION_OPEN.equals(a) || ACTION_MERGE.equals(a)) {
+            String dirs = intent.getStringExtra(EXTRA_DIR);
+            if (dirs == null || dirs.isEmpty() || !sessionOver()) return START_NOT_STICKY;
+            if (!goForeground(false)) {
+                if (!plans.armed()) stopSelf();
+                return START_NOT_STICKY;
+            }
+            keepingForViewer = false;
+            acquireLocks(false);
+            File root = SessionController.sessionsRoot(this);
+            if (ACTION_OPEN.equals(a)) {
+                controller.openSession(new File(root, dirs));
+            } else {
+                List<File> l = new ArrayList<File>();
+                for (String d : dirs.split("\\|")) if (!d.isEmpty()) l.add(new File(root, d));
+                controller.merge(l);
+            }
         } else if (ACTION_FINISH.equals(a)) {
             controller.finishNow();
         } else if (ACTION_CANCEL.equals(a)) {
@@ -424,6 +462,59 @@ public final class CaptureService extends Service implements SessionController.H
         return msg[0];
     }
 
+    /**
+     * "+5 minutes" from the viewer after a session ended (G1): 5 more minutes, stacked with the photo just made.
+     * Called from a viewer thread.
+     */
+    String addAfterFromViewer() {
+        final String[] msg = {"The phone did not answer"};
+        final CountDownLatch done = new CountDownLatch(1);
+        final AtomicBoolean claimed = new AtomicBoolean();
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!claimed.compareAndSet(false, true)) return;
+                try {
+                    SessionController.Status st = controller.status();
+                    if (!controller.canAddAfter() || st.result == null) {
+                        msg[0] = "Minutes can be added only to a deep-sky photo whose frames are kept, within half an hour";
+                        return;
+                    }
+                    if (!canArmFromViewer()) {
+                        msg[0] = "Open the app on the phone to add minutes";
+                        return;
+                    }
+                    SessionController.Settings s;
+                    try {
+                        s = SessionController.continuation(new Prefs(CaptureService.this), SessionController.sessionsRoot(CaptureService.this),
+                                st.result.session, 5 * 60);
+                    } catch (IOException e) {
+                        msg[0] = "That session can't be read: " + e.getMessage();
+                        return;
+                    }
+                    s.fromViewer = true;
+                    keepingForViewer = false;
+                    acquireLocks(true);
+                    controller.setRemoteWanted(true);
+                    controller.start(s);
+                    msg[0] = "Adding 5 minutes: put the phone back as it was, screen-down. They're stacked with the photo when done.";
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            if (!done.await(3, TimeUnit.SECONDS)) {
+                if (claimed.compareAndSet(false, true)) return "The phone is busy, try again";
+                done.await(10, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            claimed.set(true);
+        }
+        return msg[0];
+    }
+
     /** SSID, passphrase and WPA3-only flag of the viewer hotspot, or null if it is off. */
     String[] hotspotInfo() {
         String s = hotspotSsid, p = hotspotPass;
@@ -602,6 +693,16 @@ public final class CaptureService extends Service implements SessionController.H
     @Override
     public void onStatus(final SessionController.Status s) {
         long now = SystemClock.elapsedRealtime();
+        final boolean capturingNow = s.phase == SessionController.Phase.CAPTURING || s.phase == SessionController.Phase.PAUSED;
+        if (capturingNow != keysOn) {
+            keysOn = capturingNow;
+            main.post(new Runnable() {
+                @Override
+                public void run() {
+                    volumeKey(capturingNow);
+                }
+            });
+        }
         // the widget follows the session: getting ready, capturing (minutes left), developing
         int gs = glanceState(s.phase);
         long left = gs == 2 && s.remainingMs >= 0 ? Math.round(s.remainingMs / 60_000f) : -1;
@@ -620,6 +721,44 @@ public final class CaptureService extends Service implements SessionController.H
         if (ended && plans.armed() && !plans.running()) return;
         boolean capturing = s.phase.ordinal() <= SessionController.Phase.PAUSED.ordinal();
         nm.notify(NOTIF_ID, build(s.headline, s.detail, s.progress, capturing));
+    }
+
+    /** Whether the volume key is listened to (the session is capturing), as last told to {@link #volumeKey}. */
+    private volatile boolean keysOn;
+    private MediaSession keySession;
+
+    /**
+     * While capturing, the volume-up key (or a Bluetooth remote's button, which sends it) adds 5 minutes (G1), even
+     * with the screen locked: a media session that plays to a "remote" volume gets the volume keys. Volume down still
+     * turns the phone's voice down. Main thread.
+     */
+    private void volumeKey(boolean capturing) {
+        boolean want = capturing && new Prefs(this).remoteKey();
+        if (want == (keySession != null)) return;
+        if (!want) {
+            keySession.release();
+            keySession = null;
+            return;
+        }
+        try {
+            MediaSession ms = new MediaSession(this, "NightSkyKeys");
+            ms.setPlaybackToRemote(new VolumeProvider(VolumeProvider.VOLUME_CONTROL_RELATIVE, 100, 50) {
+                @Override
+                public void onAdjustVolume(int direction) {
+                    if (direction > 0) {
+                        controller.addTimeFromKey();
+                    } else if (direction < 0) {
+                        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+                        if (am != null) am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                    }
+                }
+            });
+            ms.setPlaybackState(new PlaybackState.Builder().setState(PlaybackState.STATE_PLAYING, 0, 0f).build());
+            ms.setActive(true);
+            keySession = ms;
+        } catch (RuntimeException e) {
+            android.util.Log.w("NightSky", "volume key: " + e);
+        }
     }
 
     @Override
@@ -740,6 +879,10 @@ public final class CaptureService extends Service implements SessionController.H
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        if (keySession != null) {
+            keySession.release();
+            keySession = null;
+        }
         stopRemote();
         releaseLocks();
         controller.shutdown();

@@ -1,5 +1,8 @@
 package com.brandon.nightsky.processing;
 
+import com.brandon.nightsky.remote.Json;
+import com.brandon.nightsky.remote.JsonTree;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -84,6 +87,84 @@ public final class MergeProcessor {
         public int sessions, nights;
         /** "47 minutes over 3 nights", "15 minutes in 2 sessions". */
         public String total = "";
+        /** Minutes added to one session ("Add 5 minutes"), rather than sessions merged in the library (set by the caller). */
+        public boolean added;
+    }
+
+    /**
+     * The parts, coverage and total of a merge as JSON, kept with its master so the sessions page can show them again
+     * (G1). The stack itself isn't in it.
+     */
+    public static String describe(Result r) {
+        Json j = new Json().obj();
+        j.put("total", r.total).put("sessions", r.sessions).put("nights", r.nights).put("added", r.added);
+        j.put("coverW", r.coverW).put("coverH", r.coverH);
+        if (r.coverage != null) {
+            // one digit a cell: sessions covering it, 9 meaning nine or more
+            StringBuilder c = new StringBuilder(r.coverage.length);
+            for (byte b : r.coverage) c.append((char) ('0' + Math.min(9, b & 0xFF)));
+            j.put("coverage", c.toString());
+        }
+        j.arr("parts");
+        for (Part p : r.parts) {
+            j.obj().put("id", p.id).put("label", p.label).put("startMs", p.startMs).put("framesTotal", p.framesTotal)
+                    .put("framesUsed", p.framesUsed).put("seconds", p.seconds, 9).put("signal", p.signal, 6)
+                    .put("photometryStars", p.photometryStars).put("matched", p.matched).put("rms", p.rms, 6)
+                    .put("solutionOffsetPx", p.solutionOffsetPx, 6);
+            if (p.skipped != null) j.put("skipped", p.skipped);
+            if (p.outline != null) {
+                j.arr("outline");
+                for (float v : p.outline) j.val(v, 7);
+                j.end();
+            }
+            j.end();
+        }
+        j.end();
+        return j.end().toString();
+    }
+
+    /** A merge described by {@link #describe}, without its stack; null if the text isn't one. */
+    public static Result readDescription(String json) {
+        if (json == null || json.isEmpty()) return null;
+        try {
+            JsonTree.Obj o = JsonTree.object(json);
+            Result r = new Result();
+            r.total = o.str("total", "");
+            r.sessions = o.integer("sessions", 0);
+            r.nights = o.integer("nights", 0);
+            r.added = o.bool("added", false);
+            r.coverW = o.integer("coverW", 0);
+            r.coverH = o.integer("coverH", 0);
+            String c = o.str("coverage", "");
+            if (r.coverW > 0 && r.coverH > 0 && c.length() == r.coverW * r.coverH) {
+                r.coverage = new byte[c.length()];
+                for (int i = 0; i < c.length(); i++) r.coverage[i] = (byte) Math.max(0, Math.min(9, c.charAt(i) - '0'));
+            }
+            for (JsonTree.Obj po : o.objs("parts")) {
+                Part p = new Part();
+                p.id = po.str("id", "");
+                p.label = po.str("label", "");
+                p.startMs = po.lng("startMs", 0);
+                p.framesTotal = po.integer("framesTotal", 0);
+                p.framesUsed = po.integer("framesUsed", 0);
+                p.seconds = po.num("seconds", 0);
+                p.signal = po.num("signal", 1);
+                p.photometryStars = po.integer("photometryStars", 0);
+                p.matched = po.integer("matched", 0);
+                p.rms = po.num("rms", Double.NaN);
+                p.solutionOffsetPx = po.num("solutionOffsetPx", Double.NaN);
+                p.skipped = po.has("skipped") ? po.str("skipped", null) : null;
+                double[] ol = po.nums("outline");
+                if (ol != null) {
+                    p.outline = new float[ol.length];
+                    for (int i = 0; i < ol.length; i++) p.outline[i] = (float) ol[i];
+                }
+                r.parts.add(p);
+            }
+            return r;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /** Cell size (pixels) of the coverage map. */
