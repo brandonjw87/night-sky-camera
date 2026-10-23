@@ -11,8 +11,11 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.Paint;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -26,6 +29,7 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -44,6 +48,7 @@ import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.brandon.nightsky.processing.FocusModel;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
@@ -116,10 +121,14 @@ public final class MainActivity extends Activity {
     private static long lastOutlookMs;
     private Boolean windowActive;
 
-    // the idle screen's pages: home, tonight's plan, a session being added, last night's summary, the saved sites
-    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4;
-    /** Asking for a settings file to load, and for the location on the sites page. */
-    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8;
+    // the idle screen's pages: home, tonight's plan, a session being added, last night's summary, the saved sites,
+    // the daylight focus calibration
+    private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4, PAGE_FOCUS = 5;
+    /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate. */
+    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9;
+    /** The daylight focus calibration's camera while its page shows (null otherwise); the camera sessions use. */
+    private FocusCalibrator calibrator;
+    private static String focusCamera;
     /** The home screen's scroll view, and its presets card (filled again when a setting changes). */
     private ScrollView homeScroll;
     private LinearLayout presetBox;
@@ -284,6 +293,7 @@ public final class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         visible = false;
+        stopCalibrator();
         // the screen was turned on for the tile once; not again
         setTurnScreenOn(false);
         // settings or the plan may have changed: the widget and the shortcuts follow
@@ -377,6 +387,7 @@ public final class MainActivity extends Activity {
             case STARTING:
             case PLACE:
             case STEADY:
+            case FOCUS:
             case PREFLIGHT:
             case COUNTDOWN: return 1;
             case CAPTURING:
@@ -422,6 +433,7 @@ public final class MainActivity extends Activity {
         shownViewer = null;
         satBox = null;
         setQrBright(false);
+        stopCalibrator();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -442,6 +454,9 @@ public final class MainActivity extends Activity {
                 break;
             case PAGE_SITES:
                 showSites();
+                break;
+            case PAGE_FOCUS:
+                showFocus();
                 break;
             default:
                 showHomePage();
@@ -835,6 +850,28 @@ public final class MainActivity extends Activity {
         box.addView(r2, gap(6));
         box.addView(help, gap(6));
 
+        // focusing on the stars (A5) and the daylight calibration (F7)
+        box.addView(label("Focus"), gap(20));
+        CheckBox fa = check("Focus on the stars before each session (about 30 seconds of short frames), and check the focus "
+                + "during sessions of half an hour or more", prefs.focusAssist());
+        fa.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setFocusAssist(on);
+            }
+        });
+        box.addView(fa, gap(6));
+        box.addView(text(focusModelWords(), 13, RED_DIM, false), gap(2));
+        Button cal = button("Daylight focus calibration", false);
+        cal.setTextSize(15);
+        cal.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPage(PAGE_FOCUS);
+            }
+        });
+        box.addView(cal, gap(6));
+
         // satellites: the orbital data, and whether their streaks stay
         box.addView(label("Satellites"), gap(20));
         final TextView status = text(Satellites.data(this).status(System.currentTimeMillis()), 13, RED_DIM, false);
@@ -1177,6 +1214,13 @@ public final class MainActivity extends Activity {
         if (code == 5) {
             // location for tonight's sky
             if (screenOf(shownPhase) == 0 || shownPhase == null) showHome();
+            return;
+        }
+        if (code == REQ_FOCUS_CAMERA) {
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                toastish("The calibration needs the camera: allow it in Settings > Apps > Night Sky > Permissions");
+            }
+            if (page == PAGE_FOCUS && screenOf(shownPhase) <= 0) showFocus();
             return;
         }
         if (code == REQ_SITES_LOCATION) {
@@ -3055,6 +3099,221 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("Cancel", null);
         if (message != null) b.setMessage(message);
         b.show();
+    }
+
+    /** The camera sessions use (and the calibration calibrates), looked up once; null if there is none. */
+    private String focusCameraId() {
+        if (focusCamera == null) focusCamera = FocusCalibrator.cameraOf(this);
+        return focusCamera;
+    }
+
+    /** What's known about the focus, for the Advanced settings. */
+    private String focusModelWords() {
+        String id = focusCameraId();
+        if (id == null) return "";
+        return FocusModel.parse(prefs.focusModel(id)).describe(BatteryInfo.read(this).tempC);
+    }
+
+    private void stopCalibrator() {
+        if (calibrator == null) return;
+        calibrator.stop();
+        calibrator = null;
+    }
+
+    /**
+     * The daylight focus calibration (F7): the camera's picture with a box for the far target, Calibrate, and the
+     * calibrations so far (each removable).
+     */
+    private void showFocus() {
+        page = PAGE_FOCUS;
+        LinearLayout col = pageColumn("Home");
+        col.addView(text("Daylight focus calibration", 26, RED, true));
+        col.addView(text("At night the app finds the focus on the stars by itself. A lens's focus moves a little as it warms and "
+                + "cools, so a few calibrations in daylight, at different temperatures, let it predict the night's focus and find "
+                + "it in fewer frames.", 14, RED_DIM, false), gap(6));
+        col.addView(text("1. Leave the phone outside in the shade for ten minutes, so it is at the air's temperature.\n"
+                + "2. Prop it so the back camera looks at something at least 500 m away with sharp edges (a far building, a "
+                + "tower, a ridge, trees on a distant hill), inside the box.\n"
+                + "3. Tap Calibrate and keep the phone still for about 15 seconds.\n"
+                + "Three calibrations at temperatures at least 5 \u00B0C apart, such as a cool morning and a warm afternoon, make "
+                + "the line that predicts the focus.", 14, RED, false), gap(10));
+        final TextView state = text("", 15, RED, true);
+        final TextView detail = text("", 13, RED_DIM, false);
+        final TextView outcome = text("", 14, RED, false);
+        final Button go = button("Calibrate", true);
+        final LinearLayout points = new LinearLayout(this);
+        points.setOrientation(LinearLayout.VERTICAL);
+        go.setEnabled(false);
+        boolean busy = service != null && screenOf(service.controller().status().phase) > 0
+                && screenOf(service.controller().status().phase) < 4;
+        if (busy) {
+            state.setText("Not while a session is running");
+        } else if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            state.setText("The calibration needs the camera");
+            Button allow = button("Allow the camera", false);
+            allow.setTextSize(15);
+            allow.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_FOCUS_CAMERA);
+                }
+            });
+            col.addView(allow, gap(10));
+        } else {
+            // the picture, 3:4 as the phone holds it, with the middle third (the part scored) boxed
+            int w = getResources().getDisplayMetrics().widthPixels - dp(40);
+            int hgt = w * 4 / 3, maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.55);
+            if (hgt > maxH) {
+                hgt = maxH;
+                w = hgt * 3 / 4;
+            }
+            FrameLayout frame = new FrameLayout(this);
+            TextureView tv = new TextureView(this);
+            frame.addView(tv, match());
+            final Paint paint = new Paint();
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(2));
+            paint.setColor(RED);
+            View box = new View(this) {
+                @Override
+                protected void onDraw(Canvas c) {
+                    float bw = getWidth() / 3f, bh = getHeight() / 3f;
+                    c.drawRect(bw, bh, 2 * bw, 2 * bh, paint);
+                }
+            };
+            frame.addView(box, match());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, hgt);
+            lp.topMargin = dp(12);
+            lp.gravity = Gravity.CENTER_HORIZONTAL;
+            col.addView(frame, lp);
+            tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                /** The calibrator showing on this view (a view on its way out mustn't stop the next one's). */
+                FocusCalibrator mine;
+
+                @Override
+                public void onSurfaceTextureAvailable(SurfaceTexture st, int vw, int vh) {
+                    stopCalibrator();
+                    mine = calibrator = new FocusCalibrator(MainActivity.this, prefs, main, new FocusCalibrator.Listener() {
+                        @Override
+                        public void onState(String head, String text) {
+                            state.setText(head);
+                            detail.setText(text);
+                            go.setEnabled(!head.startsWith("Calibrating"));
+                        }
+
+                        @Override
+                        public void onDone(boolean ok, String text) {
+                            state.setText(ok ? "Calibrated" : "Not calibrated");
+                            detail.setText("");
+                            outcome.setText(text);
+                            go.setEnabled(true);
+                            go.setText("Calibrate again");
+                            if (ok) fillFocusPoints(points);
+                        }
+
+                        @Override
+                        public void onError(String text) {
+                            state.setText("The camera isn't available");
+                            detail.setText(text);
+                            go.setEnabled(false);
+                        }
+                    });
+                    String err = calibrator.start(st);
+                    if (err != null) {
+                        stopCalibrator();
+                        state.setText("The camera isn't available");
+                        detail.setText(err);
+                    }
+                }
+
+                @Override
+                public void onSurfaceTextureSizeChanged(SurfaceTexture st, int vw, int vh) {
+                }
+
+                @Override
+                public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+                    if (mine != null && mine == calibrator) stopCalibrator();
+                    else if (mine != null) mine.stop();
+                    mine = null;
+                    return true;
+                }
+
+                @Override
+                public void onSurfaceTextureUpdated(SurfaceTexture st) {
+                }
+            });
+            go.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (calibrator == null) return;
+                    go.setEnabled(false);
+                    outcome.setText("");
+                    calibrator.calibrate();
+                }
+            });
+            col.addView(go, gap(10));
+        }
+        col.addView(state, gap(10));
+        col.addView(detail, gap(2));
+        col.addView(outcome, gap(8));
+        col.addView(points, gap(16));
+        fillFocusPoints(points);
+    }
+
+    /** What the calibrations and the nights have found, newest first; a daylight one can be removed. */
+    private void fillFocusPoints(final LinearLayout box) {
+        box.removeAllViews();
+        final String id = focusCameraId();
+        if (id == null) return;
+        final FocusModel m = FocusModel.parse(prefs.focusModel(id));
+        box.addView(text(m.describe(BatteryInfo.read(this).tempC), 13, RED_DIM, false));
+        if (!m.day.isEmpty()) {
+            box.addView(label("Daylight calibrations"), gap(14));
+            for (int i = m.day.size() - 1; i >= 0; i--) {
+                final FocusModel.Cal c = m.day.get(i);
+                LinearLayout r = row();
+                r.setGravity(Gravity.CENTER_VERTICAL);
+                r.addView(text(String.format(Locale.US, "%.3f at %s, %s%s", c.focus, Double.isNaN(c.tempC) ? "an unknown temperature"
+                                : String.format(Locale.US, "%.0f \u00B0C", c.tempC), FocusModel.ago(c.timeMs),
+                        Double.isNaN(c.contrast) ? "" : String.format(Locale.US, " (sharpness x%.1f)", c.contrast)), 14, RED, false),
+                        new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                Button rm = button("Remove", false);
+                rm.setTextSize(13);
+                rm.setPadding(dp(10), dp(6), dp(10), dp(6));
+                rm.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        confirm("Remove this calibration? Use this for one made with the target too close or the phone moving.",
+                                new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        FocusModel now = FocusModel.parse(prefs.focusModel(id));
+                                        for (int k = 0; k < now.day.size(); k++) {
+                                            FocusModel.Cal x = now.day.get(k);
+                                            if (x.timeMs == c.timeMs && Math.abs(x.focus - c.focus) < 1e-6) {
+                                                now.day.remove(k);
+                                                break;
+                                            }
+                                        }
+                                        prefs.setFocusModel(id, now.encode());
+                                        fillFocusPoints(box);
+                                    }
+                                });
+                    }
+                });
+                r.addView(rm);
+                box.addView(r, gap(6));
+            }
+        }
+        if (!m.night.isEmpty()) {
+            box.addView(label("Found on the stars"), gap(14));
+            for (int i = m.night.size() - 1, k = 0; i >= 0 && k < 6; i--, k++) {
+                FocusModel.Cal c = m.night.get(i);
+                box.addView(text(String.format(Locale.US, "%.3f at %s, %s%s", c.focus, Double.isNaN(c.tempC) ? "an unknown temperature"
+                                : String.format(Locale.US, "%.0f \u00B0C", c.tempC), FocusModel.ago(c.timeMs),
+                        Double.isNaN(c.hfr) ? "" : String.format(Locale.US, ", stars %.1f px across", 2 * c.hfr)), 14, RED, false), gap(4));
+            }
+        }
     }
 
     /** The saved sites: save this place, and each site's preset, name and what it has learned. */

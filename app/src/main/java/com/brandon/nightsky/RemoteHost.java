@@ -305,6 +305,8 @@ final class RemoteHost implements RemoteServer.Backend {
             case PLACE:
             case STEADY:
                 return "arming";
+            case FOCUS:
+                return "focusing";
             case PREFLIGHT:
                 return "checking";
             case COUNTDOWN:

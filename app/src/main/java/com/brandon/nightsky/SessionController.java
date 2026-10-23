@@ -22,6 +22,10 @@ import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
+import com.brandon.nightsky.processing.FocusMeter;
+import com.brandon.nightsky.processing.FocusModel;
+import com.brandon.nightsky.processing.FocusSweep;
+import com.brandon.nightsky.processing.FocusWatch;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PostProcessor;
@@ -42,6 +46,7 @@ import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.SkyReading;
+import com.brandon.nightsky.processing.Stats;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
@@ -71,6 +76,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * One night-sky session from start to finish:
  * <ol>
  * <li>open the camera and wait until the phone lies screen-down and perfectly still,</li>
+ * <li>focus on the stars (A5): a few short frames at focus settings near infinity, the stars' size measured in
+ * each and the sharpest setting fitted, centred on what the daylight calibration predicts for the phone's
+ * temperature (F7), or a two-frame check of the focus found last time,</li>
  * <li>check the sky ({@link Preflight}): a short probe measures the sky brightness and reads the lens shading
  * map, a test frame at the session's settings is read for a smudged lens, obstructions, clouds, the Sun and
  * the Moon, and one spoken sentence says what it found; after a warning there is time to pick the phone up
@@ -85,7 +93,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Everything except developing runs on one thread, the camera's callbacks included.
  */
 final class SessionController {
-    enum Phase { IDLE, STARTING, PLACE, STEADY, PREFLIGHT, COUNTDOWN, CAPTURING, PAUSED, FINISHING, DEVELOPING, DONE, FAILED }
+    enum Phase { IDLE, STARTING, PLACE, STEADY, FOCUS, PREFLIGHT, COUNTDOWN, CAPTURING, PAUSED, FINISHING, DEVELOPING, DONE, FAILED }
 
     static final class Settings {
         boolean trails;
@@ -219,7 +227,7 @@ final class SessionController {
         void onIdle();
     }
 
-    private static final int PROBE = 1, FRAME = 2, TEST = 3;
+    private static final int PROBE = 1, FRAME = 2, TEST = 3, FOCUS = 4, FOCUS_CHECK = 5;
     private static final long STILL_NS = 3_000_000_000L;
     /** Stillness needed after "Start now" from the viewer (the phone need not be face-down). */
     private static final long FORCED_STILL_NS = 1_000_000_000L;
@@ -236,10 +244,14 @@ final class SessionController {
     private static final long GRACE_MS = 10_000L;
     /** Pre-flight steps: waiting for the probe, the test frame, reading it, speaking, waiting after a warning. */
     private static final int PF_PROBE = 1, PF_TEST = 2, PF_READ = 3, PF_SPEAK = 4, PF_GRACE = 5, PF_WAIT = 6;
+    /** Longest the focus step may take before the session goes on with the best so far (ms). */
+    private static final long FOCUS_MAX_MS = 60_000L;
 
     private static final class Req {
         final int seq, kind;
         final long expNs;
+        /** The focus asked for (focus frames). */
+        float focus = Float.NaN;
         long startNs = -1;
         short[] buf;
         TotalCaptureResult result;
@@ -307,6 +319,34 @@ final class SessionController {
     private boolean startedAfterWarnings, storageShort;
     /** A sky reading's frames so far, and the reading made from them (null if none). */
     private final List<Preflight.Report> readingReports = new ArrayList<Preflight.Report>();
+
+    // focus on the stars (A5) and what the daylight calibration (F7) knows
+    /** The lens's focus control (null: a fixed-focus lens), where it has focused before, and tonight's sweep. */
+    private FocusSweep.Lens lens;
+    private FocusModel focusModel;
+    private FocusSweep sweep;
+    private Req focusReq;
+    private short[] focusBuf;
+    private int focusToken, focusRetries, focusPointTries;
+    private long focusStartMs, focusSentMs;
+    private boolean focusMeasuring, focusDone;
+    /** The focus the capture uses, how it was chosen (for the report), and the battery's temperature then. */
+    private float focusValue;
+    private String focusHow = "";
+    private double focusTempC = Double.NaN, focusPredicted = Double.NaN;
+    private FocusSweep.Result focusResult;
+    /** The focus decisions made before the session folder exists, for its log. */
+    private String focusLog = "";
+    /** Long sessions (F7): the stars' size watched, a two-frame check between frames when they swell steadily. */
+    private final FocusWatch focusWatch = new FocusWatch();
+    private boolean focusCheckDue;
+    private String focusCheckWhy = "", focusHaze = "", focusChecks = "";
+    /** 0: no check running; 1: the frame below the focus is out; 2: the one above. */
+    private int focusCheckStep;
+    private Req checkReq;
+    private short[] checkBuf;
+    private long checkSentMs, focusCheckDueMs;
+    private double checkLowF, checkLowH, checkLowN;
     private SkyReading reading;
     /** How the last session or attempt ended, for the plan (null while one runs). */
     private NightPlan.Outcome outcome;
@@ -666,6 +706,7 @@ final class SessionController {
                     case STARTING:
                     case PLACE:
                     case STEADY:
+                    case FOCUS:
                     case PREFLIGHT:
                     case COUNTDOWN:
                         forced = true;
@@ -843,6 +884,11 @@ final class SessionController {
             if (realtimeClock) setClock(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos());
             plan = ExposurePlan.make(spec.model.fx, place != null ? place.latDeg : ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
                     prefs.verifiedExposureNs(cameraId), prefs.clampDeliveredNs(cameraId), isoStart, isoMin, spec.white);
+            // the focus to start from: tonight's sweep, if there is one, refines it
+            lens = focusLens(cc, spec);
+            focusModel = FocusModel.parse(prefs.focusModel(cameraId));
+            focusTempC = BatteryInfo.read(ctx).tempC;
+            focusValue = initialFocus();
             // a reading keeps no frames
             String space = s.readingOnly ? null : checkSpace();
             if (space != null && s.scheduled) {
@@ -885,6 +931,7 @@ final class SessionController {
             // a recent fix that finds a saved site settles it straight away (else the fresh fix will)
             if (place != null && place.ageMinutes() <= SITE_FRESH_MIN) checkSite("at the start", false);
             rig = new CameraRig(ctx, h, rigListener);
+            rig.setFocus(focusValue);
             rig.open(cameraId, cc, rawSize);
         } catch (CameraAccessException | SecurityException e) {
             fail("Could not open the camera: " + e.getMessage());
@@ -894,6 +941,39 @@ final class SessionController {
             return;
         }
         scheduleTick();
+    }
+
+    /** The lens's focus control, or null for a lens with a fixed focus (also the daylight calibration's). */
+    static FocusSweep.Lens focusLens(CameraCharacteristics c, SensorSpec sp) {
+        Float mf = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+        if (mf == null || mf <= 0) return null;
+        Float hyper = c.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+        Integer cal = c.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
+        boolean calibrated = cal != null && cal != CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED;
+        return FocusSweep.Lens.of(mf, hyper != null ? hyper : 0, calibrated, sp.focalLengthMm, sp.fNumber, sp.pixelPitchUm);
+    }
+
+    /**
+     * The focus to start with, before or without a sweep: what the daylight calibration predicts for the
+     * phone's temperature, else the focus found on the stars last time, else the lens's own infinity (0).
+     */
+    private float initialFocus() {
+        if (lens == null) {
+            focusHow = "fixed";
+            return 0f;
+        }
+        FocusModel.Line l = focusModel.line();
+        if (l != null && !Double.isNaN(focusTempC)) {
+            focusHow = "predicted";
+            return (float) Stats.clamp(l.predict(focusTempC), 0, lens.max + 2 * lens.fine);
+        }
+        FocusModel.Cal last = focusModel.lastNight();
+        if (last != null) {
+            focusHow = "saved";
+            return (float) last.focus;
+        }
+        focusHow = "infinity";
+        return 0f;
     }
 
     /**
@@ -1016,6 +1096,24 @@ final class SessionController {
         testReq = null;
         testBuf = null;
         testRetries = 0;
+        focusToken++;
+        sweep = null;
+        focusReq = null;
+        focusBuf = null;
+        focusRetries = 0;
+        focusPointTries = 0;
+        focusMeasuring = false;
+        focusDone = false;
+        focusResult = null;
+        focusPredicted = Double.NaN;
+        focusLog = "";
+        focusCheckDue = false;
+        focusCheckWhy = "";
+        focusHaze = "";
+        focusChecks = "";
+        focusCheckStep = 0;
+        checkReq = null;
+        checkBuf = null;
         preflightReport = null;
         readingReports.clear();
         reading = null;
@@ -1086,10 +1184,38 @@ final class SessionController {
                     placeSinceMs = 0;
                     // the settings are used from here on: the saved site, with whatever place there is
                     checkSite("when the phone was put down", true);
-                    if (settings.readingOnly || (settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
-                    else proceed(now);
+                    if (wantsFocus()) startFocus(now);
+                    else afterSteady(now);
                 } else if (settings.scheduled) {
                     placeWait(now);
+                }
+                break;
+            case FOCUS:
+                if (forced) {
+                    stopFocus(now, "start now from the viewer");
+                    break;
+                }
+                if (!motion.faceDown() || motion.rate() > 0.15f) {
+                    // picked up: focus again once it is back down
+                    abandonFocus();
+                    phase = motion.faceDown() ? Phase.STEADY : Phase.PLACE;
+                    if (phase == Phase.PLACE) publishPlace();
+                    else publish("Hold still", "Focusing once the phone is still", -1);
+                    return;
+                }
+                if (!probeDone && probeSent && now - probeSentMs > 12000) {
+                    log("test frame timed out");
+                    forgetProbe();
+                    probeDone = true;
+                }
+                if (now - focusStartMs > FOCUS_MAX_MS) {
+                    stopFocus(now, "it was taking too long");
+                } else if (focusReq != null && now - focusSentMs > focusReq.expNs / 1_000_000L + 10_000L) {
+                    forgetFocus();
+                    if (++focusRetries <= 2) sendFocus(now);
+                    else stopFocus(now, "the focus frames stopped coming");
+                } else if (probeDone && focusReq == null && !focusMeasuring) {
+                    sendFocus(now);
                 }
                 break;
             case PREFLIGHT:
@@ -1179,6 +1305,14 @@ final class SessionController {
                     watchdog();
                 } else if (now - captureStartMs - pausedTotalMs > settings.durationSec * 2000L + 120000L) {
                     finishCapture("it was taking far longer than planned");
+                }
+                if (phase == Phase.CAPTURING && focusCheckStep != 0 && checkReq != null
+                        && now - checkSentMs > checkReq.expNs / 1_000_000L + 10_000L) {
+                    cancelFocusCheck("a check frame never came back");
+                    submitNext();
+                } else if (phase == Phase.CAPTURING && focusCheckDue && focusCheckStep == 0 && inFlight == 0) {
+                    // waiting for a free buffer to check the focus with
+                    submitNext();
                 }
                 if (phase == Phase.CAPTURING && now - lastPublishMs >= 1000) publishCapture();
                 noteThermal(now);
@@ -1574,6 +1708,11 @@ final class SessionController {
     /** The test frame: the session's ISO and frame length (at most 8 s), so it sees what the session will. */
     private void sendTest(long now) {
         long exp = Math.min(plan.frameExpNs, TEST_MAX_NS);
+        if (testBuf == null && focusBuf != null) {
+            // the focus step is over: its frame's memory does for the test frame
+            testBuf = focusBuf;
+            focusBuf = null;
+        }
         if (testBuf == null) {
             try {
                 testBuf = new short[spec.width * spec.height];
@@ -1783,6 +1922,488 @@ final class SessionController {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // Focus on the stars (A5), centred by the daylight calibration (F7), and checked in long sessions
+    // ------------------------------------------------------------------------------------------------
+
+    /** Once the phone is still (and focused): the check of the sky, or straight on to the countdown. */
+    private void afterSteady(long now) {
+        if (settings.readingOnly || (settings.preflight || settings.onlyIfClear) && !forced) startPreflight(now);
+        else proceed(now);
+    }
+
+    /**
+     * Whether to focus on the stars now: once a session, and not for a sky reading (the sky's brightness doesn't
+     * need sharp stars), a lens with a fixed focus, with it turned off in the settings, or after "Start now" from
+     * the viewer. Without a sweep the session keeps the focus it opened with (predicted, saved or the lens's own
+     * infinity), and the log says why.
+     */
+    private boolean wantsFocus() {
+        if (focusDone || settings.readingOnly) return false;
+        String why = null;
+        if (lens == null) why = "the lens has a fixed focus";
+        else if (!prefs.focusAssist()) why = "focusing on the stars is off in the settings";
+        else if (forced) why = "start now from the viewer";
+        if (why == null) return true;
+        focusDone = true;
+        noteFocus(String.format(Locale.US, "decision: focus %.3f (%s), not swept: %s", focusValue, howWords(focusHow), why));
+        return false;
+    }
+
+    /** A focus decision: for the session's log (written once its folder exists) and the system log now. */
+    private void noteFocus(String line) {
+        focusLog += line + "\n";
+        android.util.Log.i("NightSky", line);
+    }
+
+    private void startFocus(long now) {
+        phase = Phase.FOCUS;
+        focusToken++;
+        focusReq = null;
+        focusRetries = 0;
+        focusPointTries = 0;
+        focusMeasuring = false;
+        focusStartMs = now;
+        // the phone has lain outside a while by now: its temperature now is the one the focus is for
+        float t = BatteryInfo.read(ctx).tempC;
+        if (!Float.isNaN(t)) focusTempC = t;
+        sweep = FocusSweep.night(lens, focusModel, focusTempC);
+        sweep.measureZero = true;
+        if (focusBuf == null) {
+            try {
+                focusBuf = new short[spec.width * spec.height];
+            } catch (OutOfMemoryError e) {
+                stopFocus(now, "not enough memory for the focus frames");
+                return;
+            }
+        }
+        publish("Focusing on the stars", focusWords(), -1);
+        if (!probeSent) sendProbe();
+    }
+
+    /** The next focus frame, or the result once the sweep has measured all it wants. */
+    private void sendFocus(long now) {
+        if (phase != Phase.FOCUS || sweep == null) return;
+        double f = sweep.next();
+        if (Double.isNaN(f)) {
+            finishFocus(now);
+            return;
+        }
+        long exp = focusExpNs();
+        int seq = ++seqCounter;
+        Req r = new Req(seq, FOCUS, exp);
+        r.focus = (float) f;
+        rig.setFocus(r.focus);
+        if (!rig.capture(seq, exp, focusIso(exp))) {
+            stopFocus(now, "the focus frames could not be taken");
+            return;
+        }
+        reqs.put(seq, r);
+        focusReq = r;
+        focusSentMs = now;
+        publish("Focusing on the stars", focusWords(), -1);
+    }
+
+    /** Short frames, so the sweep is quick: a quarter of the session's frame, from half a second to two seconds. */
+    private long focusExpNs() {
+        long exp = Math.max(500_000_000L, Math.min(2_000_000_000L, plan.frameExpNs / 4));
+        if (advMaxNs > 0) exp = Math.min(exp, Math.max(100_000_000L, advMaxNs));
+        return exp;
+    }
+
+    /**
+     * The focus frames' ISO: high, so that short frames show enough stars, but no more exposure than a session
+     * frame's (which the plan keeps from saturating in the sky's glow), and at most the camera's analog maximum.
+     */
+    private int focusIso(long exp) {
+        double same = (double) plan.iso * plan.frameExpNs / Math.max(1L, exp);
+        return (int) Math.max(plan.iso, Math.min(isoStart, same));
+    }
+
+    private void forgetFocus() {
+        Req r = focusReq;
+        if (r == null) return;
+        reqs.remove(r.seq);
+        if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+        focusReq = null;
+    }
+
+    /** The phone was picked up while focusing: whatever is still coming is ignored, and it starts again. */
+    private void abandonFocus() {
+        focusToken++;
+        forgetFocus();
+        focusMeasuring = false;
+        sweep = null;
+        rig.setFocus(focusValue);
+    }
+
+    /** A focus frame is in (image and result): taken again if the phone or the lens moved, else measured. */
+    private void focusArrived(Req r) {
+        if (r != focusReq || r.result == null || (r.buf == null && !r.lost)) return;
+        forgetFocus();
+        if (phase != Phase.FOCUS || sweep == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (r.lost || r.buf == null) {
+            if (++focusRetries <= 2) sendFocus(now);
+            else stopFocus(now, "the focus frames were lost");
+            return;
+        }
+        TotalCaptureResult res = r.result;
+        Float fd = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        Integer lensState = res.get(CaptureResult.LENS_STATE);
+        float at = fd != null ? fd : r.focus;
+        Long e = res.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        long exp = e != null ? e : r.expNs;
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        long tsn = ts != null ? ts : r.startNs;
+        long t0 = realtimeClock && tsn > 0 ? tsn : r.arrivalNs - exp;
+        float rate = motion.maxRate(t0, t0 + exp);
+        String again = null;
+        if (rate > DISTURBED_RAD_S) again = String.format(Locale.US, "the phone moved (%.2f rad/s)", rate);
+        else if (lensState != null && lensState == CaptureResult.LENS_STATE_MOVING) again = "the lens was still moving";
+        else if (Math.abs(at - r.focus) > 0.5 * lens.fine) again = String.format(Locale.US, "the lens was at %.3f", at);
+        if (again != null && ++focusPointTries <= 2) {
+            android.util.Log.i("NightSky", String.format(Locale.US, "focus: the frame at %.3f taken again: %s", r.focus, again));
+            sendFocus(now);
+            return;
+        }
+        focusPointTries = 0;
+        float[] black = SensorSpecFactory.dynamicBlack(res, geo);
+        final float[] bl = black != null ? black : spec.black.clone();
+        final short[] buf = r.buf;
+        final SensorSpec sp = spec;
+        final int tk = focusToken;
+        final float where = at;
+        focusMeasuring = true;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final FocusMeter.Reading rd = measureFocus(buf, sp, bl);
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        focusMeasured(tk, where, rd);
+                    }
+                });
+            }
+        }, "focus").start();
+    }
+
+    /** The stars' size in a focus or check frame (off the session thread). */
+    private static FocusMeter.Reading measureFocus(short[] buf, SensorSpec sp, float[] black) {
+        try {
+            return FocusMeter.measure(buf, 1f, sp, black);
+        } catch (Throwable t) {
+            FocusMeter.Reading rd = new FocusMeter.Reading();
+            rd.why = "could not be measured: " + t;
+            return rd;
+        }
+    }
+
+    private void focusMeasured(int tk, float at, FocusMeter.Reading rd) {
+        if (tk != focusToken || phase != Phase.FOCUS || sweep == null) return;
+        focusMeasuring = false;
+        sweep.add(at, rd.hfr, rd.noise, rd.stars, rd.ok());
+        android.util.Log.i("NightSky", String.format(Locale.US, "focus: %.3f: %s (%d ms)", at, rd.describe(), rd.millis));
+        long now = SystemClock.elapsedRealtime();
+        if (sweep.done()) finishFocus(now);
+        else sendFocus(now);
+    }
+
+    /**
+     * The sweep is over: the focus it found for the rest of the session (else the one the session opened with),
+     * with the stars' size there and at the lens's own infinity in the log (A5), how far it landed from the
+     * daylight calibration's prediction (F7), and saved for next time as this camera's focus on the stars.
+     */
+    private void finishFocus(long now) {
+        FocusSweep s = sweep;
+        FocusSweep.Result res = s.result();
+        focusResult = res;
+        focusPredicted = s.predicted;
+        noteSweep(s);
+        if (res.ok) {
+            focusValue = (float) res.focus;
+            focusHow = res.check != null && res.check.holds ? "checked" : "swept";
+            noteFocus(String.format(Locale.US, "decision: focus %.3f%s (%s sweep, %d frames in %.0f s, %s): stars %.2f px (half-flux radius) "
+                            + "against %s at the lens's own infinity (0.000%s)", focusValue,
+                    Double.isNaN(res.sigma) ? "" : String.format(Locale.US, " +/-%.3f", res.sigma), s.mode, res.frames, (now - focusStartMs) / 1000.0,
+                    res.how, res.value, Double.isNaN(res.atZero) ? "unknown" : String.format(Locale.US, "%.2f px", res.atZero),
+                    Double.isNaN(res.atZero) ? "" : res.zeroMeasured ? ", measured" : ", from the fit"));
+            if (res.check != null) noteFocus("focus: two-frame check: " + res.check.describe());
+            if (!Double.isNaN(s.predicted)) {
+                double off = res.focus - s.predicted;
+                noteFocus(String.format(Locale.US, "focus: %.3f against the daylight calibration's %.3f for %.0f C: %s (%+.3f; steps of %.3f)",
+                        res.focus, s.predicted, focusTempC, Math.abs(off) <= lens.fine + 1e-6 ? "within one sweep step of the prediction"
+                                : "more than one sweep step from the prediction", off, lens.fine));
+            }
+            if (res.fitted || res.check != null && res.check.holds) {
+                // A5's "custom infinity" for this camera, and a night point for F7
+                FocusModel.Cal c = new FocusModel.Cal();
+                c.focus = res.focus;
+                c.tempC = focusTempC;
+                c.timeMs = System.currentTimeMillis();
+                c.hfr = res.value;
+                c.slope = res.slope;
+                focusModel.addNight(c);
+                prefs.setFocusModel(cameraId, focusModel.encode());
+            } else {
+                noteFocus("focus: not saved for next time, as no curve could be fitted");
+            }
+        } else {
+            noteFocus(String.format(Locale.US, "decision: focus kept at %.3f (%s): %s", focusValue, howWords(focusHow), res.how));
+        }
+        rig.setFocus(focusValue);
+        endFocus(now);
+    }
+
+    /** What the sweep measured, for the log. */
+    private void noteSweep(FocusSweep s) {
+        noteFocus("focus: " + s.why + "; " + lens.describe());
+        if (s.frames() > 0) noteFocus("focus frames: " + s.pointsLine());
+    }
+
+    /** The focus step cut short: the curve fitted so far if there is one, else the focus the session opened with. */
+    private void stopFocus(long now, String why) {
+        if (phase != Phase.FOCUS) return;
+        focusToken++;
+        forgetFocus();
+        focusMeasuring = false;
+        FocusSweep s = sweep;
+        FocusSweep.Result res = s != null && s.frames() > 0 ? s.result() : null;
+        if (s != null) {
+            focusPredicted = s.predicted;
+            noteSweep(s);
+        }
+        if (res != null && res.ok && res.fitted) {
+            focusResult = res;
+            focusValue = (float) res.focus;
+            focusHow = "swept";
+            noteFocus(String.format(Locale.US, "decision: focus %.3f from the %d frames so far (%s), cut short: %s", focusValue, res.frames,
+                    res.how, why));
+        } else {
+            noteFocus(String.format(Locale.US, "decision: focus kept at %.3f (%s), the sweep cut short: %s", focusValue, howWords(focusHow), why));
+        }
+        rig.setFocus(focusValue);
+        endFocus(now);
+    }
+
+    private void endFocus(long now) {
+        focusDone = true;
+        sweep = null;
+        if (phase == Phase.FOCUS) afterSteady(now);
+    }
+
+    /** How the session's focus was chosen, in words for the log. */
+    private static String howWords(String how) {
+        switch (how) {
+            case "fixed":
+                return "the lens's fixed focus";
+            case "predicted":
+                return "what the daylight calibration predicts for the phone's temperature";
+            case "saved":
+                return "the focus found on the stars last time";
+            case "checked":
+                return "last time's focus, checked with two frames";
+            case "swept":
+                return "found on the stars";
+            default:
+                return "the lens's own infinity";
+        }
+    }
+
+    /** The detail line on the screen while focusing. */
+    private String focusWords() {
+        FocusSweep s = sweep;
+        if (s == null) return "Short frames find where the stars are sharpest";
+        int n = s.frames();
+        return String.format(Locale.US, "Frame %d of about %d: short frames find where the stars are sharpest", n + 1, n + Math.max(1, s.planned()));
+    }
+
+    /**
+     * Each processed unit, on the session thread: the stars' size watched in sessions of half an hour or more
+     * (F7). Once they have grown steadily with the sky as clear, a two-frame focus check runs between frames.
+     */
+    private void watchFocus(double t, float hfr, float transparency, boolean ok) {
+        if (phase != Phase.CAPTURING && phase != Phase.PAUSED) return;
+        if (lens == null || !prefs.focusAssist()) return;
+        if (ok) focusWatch.add(t, hfr, transparency);
+        if (focusCheckDue || focusCheckStep != 0) return;
+        String why = focusWatch.due(t, settings.durationSec);
+        String haze = focusWatch.haze();
+        if (!haze.isEmpty() && focusHaze.isEmpty()) {
+            // said once: thin cloud swells the stars too, and refocusing wouldn't help
+            focusHaze = haze;
+            log("focus: no check: " + haze);
+        }
+        if (why == null) return;
+        focusCheckDue = true;
+        focusCheckWhy = why;
+        focusCheckDueMs = SystemClock.elapsedRealtime();
+        log("focus: a check is due: " + why);
+    }
+
+    /** The frames in flight are in: the check's first frame, below the focus, once a buffer is free. */
+    private void startFocusCheck() {
+        if (up == null || rig == null) return;
+        long now = SystemClock.elapsedRealtime();
+        short[] b = up.obtainBuffer(0);
+        if (b == null) {
+            if (now - focusCheckDueMs > 15_000L) cancelFocusCheck("no memory was free for the check frames");
+            return;
+        }
+        checkBuf = b;
+        focusCheckStep = 1;
+        sendCheck(now);
+    }
+
+    /** One check frame: two fine steps below the focus (step 1), then above it (step 2). False if it couldn't be taken. */
+    private boolean sendCheck(long now) {
+        double d = FocusSweep.checkDelta(lens);
+        float f = (float) (focusCheckStep == 1 ? Math.max(0, focusValue - d) : focusValue + d);
+        long exp = focusExpNs();
+        int seq = ++seqCounter;
+        Req r = new Req(seq, FOCUS_CHECK, exp);
+        r.focus = f;
+        rig.setFocus(f);
+        if (!rig.capture(seq, exp, focusIso(exp))) {
+            cancelFocusCheck("a check frame could not be taken");
+            return false;
+        }
+        reqs.put(seq, r);
+        checkReq = r;
+        checkSentMs = now;
+        lastProgressMs = now;
+        return true;
+    }
+
+    /** A check frame is in: measured off the session thread, unless the phone moved. */
+    private void checkArrived(Req r) {
+        if (r != checkReq || r.result == null || (r.buf == null && !r.lost)) return;
+        reqs.remove(r.seq);
+        if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+        checkReq = null;
+        long now = SystemClock.elapsedRealtime();
+        lastProgressMs = now;
+        if (phase != Phase.CAPTURING || focusCheckStep == 0) return;
+        if (r.lost || r.buf == null) {
+            cancelFocusCheck("a check frame was lost");
+            submitNext();
+            return;
+        }
+        TotalCaptureResult res = r.result;
+        Long e = res.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        long exp = e != null ? e : r.expNs;
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        long tsn = ts != null ? ts : r.startNs;
+        long t0 = realtimeClock && tsn > 0 ? tsn : r.arrivalNs - exp;
+        float rate = motion.maxRate(t0, t0 + exp);
+        if (rate > DISTURBED_RAD_S) {
+            cancelFocusCheck(String.format(Locale.US, "the phone moved during a check frame (%.2f rad/s)", rate));
+            submitNext();
+            return;
+        }
+        Float fd = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        final float at = fd != null ? fd : r.focus;
+        float[] black = SensorSpecFactory.dynamicBlack(res, geo);
+        final float[] bl = black != null ? black : spec.black.clone();
+        final short[] buf = r.buf;
+        final SensorSpec sp = spec;
+        final int tk = focusToken, step = focusCheckStep;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final FocusMeter.Reading rd = measureFocus(buf, sp, bl);
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        checkMeasured(tk, step, at, rd);
+                    }
+                });
+            }
+        }, "focus-check").start();
+    }
+
+    /**
+     * A check frame measured: after the one below the focus, the one above; after both, where the best focus is
+     * now (from the difference of the two sizes and how fast stars grow away from focus). The focus moves there,
+     * at most two fine steps at a time, unless it still holds.
+     */
+    private void checkMeasured(int tk, int step, float at, FocusMeter.Reading rd) {
+        if (tk != focusToken || step != focusCheckStep || phase != Phase.CAPTURING) return;
+        long now = SystemClock.elapsedRealtime();
+        lastProgressMs = now;
+        if (!rd.ok()) {
+            cancelFocusCheck("too few stars to measure in a check frame (" + rd.why + ")");
+            submitNext();
+            return;
+        }
+        if (step == 1) {
+            checkLowF = at;
+            checkLowH = rd.hfr;
+            checkLowN = rd.noise;
+            focusCheckStep = 2;
+            if (!sendCheck(now)) submitNext();
+            return;
+        }
+        double slope = lens.slope;
+        String slopeFrom = "the optics";
+        FocusModel.Cal last = focusModel.lastNight();
+        if (focusResult != null && focusResult.slope > 0) {
+            slope = focusResult.slope;
+            slopeFrom = "tonight's sweep";
+        } else if (last != null && last.slope > 0) {
+            slope = last.slope;
+            slopeFrom = "the last sweep";
+        }
+        FocusSweep.Check c = FocusSweep.twoPoint(focusValue, checkLowF, checkLowH, checkLowN, at, rd.hfr, rd.noise, slope, lens.fine);
+        float before = focusValue;
+        if (!c.holds) focusValue = (float) Math.max(0, before + Stats.clamp(c.best - before, -2 * lens.fine, 2 * lens.fine));
+        rig.setFocus(focusValue);
+        double minutes = (now - captureStartMs - pausedTotalMs) / 60000.0;
+        log(String.format(Locale.US, "decision: focus check after %.0f minutes (%s): %s (stars %.2f and %.2f px; %.1f px per unit, from %s): %s",
+                minutes, focusCheckWhy, c.describe(), checkLowH, rd.hfr, slope, slopeFrom, c.holds
+                        ? String.format(Locale.US, "focus kept at %.3f", before) : String.format(Locale.US, "focus moved from %.3f to %.3f", before, focusValue)));
+        focusChecks += (focusChecks.isEmpty() ? "" : ";") + String.format(Locale.US, "%.0f,%.3f,%.3f", minutes, before, focusValue);
+        finishFocusCheck();
+        submitNext();
+    }
+
+    /** The check is over: its buffer back to the pool, and the stars' size from now on the new baseline. */
+    private void finishFocusCheck() {
+        if (checkBuf != null && up != null) up.releaseBuffer(checkBuf);
+        checkBuf = null;
+        focusCheckStep = 0;
+        focusCheckDue = false;
+        focusCheckWhy = "";
+        focusWatch.reset((SystemClock.elapsedRealtime() - captureStartMs) / 1000.0);
+    }
+
+    /**
+     * Stops a check: its frame forgotten, its buffer back, the lens back at the session's focus. With a reason
+     * (logged) the check is off until the stars grow again; without one (a pause, the capture aborted) it runs
+     * once frames are taken again.
+     */
+    private void cancelFocusCheck(String why) {
+        Req r = checkReq;
+        if (r != null) {
+            reqs.remove(r.seq);
+            if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+            checkReq = null;
+        }
+        if (checkBuf != null && up != null) up.releaseBuffer(checkBuf);
+        checkBuf = null;
+        if (focusCheckStep != 0) {
+            focusCheckStep = 0;
+            focusToken++;
+            if (rig != null) rig.setFocus(focusValue);
+        }
+        if (why == null) return;
+        log("focus: check abandoned: " + why);
+        focusCheckDue = false;
+        focusCheckWhy = "";
+        focusWatch.reset((SystemClock.elapsedRealtime() - captureStartMs) / 1000.0);
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // Test frame
     // ------------------------------------------------------------------------------------------------
 
@@ -1874,6 +2495,8 @@ final class SessionController {
 
     private void startCapture() {
         testBuf = null; // the test frame has been read: its memory goes to the capture
+        focusBuf = null;
+        focusWatch.reset(0);
         if (locating != null) {
             locating.cancel();
             locating = null;
@@ -1934,6 +2557,18 @@ final class SessionController {
         }
         p.setProperty("state", "capturing");
         sky.toProperties(p);
+        p.setProperty("focus.value", Float.toString(focusValue));
+        p.setProperty("focus.how", focusHow);
+        if (!Double.isNaN(focusTempC)) p.setProperty("focus.tempC", Double.toString(focusTempC));
+        if (!Double.isNaN(focusPredicted)) p.setProperty("focus.predicted", Double.toString(focusPredicted));
+        FocusSweep.Result fres = focusResult;
+        if (fres != null && fres.ok) {
+            p.setProperty("focus.frames", Integer.toString(fres.frames));
+            if (!Double.isNaN(fres.value)) p.setProperty("focus.hfr", Double.toString(fres.value));
+            if (!Double.isNaN(fres.atZero)) p.setProperty("focus.hfrAtZero", Double.toString(fres.atZero));
+            p.setProperty("focus.zeroMeasured", Boolean.toString(fres.zeroMeasured));
+        }
+        p.setProperty("focus.calibrated", Boolean.toString(focusModel != null && focusModel.line() != null));
         Preflight.Report pf = preflightReport;
         if (pf != null) {
             p.setProperty("preflight.summary", pf.spoken());
@@ -1985,6 +2620,7 @@ final class SessionController {
                     : "satellites: their streaks are taken out of the stack");
         }
         if (!waitLog.isEmpty()) store.log(waitLog);
+        for (String l : focusLog.split("\n")) if (!l.isEmpty()) store.log(l);
         if (!settings.origin.isEmpty()) store.log(settings.origin);
         store.log("settings: " + (settings.presetName.isEmpty() ? "set by hand" : "the " + settings.presetName + " preset")
                 + (settings.usesSaved ? "" : ", asked for this session"));
@@ -2014,6 +2650,11 @@ final class SessionController {
 
     private void submitNext() {
         if (phase != Phase.CAPTURING || rig == null || !rig.ready()) return;
+        if (focusCheckDue || focusCheckStep != 0) {
+            // a focus check between frames (F7), once the frames in flight are in
+            if (focusCheckStep == 0 && inFlight == 0) startFocusCheck();
+            if (focusCheckDue || focusCheckStep != 0) return;
+        }
         while (inFlight < 2 && framesDone + inFlight < plan.frames) {
             int seq = ++seqCounter;
             Req r = new Req(seq, FRAME, plan.frameExpNs);
@@ -2139,6 +2780,7 @@ final class SessionController {
     }
 
     private void abortInFlight() {
+        cancelFocusCheck(null);
         Iterator<Map.Entry<Integer, Req>> it = reqs.entrySet().iterator();
         while (it.hasNext()) {
             Req r = it.next().getValue();
@@ -2193,6 +2835,7 @@ final class SessionController {
         } else if (restarts <= 4) {
             rig.close();
             rig = new CameraRig(ctx, h, rigListener);
+            rig.setFocus(focusValue);
             try {
                 rig.open(cameraId, cc, rawSize);
             } catch (CameraAccessException | SecurityException | IllegalArgumentException e) {
@@ -2245,6 +2888,20 @@ final class SessionController {
                 testArrived(r);
                 return;
             }
+            if (r.kind == FOCUS) {
+                if (r != focusReq || focusBuf == null) return;
+                copyRaw(img, focusBuf);
+                r.buf = focusBuf;
+                focusArrived(r);
+                return;
+            }
+            if (r.kind == FOCUS_CHECK) {
+                if (r != checkReq || checkBuf == null) return;
+                copyRaw(img, checkBuf);
+                r.buf = checkBuf;
+                checkArrived(r);
+                return;
+            }
             if (up == null) return;
             short[] buf = up.obtainBuffer(4000);
             if (buf == null) {
@@ -2265,6 +2922,8 @@ final class SessionController {
             r.arrivalNs = SystemClock.elapsedRealtimeNanos();
             if (r.kind == PROBE) probeArrived();
             else if (r.kind == TEST) testArrived(r);
+            else if (r.kind == FOCUS) focusArrived(r);
+            else if (r.kind == FOCUS_CHECK) checkArrived(r);
             else frameArrived(r);
         }
 
@@ -2272,6 +2931,28 @@ final class SessionController {
         public void onFailed(int seq, boolean imageCaptured) {
             Req r = reqs.get(seq);
             if (r == null) return;
+            if (r.kind == FOCUS) {
+                boolean current = r == focusReq;
+                reqs.remove(seq);
+                if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+                if (!current) return;
+                focusReq = null;
+                if (phase != Phase.FOCUS) return;
+                long now = SystemClock.elapsedRealtime();
+                if (++focusRetries <= 2) sendFocus(now);
+                else stopFocus(now, "the focus frames failed");
+                return;
+            }
+            if (r.kind == FOCUS_CHECK) {
+                if (r == checkReq) {
+                    cancelFocusCheck("a check frame failed");
+                    submitNext();
+                } else {
+                    reqs.remove(seq);
+                    if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+                }
+                return;
+            }
             if (r.kind == TEST) {
                 boolean current = r == testReq;
                 forgetTest();
@@ -2285,7 +2966,7 @@ final class SessionController {
             if (r.kind == PROBE) {
                 reqs.remove(seq);
                 probe = null;
-                if (++probeRetries <= 1 && (phase == Phase.COUNTDOWN || phase == Phase.PREFLIGHT)) {
+                if (++probeRetries <= 1 && (phase == Phase.COUNTDOWN || phase == Phase.PREFLIGHT || phase == Phase.FOCUS)) {
                     probeSent = false;
                     sendProbe();
                 } else {
@@ -2325,6 +3006,8 @@ final class SessionController {
             r.lost = true;
             if (r.kind == PROBE) probeArrived();
             else if (r.kind == TEST) testArrived(r);
+            else if (r.kind == FOCUS) focusArrived(r);
+            else if (r.kind == FOCUS_CHECK) checkArrived(r);
             else frameArrived(r);
         }
 
@@ -2365,7 +3048,16 @@ final class SessionController {
         public void onUnit(UnitProcessor src, UnitRecord rec, Aligner.Result live, int unitsDone) {
             liveStars = rec.stars;
             liveAligned = live.ok;
-            liveStats.add(rec, live, System.currentTimeMillis());
+            LiveStats.Unit lu = liveStats.add(rec, live, System.currentTimeMillis());
+            final double ut = rec.t;
+            final float uh = lu.hfr, utr = lu.transparency;
+            final boolean uok = lu.ok && !lu.disturbed;
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    watchFocus(ut, uh, utr, uok);
+                }
+            });
             UnitProcessor.Latest l = src.latest();
             if (l != null && l.index == rec.index) latest = l;
             // refresh the live picture now and then (it is the 1/4 size running stack); every unit for a viewer
@@ -2476,6 +3168,8 @@ final class SessionController {
             if (!stopReason.isEmpty()) p.setProperty("capture.stopReason", stopReason);
             if (captureStartWallMs > 0) p.setProperty("capture.startWallMs", Long.toString(captureStartWallMs));
             p.setProperty("capture.durationSec", Integer.toString(settings.durationSec));
+            p.setProperty("focus.final", Float.toString(focusValue));
+            if (!focusChecks.isEmpty()) p.setProperty("focus.checks", focusChecks);
             st.writeSettings(p);
         } catch (IOException e) {
             st.log("could not note the capture's details: " + e.getMessage());
@@ -2945,6 +3639,7 @@ final class SessionController {
             locating = null;
         }
         testBuf = null;
+        focusBuf = null;
     }
 
     private void releaseCamera() {

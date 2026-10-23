@@ -191,6 +191,8 @@ public final class SettingsTest {
         m.put("verifiedExp|0|google/mustang/mustang:16/BP4A", 32_000_000_000L);
         m.put("halo|0|google/mustang/mustang:16/BP4A", "0.11000,0.12500");
         m.put("drainPctPerHour", 9.5f);
+        m.put("focusAssist", true);
+        m.put("focusModel|0|Pixel 10 Pro XL", "d,0.15000,24.00,1761170000000,NaN,NaN,1.8000\nn,0.16000,12.00,1761170000000,1.4000,3.9000,NaN\n");
         m.put("lastResult", "content://media/external/images/media/1234");
         m.put("placeLat", 41.9f);
         m.put("askedLocation", true);
@@ -226,7 +228,7 @@ public final class SettingsTest {
             Object v = p.values.get(k);
             check(e.getValue().equals(v) && e.getValue().getClass() == v.getClass(), "kept, with its type: " + k + " = " + v);
         }
-        check(p.settingCount() == 11, "11 settings (" + p.settingCount() + ")");
+        check(p.settingCount() == 12, "12 settings (" + p.settingCount() + ")");
         check(p.presets.size() == 1 && p.presets.get(0).name.equals("Mine") && p.presets.get(0).collectClear, "the preset");
         check(p.sites.size() == 1 && p.sites.get(0).name.equals("Backyard") && p.sites.get(0).presetId.equals(Preset.BACKYARD), "the site");
 

@@ -25,8 +25,9 @@ import java.util.concurrent.Executor;
 
 /**
  * Camera2 plumbing for RAW long exposures: one RAW_SENSOR stream, fully manual requests (no auto exposure,
- * focus or white balance, focus at infinity, stabilisation and in-camera noise reduction off, lens shading
- * map reported), single captures queued by the caller. Every callback arrives on the given handler's thread.
+ * focus or white balance, the focus where the caller puts it (infinity until then), stabilisation and in-camera
+ * noise reduction off, lens shading map reported), single captures queued by the caller. Every callback
+ * arrives on the given handler's thread.
  */
 final class CameraRig {
     interface Listener {
@@ -62,6 +63,9 @@ final class CameraRig {
     private long minFrameNs;
     private boolean closed;
     private int generation;
+    /** Focus distance for the requests (0 = infinity; diopters or the lens's own units), and its range. */
+    private float focus;
+    private float minFocus;
 
     CameraRig(Context c, Handler handler, Listener listener) {
         manager = (CameraManager) c.getSystemService(Context.CAMERA_SERVICE);
@@ -117,6 +121,8 @@ final class CameraRig {
     void open(String id, CameraCharacteristics c, Size rawSize) throws CameraAccessException {
         cc = c;
         raw = rawSize;
+        Float mf = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+        minFocus = mf != null ? mf : 0f;
         StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         minFrameNs = map != null ? map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) : 0;
         manager.openCamera(id, new CameraDevice.StateCallback() {
@@ -210,8 +216,7 @@ final class CameraRig {
         b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
         b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF);
         b.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
-        Float minFocus = cc.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
-        if (minFocus != null && minFocus > 0) b.set(CaptureRequest.LENS_FOCUS_DISTANCE, 0f); // infinity
+        if (minFocus > 0) b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focus);
         if (has(cc.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION), CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)) {
             b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF);
         }
@@ -234,6 +239,19 @@ final class CameraRig {
         Range<Float> zr = cc.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
         if (zr != null && zr.contains(1f)) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f);
         builder = b;
+    }
+
+    /**
+     * Where the lens focuses from the next capture on (0 = infinity), within its range. A lens with a fixed focus
+     * ignores it. Kept across a restarted session.
+     */
+    void setFocus(float d) {
+        focus = Math.max(0f, minFocus > 0 ? Math.min(minFocus, d) : 0f);
+        if (builder != null && minFocus > 0) builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, focus);
+    }
+
+    float focus() {
+        return focus;
     }
 
     /** Queues one exposure; false if the camera is not ready. */

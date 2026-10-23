@@ -32,12 +32,12 @@ public final class SettingsFile {
             {"remoteViewer", "b"}, {"rejection", "s"}, {"advancedOpen", "b"}, {"countdownSec", "i"}, {"preflight", "b"},
             {"satelliteData", "b"}, {"keepSatellites", "b"}, {"showTracks", "b"}, {"showLabels", "b"}, {"forecast", "b"},
             {"planSounds", "b"}, {"planMinBattery", "i"}, {"tileUnlocks", "b"}, {"sqmOffset", "f"}, {"preset", "s"},
-            {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"},
+            {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"}, {"focusAssist", "b"},
     };
     /** What the app learned about the camera: keys starting with these (camera and system build follow), or equal. */
     static final String[][] LEARNED = {
             {"verifiedExp|", "l"}, {"clampedExp|", "l"}, {"clampDelivered|", "l"}, {"halo|", "s"}, {"zp|", "s"},
-            {"drainPctPerHour", "f"},
+            {"drainPctPerHour", "f"}, {"focusModel|", "s"},
     };
     /** Kept on the phone only: what it's doing or last did, not a setting. */
     static final String[] TRANSIENT = {

@@ -286,6 +286,28 @@ final class Prefs {
         return sp.getLong("clampDelivered|" + cameraKey(cameraId), 0L);
     }
 
+    /** Focus on the stars before each session (A5): a few frames, about 30 seconds the first time. */
+    boolean focusAssist() {
+        return sp.getBoolean("focusAssist", true);
+    }
+
+    void setFocusAssist(boolean v) {
+        sp.edit().putBoolean("focusAssist", v).apply();
+    }
+
+    /**
+     * The camera's focus calibrations (F7: daylight sweeps and the focus found on the stars, as
+     * {@link com.brandon.nightsky.processing.FocusModel#encode}), "" if none. Kept per camera and phone model but
+     * not per system build: the lens is the same after an update.
+     */
+    String focusModel(String cameraId) {
+        return sp.getString("focusModel|" + cameraId + "|" + Build.MODEL, "");
+    }
+
+    void setFocusModel(String cameraId, String encoded) {
+        sp.edit().putString("focusModel|" + cameraId + "|" + Build.MODEL, encoded).apply();
+    }
+
     /** Run the pre-flight check (a test frame read for smudges, obstructions, clouds, the Moon) before starting. */
     boolean preflight() {
         return sp.getBoolean("preflight", true);

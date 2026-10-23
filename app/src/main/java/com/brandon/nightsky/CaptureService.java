@@ -584,6 +584,7 @@ public final class CaptureService extends Service implements SessionController.H
             case STARTING:
             case PLACE:
             case STEADY:
+            case FOCUS:
             case PREFLIGHT:
             case COUNTDOWN:
                 return 1;

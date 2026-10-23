@@ -140,6 +140,7 @@ public final class ReportCard {
         r.dew();
         r.clouds();
         r.focus();
+        r.focusNote();
         r.bump();
         r.moon();
         r.thermal();
@@ -396,8 +397,60 @@ public final class ReportCard {
                 on != null ? (timed ? " after " : " from ") + on.when : "");
         p.fix = "Let the phone sit outside for ten minutes before you start, so it is at the air's temperature when the "
                 + "focus is set.";
+        String how = in.props.getProperty("focus.how", "");
+        if (!how.isEmpty() && !how.equals("fixed") && !"true".equals(in.props.getProperty("focus.calibrated"))) {
+            p.fix += " A few daylight focus calibrations at different temperatures (Advanced, Focus) let it set the focus for the "
+                    + "night's temperature.";
+        }
         p.spoken = "The focus drifted" + (on != null && timed ? " after " + on.whenShort : "") + ".";
         problems.add(p);
+    }
+
+    /** How the focus was set (A5, F7), and the checks made during the session, as a note. */
+    private void focusNote() {
+        String how = in.props.getProperty("focus.how", "");
+        if (how.isEmpty() || how.equals("fixed")) return;
+        double value = num("focus.value", Double.NaN), hfr = num("focus.hfr", Double.NaN), zero = num("focus.hfrAtZero", Double.NaN);
+        double pred = num("focus.predicted", Double.NaN), temp = num("focus.tempC", Double.NaN);
+        boolean measured = "true".equals(in.props.getProperty("focus.zeroMeasured"));
+        String at = Double.isNaN(temp) ? "" : String.format(Locale.US, " for %.0f C", temp);
+        StringBuilder sb = new StringBuilder();
+        if (how.equals("swept") || how.equals("checked")) {
+            sb.append(how.equals("swept") ? String.format(Locale.US, "Focus found on the stars: %.3f", value)
+                    : String.format(Locale.US, "Focus: last time's %.3f, checked on the stars with two frames", value));
+            if (hfr > 0 && zero > 0) {
+                sb.append(String.format(Locale.US, ", stars %.1f pixels across against %.1f at the lens's own infinity%s", 2 * hfr, 2 * zero,
+                        measured ? "" : " (from the curve)"));
+            } else if (hfr > 0) {
+                sb.append(String.format(Locale.US, ", stars %.1f pixels across", 2 * hfr));
+            }
+            if (!Double.isNaN(pred)) sb.append(String.format(Locale.US, "; the daylight calibration predicted %.3f%s", pred, at));
+            sb.append('.');
+        } else if (how.equals("predicted")) {
+            sb.append(String.format(Locale.US, "Focus: %.3f, what the daylight calibration predicts%s (not checked on the stars).", value, at));
+        } else if (how.equals("saved")) {
+            sb.append(String.format(Locale.US, "Focus: %.3f, found on the stars before (not checked tonight).", value));
+        } else {
+            sb.append("Focus: the lens's own infinity (not checked on the stars).");
+        }
+        String checks = in.props.getProperty("focus.checks", "");
+        if (!checks.isEmpty()) {
+            String[] cs = checks.split(";");
+            StringBuilder moves = new StringBuilder();
+            for (String c : cs) {
+                String[] q = c.split(",");
+                if (q.length < 3) continue;
+                try {
+                    double m = Double.parseDouble(q[0]), a = Double.parseDouble(q[1]), b = Double.parseDouble(q[2]);
+                    if (Math.abs(b - a) < 1e-4) continue;
+                    moves.append(moves.length() == 0 ? "" : ", ").append(String.format(Locale.US, "from %.3f to %.3f after %.0f minutes", a, b, m));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            sb.append(String.format(Locale.US, " The stars grew during the session, so the focus was checked %s: %s.",
+                    cs.length == 1 ? "once" : cs.length + " times", moves.length() == 0 ? "it still held" : "it moved " + moves));
+        }
+        notes.add(sb.toString());
     }
 
     // ------------------------------------------------------------------------------------------------
