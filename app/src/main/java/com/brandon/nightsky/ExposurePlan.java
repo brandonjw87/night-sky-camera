@@ -22,6 +22,8 @@ final class ExposurePlan {
     int framesPerUnit = 1;
     int frames;
     final StringBuilder notes = new StringBuilder();
+    /** Why the frames are shorter than the trail-free target, as the start of a sentence ("" if they aren't). */
+    String shortWhy = "";
 
     /** Longest exposure (s) in which a star at declination decDeg drifts driftPx pixels. */
     static double trailFreeSeconds(double fPx, double decDeg, double driftPx) {
@@ -52,6 +54,7 @@ final class ExposurePlan {
         if (clampDeliveredNs > 0 && clampDeliveredNs < p.frameExpNs && verifiedNs < p.frameExpNs) {
             p.frameExpNs = Math.max(clampDeliveredNs, verifiedNs);
             p.notes.append(String.format(Locale.US, "; camera limit %.2fs", p.frameExpNs / 1e9));
+            p.shortWhy = "The camera has cut long exposures short before";
         }
         p.notes.append(String.format(Locale.US, "; advertised max %.2fs", advertisedMaxNs / 1e9));
         p.finish(durationSec, white);
@@ -71,6 +74,7 @@ final class ExposurePlan {
         if (deliveredNs > 0 && deliveredNs < requestedNs * 0.93) {
             frameExpNs = Math.min(frameExpNs, deliveredNs);
             notes.append(String.format(Locale.US, "; test frame cut to %.3fs", deliveredNs / 1e9));
+            shortWhy = "The camera cut the test exposure to " + seconds(deliveredNs);
         }
         if (bgPerSec > 0 && range > 0) {
             double target = 0.10 * range, max = 0.18 * range;
@@ -85,6 +89,7 @@ final class ExposurePlan {
                     notes.append(String.format(Locale.US, ", frames %.2fs -> %.2fs", frameExpNs / 1e9, e / 1e9));
                     bg *= e / (double) frameExpNs;
                     frameExpNs = e;
+                    shortWhy = "The sky was too bright for longer exposures";
                 }
             }
             notes.append(String.format(Locale.US, "; sky %.1f DN/frame (%.1f%% of range)", bg, 100 * bg / range));
@@ -92,11 +97,22 @@ final class ExposurePlan {
         finish(durationSec, white);
     }
 
-    /** The camera turned out to cut frames to deliveredNs. */
-    void limitTo(long deliveredNs, int durationSec, float white) {
+    /** The camera turned out to cut frames to deliveredNs ({@code why}: as {@link #shortWhy} says it). */
+    void limitTo(long deliveredNs, int durationSec, float white, String why) {
         frameExpNs = Math.min(frameExpNs, deliveredNs);
         notes.append(String.format(Locale.US, "; frames limited to %.3fs", deliveredNs / 1e9));
+        shortWhy = why;
         finish(durationSec, white);
+    }
+
+    /** "4 seconds", "2.5 seconds", "1 second". */
+    static String seconds(long ns) {
+        double s = ns / 1e9;
+        if (Math.abs(s - Math.rint(s)) < 0.05) {
+            long k = Math.round(s);
+            return k + (k == 1 ? " second" : " seconds");
+        }
+        return String.format(Locale.US, "%.1f seconds", s);
     }
 
     private void finish(int durationSec, float white) {
@@ -105,12 +121,15 @@ final class ExposurePlan {
         if (frameExpNs < targetExpNs * 0.67) {
             framesPerUnit = (int) Math.max(1, Math.min(kMax, Math.round(targetExpNs / (double) frameExpNs)));
         }
-        frames = (int) Math.max(1, Math.round(durationSec * 1e9 / frameExpNs));
+        setDuration(durationSec);
     }
 
-    /** A new length for the session (its end time came nearer while it waited to start, or it runs longer). */
+    /**
+     * A new length for the session (its end time came nearer while it waited to start, or it runs longer), in whole
+     * units: a unit short of its frames would be stacked as a full one with less light (and look like a worse frame).
+     */
     void setDuration(int durationSec) {
-        frames = (int) Math.max(1, Math.round(durationSec * 1e9 / frameExpNs));
+        frames = (int) Math.max(1, Math.round(durationSec * 1e9 / unitExpNs())) * framesPerUnit;
     }
 
     long unitExpNs() {

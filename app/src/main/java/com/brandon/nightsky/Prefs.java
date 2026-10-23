@@ -431,18 +431,34 @@ final class Prefs {
     private static final int HALO_KEEP = 12, ZP_KEEP = 20;
 
     /**
-     * This camera's clean-lens halo ratio: the lower quartile of the good sessions' ratios, so the odd session
-     * with a slightly smudged lens doesn't raise it. NaN until there is one.
+     * This camera's clean-lens halo ratio: the median of the good sessions' readings, so the odd session with a
+     * slightly smudged lens doesn't move it (a clean lens can read a little below zero: a test frame's reading
+     * wanders by a few hundredths). NaN until there is one.
      */
     double haloBaseline(String cameraId) {
         double[] v = list("halo|" + cameraKey(cameraId));
         if (v.length == 0) return Double.NaN;
         java.util.Arrays.sort(v);
-        return v[(v.length - 1) / 4];
+        return v.length % 2 == 1 ? v[v.length / 2] : 0.5 * (v[v.length / 2 - 1] + v[v.length / 2]);
+    }
+
+    /**
+     * How far this camera's clean-lens readings wander from session to session (a robust standard deviation), so
+     * the check's limit sits clear of them; NaN until there are four.
+     */
+    double haloSpread(String cameraId) {
+        double[] v = list("halo|" + cameraKey(cameraId));
+        if (v.length < 4) return Double.NaN;
+        double m = haloBaseline(cameraId);
+        double[] d = new double[v.length];
+        for (int i = 0; i < v.length; i++) d[i] = Math.abs(v[i] - m);
+        java.util.Arrays.sort(d);
+        double mad = d.length % 2 == 1 ? d[d.length / 2] : 0.5 * (d[d.length / 2 - 1] + d[d.length / 2]);
+        return 1.4826 * mad;
     }
 
     void learnHalo(String cameraId, double ratio) {
-        if (Double.isNaN(ratio) || ratio < 0) return;
+        if (Double.isNaN(ratio) || ratio < -0.5) return;
         append("halo|" + cameraKey(cameraId), ratio, HALO_KEEP);
     }
 

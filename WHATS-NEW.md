@@ -1,5 +1,87 @@
 # Night Sky Camera: what's new
 
+## Version 1.2.1: fixes from a full dress rehearsal
+
+Before your first night, whole sessions were run through the app's own capture code with a simulated camera
+showing tonight's real sky, with everything that can go wrong made to go wrong (the phone picked up or knocked,
+the camera stalling or failing frames, another app taking it, the battery running down), and every screen was
+tapped through again. That found these, now fixed:
+
+- **Focus on the stars now lands on the sharpest focus.** At the sharpest focus a star falls on just a pixel or
+  two, and the focus sweep couldn't measure stars that small: it took them for hot pixels. So it settled on a
+  softer focus, or gave up on the stars. It now fits each star's shape across all four colour pixels, keeps
+  bright stars whose middle clips, and measures two to five times as many stars in each focus frame. In a
+  simulated session it found 0.36 against a true 0.35 (before: 0.10).
+- **In a long session, a focus check that finds the focus has crept now follows it all the way.** It moves at
+  most two small steps at a time (in case one reading is off), and then it didn't check again, so the stars stayed
+  a little soft for the rest of the session. In a simulated 30-minute session whose focus crept, the stars ended
+  the session 5% wider than at the start; now it checks again straight away until it gets there.
+- **A frame the camera fails no longer restarts the camera.** Only good frames counted as signs of life, so two
+  failed frames in a row looked like a stalled camera, and the restart threw away the frames already exposing.
+- **If even the camera's longest exposure keeps failing, the session uses frames half as long** (for that
+  session only; the next tries the full length again) instead of ending with "No frames were captured".
+- **If the camera errors as it opens, the app tries once more** before giving up, and camera errors are said in
+  words ("another app is using the camera") instead of "camera error 1". The session log now keeps what happened
+  before the first frame too (the camera erroring and being opened again, a sky check that was skipped and why).
+- **While the camera is being restarted, the screen and the laptop viewer say so**, instead of a frame count that
+  looks frozen.
+- **The session report blames the right thing.** A pickup, a stalled camera and failed frames were all "Frames
+  dropped: close other apps". Now a pickup is "The phone was moved" (and how long it paused), camera trouble is
+  "The camera had trouble" (frames it lost, times it went quiet until the app restarted it), and only frames the
+  phone couldn't keep up with are frames dropped. And since a session keeps going until it has every frame it
+  planned, a hiccup it made up for is a note ("the session ran 47 seconds longer to get all its frames"), not
+  "cost 21% of the light".
+- **A session that ends early says why**: the camera stopped, another app took it, the battery ran low, storage
+  ran out or the phone got too hot, with how much of the session it cost and what to do. Stopping it yourself, or
+  at its end time or dawn, is a note.
+- **The report no longer blames a Moon it couldn't see.** With the Moon up but hidden from where you were (behind
+  the house, trees or a hill), the report said moonlight cost 95% of the light, right next to "an excellent dark
+  sky". It now goes by how bright the sky actually measured, and at a saved site it knows how bright that sky is
+  without the Moon, so the site's own light isn't put down to the Moon either.
+- **No false "smudged lens" warnings once the app knows your lens.** After a few good nights it learns what a
+  clean lens reads, but it set its limit from one or two readings, and ordinary variation from night to night
+  then tripped it (once in nine clean sessions in testing); the report then blamed a smudge too. It now learns
+  how much a clean lens's readings vary and keeps its limit clear of that. A smudged lens still reads several
+  times over it.
+- **When the camera can't expose as long as planned**, frames are combined (four 4-second exposures make one
+  16-second frame) and the session now plans whole ones. The last could be a quarter of the others, and the
+  report called it a frame with a "brighter sky". The report now also says when and why exposures were combined,
+  since the screen counts the exposures ("Frame 44 of 44") and the report the frames they make ("11 frames").
+- **Star trails get a real report.** It said "0 frames, all used" and the voice said "Done. 0 good frames". It now
+  counts the frames, notes any that were knocked, and says "Star trails from 18 frames".
+- **Reopening the app doesn't start another session.** If a session was started from the widget or a shortcut,
+  and Android later closed the app in the background, reopening it from the recent apps started a second one
+  (or re-armed the night plan, if a plan notification had opened the app). Now it just opens where you were.
+- **The night plan says each session's time once**: it read "5-minute stack, from 10:10 PM: 10:10 PM, only if
+  clear" on the plan page and the widget.
+- **The app comes back on the page you were on** (Sessions, the plan, Sites) when Android has closed it in the
+  background, instead of the home screen.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.2 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+Unchanged from version 1.2.
+
+### Try tonight
+
+1. Tap **Start**, lay the phone down and let it run 5 minutes.
+2. Under the photo, tap **Session report**: the note that starts with "Focus" says where it focused and how sharp
+   the stars were there, and if anything went wrong, the report now says what and what to do.
+
+### Not working yet, or not tested
+
+- Still all tested off the phone, with simulated skies: the first real night is the real test, and the session
+  log in `Documents/NightSky` says what happened.
+
 ## Version 1.2: smarter nights, photos that add up, and edits you can always undo
 
 ### What's new

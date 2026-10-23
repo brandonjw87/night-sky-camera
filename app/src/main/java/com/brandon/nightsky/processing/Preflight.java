@@ -67,6 +67,8 @@ public final class Preflight {
         public BrightStars catalog;
         /** Halo ratio of this camera's clean lens (NaN: not learned yet). */
         public double haloBaseline = Double.NaN;
+        /** How far its clean-lens readings wander from session to session (NaN: not known yet). */
+        public double haloSpread = Double.NaN;
         /** Zero point of a clear night, per second at ISO 100 (NaN: not learned yet). */
         public double clearZeroPoint = Double.NaN;
         /** Free and needed storage (bytes; negative if unknown). */
@@ -87,7 +89,8 @@ public final class Preflight {
     public static final class Report {
         public final List<Item> items = new ArrayList<Item>();
         public int stars;
-        public double haloRatio = Double.NaN, haloLimit = Double.NaN;
+        /** The test frame's halo ratio, the limit it was held to, and the clean lens's ratio the limit came from. */
+        public double haloRatio = Double.NaN, haloLimit = Double.NaN, haloClean = Double.NaN;
         public int haloStars;
         /** Catalogue stars a clear sky would show here, and how many of them showed. */
         public int expected, seen;
@@ -1023,13 +1026,18 @@ public final class Preflight {
         rep.haloRatio = h.ratio;
         boolean learned = !Double.isNaN(in.haloBaseline);
         double clean = learned ? in.haloBaseline : DEFAULT_CLEAN_HALO;
-        double limit = 1.5 * clean + 0.05;
+        // clear of how far a clean lens's readings wander (a few hundredths from frame to frame; a smudge adds
+        // tenths): their own spread once enough sessions have shown it, a wide margin until then
+        double margin = !learned ? 0.05 : Double.isNaN(in.haloSpread) ? 0.1 : Math.max(0.05, 3 * in.haloSpread);
+        double limit = 1.5 * Math.max(0, clean) + margin;
         rep.haloLimit = limit;
+        rep.haloClean = clean;
         if (h.ratio > limit) {
+            double c = Math.max(0, clean);
             rep.items.add(new Item("lens", Level.WARN, String.format(Locale.US,
                     "Lens may be smudged or fogged: %.0f%% of the starlight lands in a halo around the stars "
                             + "(a clean lens: %.0f%%). Wipe it with a soft cloth.", 100 * h.ratio / (1 + h.ratio),
-                    100 * clean / (1 + clean)), "the lens may be smudged or fogged. Wipe it"));
+                    100 * c / (1 + c)), "the lens may be smudged or fogged. Wipe it"));
         } else {
             rep.items.add(new Item("lens", Level.OK, String.format(Locale.US, "Lens clean (halo %.2f, limit %.2f%s)",
                     h.ratio, limit, learned ? "" : ", not yet learned for this phone"), "lens clean"));

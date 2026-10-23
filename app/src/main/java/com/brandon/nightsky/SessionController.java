@@ -385,8 +385,9 @@ final class SessionController {
     private boolean movedSaid;
     /** Scheduled starts and stop conditions, for the session's log. */
     private String planLog = "";
-    /** Why the capture stopped before its planned end, for the report (empty if it didn't). */
-    private String stopReason = "";
+    /** Why the capture stopped before its planned end, for the report (empty if it didn't), and the kind of reason:
+     *  you, pickedUp, moved, camera, taken, battery, storage, hot, end, dawn, slow or processing. */
+    private String stopReason = "", stopKey = "";
     private long stopCheckMs, sunCheckMs, batteryCheckMs;
     /**
      * Waiting to start (a bright satellite to let pass, or the stretch chosen on the home screen): the countdown
@@ -420,6 +421,13 @@ final class SessionController {
     private int inFlight, framesDone, framesDropped, consecutiveFailures, restarts, awayTicks;
     private boolean firstFrameChecked;
     private long captureStartMs, lastProgressMs, pausedAtMs, pausedTotalMs;
+    /** Times the capture paused because the phone moved; frames the camera failed or lost (framesDropped counts
+     *  only those processing had no room for); times the camera went silent and was restarted, and for how long
+     *  (for the report). */
+    private int pauses, framesFailed, stalls;
+    private long stalledMs;
+    /** Times the camera was opened again after an error as it opened (once: such errors often pass). */
+    private int openRetries;
     /** When the capture began by the wall clock (for Repeat tomorrow), 0 before it has. */
     private long captureStartWallMs;
     /** The hottest the phone said it got during the capture (PowerManager thermal status), and when it first
@@ -492,7 +500,7 @@ final class SessionController {
             @Override
             public void run() {
                 if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
-                    finishCapture("stopped by you");
+                    finishCapture("you", "stopped by you");
                 } else if (phase.ordinal() < Phase.CAPTURING.ordinal() && phase != Phase.IDLE) {
                     cancelAll();
                 }
@@ -810,6 +818,7 @@ final class SessionController {
         o.model = l.meta.model;
         o.referenceUnit = l.meta.referenceUnit;
         o.aligned = true;
+        o.trails = l.meta.trails;
         return o;
     }
 
@@ -1530,7 +1539,7 @@ final class SessionController {
             @Override
             public String call() {
                 if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
-                    finishCapture("stopped from the viewer");
+                    finishCapture("you", "stopped from the viewer");
                     return "Stopped. Developing the frames taken so far.";
                 }
                 return "It is not capturing";
@@ -1567,7 +1576,8 @@ final class SessionController {
         if (settings.durationSec + seconds > MAX_DURATION_SEC) {
             return "It is already as long as a session can be (" + MAX_DURATION_SEC / 60 + " minutes)";
         }
-        int extra = (int) Math.max(1, Math.round(seconds * 1e9 / plan.frameExpNs));
+        // whole units, as planned
+        int extra = (int) Math.max(1, Math.round(seconds * 1e9 / plan.unitExpNs())) * plan.framesPerUnit;
         long unitBytes = 2L * spec.width * spec.height;
         int unitsLeft = (plan.frames + extra - framesDone + plan.framesPerUnit - 1) / plan.framesPerUnit;
         long need = unitBytes * (unitsLeft + 2) + (400L << 20);
@@ -1945,10 +1955,12 @@ final class SessionController {
         focusResult = null;
         focusPredicted = Double.NaN;
         focusLog = "";
+        startLog.setLength(0);
         focusCheckDue = false;
         focusCheckWhy = "";
         focusHaze = "";
         focusChecks = "";
+        focusFollowUps = 0;
         focusCheckStep = 0;
         checkReq = null;
         checkBuf = null;
@@ -1964,6 +1976,7 @@ final class SessionController {
         movedSaid = false;
         planLog = "";
         stopReason = "";
+        stopKey = "";
         stopCheckMs = 0;
         sunCheckMs = 0;
         batteryCheckMs = 0;
@@ -1975,6 +1988,11 @@ final class SessionController {
         countdownSaid = Integer.MAX_VALUE;
         batteryAtStart = -1;
         pausedTotalMs = 0;
+        pauses = 0;
+        framesFailed = 0;
+        stalls = 0;
+        stalledMs = 0;
+        openRetries = 0;
         liveStars = 0;
         liveAligned = false;
         cancelDevelop = false;
@@ -2142,7 +2160,7 @@ final class SessionController {
                     // nothing for too long, also when nothing could be queued: restart, reopen, give up
                     watchdog();
                 } else if (now - captureStartMs - pausedTotalMs > settings.durationSec * 2000L + 120000L) {
-                    finishCapture("it was taking far longer than planned");
+                    finishCapture("slow", "it was taking far longer than planned");
                 }
                 if (phase == Phase.CAPTURING && focusCheckStep != 0 && checkReq != null
                         && now - checkSentMs > checkReq.expNs / 1_000_000L + 10_000L) {
@@ -2159,7 +2177,7 @@ final class SessionController {
                 break;
             case PAUSED:
                 if (forced ? motion.quietNs() >= STILL_NS : motion.stillNs() >= STILL_NS) resume();
-                else if (now - pausedAtMs > MAX_PAUSE_MS) finishCapture("the phone was not put back down");
+                else if (now - pausedAtMs > MAX_PAUSE_MS) finishCapture("moved", "the phone was not put back down");
                 else if (now - lastPublishMs >= 1000) publishCapture();
                 if (phase == Phase.PAUSED) checkStops(now);
                 break;
@@ -2279,14 +2297,14 @@ final class SessionController {
         stopCheckMs = now;
         long wall = System.currentTimeMillis();
         if (settings.endAtMs > 0 && wall >= settings.endAtMs) {
-            stopEarly("it reached its end time, " + clockTime(settings.endAtMs));
+            stopEarly("end", "it reached its end time, " + clockTime(settings.endAtMs));
             return;
         }
         if (settings.stopAtDawn && sky.located() && now - sunCheckMs >= 60_000L) {
             sunCheckMs = now;
             double alt = Tonight.sunAlt(wall, sky.latDeg * Astro.DEG, sky.lonDeg * Astro.DEG);
             if (alt > Tonight.DARK_DEG) {
-                stopEarly(String.format(Locale.US, "dawn: the Sun rose to %.0f degrees below the horizon and the sky began to brighten", -alt));
+                stopEarly("dawn", String.format(Locale.US, "dawn: the Sun rose to %.0f degrees below the horizon and the sky began to brighten", -alt));
                 return;
             }
         }
@@ -2294,25 +2312,24 @@ final class SessionController {
             batteryCheckMs = now;
             BatteryInfo b = BatteryInfo.read(ctx);
             if (!b.charging && b.pct >= 0 && b.pct < settings.minBatteryPct) {
-                stopEarly(String.format(Locale.US, "the battery fell to %d%% (sessions stop below %d%%)", b.pct, settings.minBatteryPct));
+                stopEarly("battery", String.format(Locale.US, "the battery fell to %d%% (sessions stop below %d%%)", b.pct, settings.minBatteryPct));
                 return;
             }
         }
         long free = freeBytes();
         if (free >= 0 && spec != null && free < 2L * spec.width * spec.height * 3 + (300L << 20)) {
-            stopEarly(String.format(Locale.US, "storage ran low (%.1f GB free)", free / 1e9));
+            stopEarly("storage", String.format(Locale.US, "storage ran low (%.1f GB free)", free / 1e9));
             return;
         }
         PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
         if (pm != null && pm.getCurrentThermalStatus() >= PowerManager.THERMAL_STATUS_CRITICAL) {
-            stopEarly("the phone got critically hot");
+            stopEarly("hot", "the phone got critically hot");
         }
     }
 
-    private void stopEarly(String why) {
-        stopReason = why;
+    private void stopEarly(String key, String why) {
         log("decision: stopped early: " + why);
-        finishCapture(why);
+        finishCapture(key, why);
     }
 
     private void startCountdown(long now) {
@@ -2363,7 +2380,7 @@ final class SessionController {
         waitUntilWallMs = at - lead;
         waitWhy = why;
         waitLog = String.format(Locale.US, "decision: waited %s to start at %s: %s", clock(waitUntilWallMs - wall), clockTime(at), reason);
-        log(waitLog);
+        android.util.Log.i("NightSky", waitLog);
         publishWait();
     }
 
@@ -2596,7 +2613,7 @@ final class SessionController {
         if (exp < r.expNs * 0.93) {
             // the camera cut it short: the session's frames will be cut too, so plan with what it delivers
             prefs.noteExposureClamped(cameraId, r.expNs, exp);
-            plan.limitTo(exp, settings.durationSec, spec.white);
+            plan.limitTo(exp, settings.durationSec, spec.white, "The camera cut the test exposure to " + ExposurePlan.seconds(exp));
             log(String.format(Locale.US, "decision: the camera cut the test frame to %.2f s; new plan: %s", exp / 1e9, plan.describe()));
         } else {
             prefs.noteExposureDelivered(cameraId, r.expNs);
@@ -2632,6 +2649,7 @@ final class SessionController {
         in.timestampNs = tsn;
         in.up = motion.up();
         in.haloBaseline = prefs.haloBaseline(cameraId);
+        in.haloSpread = prefs.haloSpread(cameraId);
         in.clearZeroPoint = prefs.clearZeroPoint(cameraId);
         in.freeBytes = freeBytes();
         in.needBytes = needBytes();
@@ -3198,6 +3216,9 @@ final class SessionController {
         FocusSweep.Check c = FocusSweep.twoPoint(focusValue, checkLowF, checkLowH, checkLowN, at, rd.hfr, rd.noise, slope, lens.fine);
         float before = focusValue;
         if (!c.holds) focusValue = (float) Math.max(0, before + Stats.clamp(c.best - before, -2 * lens.fine, 2 * lens.fine));
+        // a move cut short at two fine steps: the best focus lies further on, so check again from there at once (a few
+        // times at most); the stars only shrink after such a move, so their growth wouldn't call for another check
+        boolean partWay = !c.holds && Math.abs(c.best - focusValue) > 0.5 * lens.fine && focusFollowUps < 3;
         rig.setFocus(focusValue);
         double minutes = (now - captureStartMs - pausedTotalMs) / 60000.0;
         log(String.format(Locale.US, "decision: focus check after %.0f minutes (%s): %s (stars %.2f and %.2f px; %.1f px per unit, from %s): %s",
@@ -3205,8 +3226,20 @@ final class SessionController {
                         ? String.format(Locale.US, "focus kept at %.3f", before) : String.format(Locale.US, "focus moved from %.3f to %.3f", before, focusValue)));
         focusChecks += (focusChecks.isEmpty() ? "" : ";") + String.format(Locale.US, "%.0f,%.3f,%.3f", minutes, before, focusValue);
         finishFocusCheck();
+        if (partWay) {
+            focusFollowUps++;
+            focusCheckDue = true;
+            focusCheckWhy = String.format(Locale.US, "the last check moved the focus part of the way to its best (%.3f)", c.best);
+            focusCheckDueMs = now;
+            log("focus: a check is due: " + focusCheckWhy);
+        } else {
+            focusFollowUps = 0;
+        }
         submitNext();
     }
+
+    /** Checks in a row that followed a move cut short. */
+    private int focusFollowUps;
 
     /** The check is over: its buffer back to the pool, and the stars' size from now on the new baseline. */
     private void finishFocusCheck() {
@@ -3395,6 +3428,10 @@ final class SessionController {
         if (!settings.siteId.isEmpty()) {
             p.setProperty("site.id", settings.siteId);
             p.setProperty("site.name", settings.siteName);
+            // the site's sky without the Moon, so the report can tell moonlight from the site's own light
+            Site site = Site.find(Sites.load(prefs), settings.siteId);
+            double dark = site == null ? Double.NaN : site.skyMedian();
+            if (!Double.isNaN(dark)) p.setProperty("site.skyMag", String.format(Locale.US, "%.2f", dark));
         }
         if (!settings.continuesFrom.isEmpty()) p.setProperty("continuesFrom", settings.continuesFrom);
         if (!settings.repeatOf.isEmpty()) p.setProperty("repeatOf", settings.repeatOf);
@@ -3417,6 +3454,7 @@ final class SessionController {
             p.setProperty("preflight.summary", pf.spoken());
             if (!Double.isNaN(pf.haloRatio)) p.setProperty("preflight.haloRatio", Double.toString(pf.haloRatio));
             if (!Double.isNaN(pf.haloLimit)) p.setProperty("preflight.haloLimit", Double.toString(pf.haloLimit));
+            if (!Double.isNaN(pf.haloClean)) p.setProperty("preflight.haloClean", Double.toString(pf.haloClean));
             if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
             Preflight.Item lens = pf.item("lens");
             p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
@@ -3438,6 +3476,8 @@ final class SessionController {
         store.log("Night Sky Camera " + BuildInfo.VERSION + " on " + spec.deviceMake + " " + spec.deviceModel
                 + " (" + android.os.Build.FINGERPRINT + ")");
         store.log("camera " + cameraId + ": " + spec.describe());
+        for (String l : startLog.toString().split("\n")) if (!l.isEmpty()) store.log(l);
+        startLog.setLength(0);
         store.log("plan: " + plan.describe());
         float tilt = motion.tiltDeg();
         if (!Float.isNaN(tilt)) store.log(String.format(Locale.US, "tilt from vertical %.1f deg", tilt));
@@ -3516,7 +3556,8 @@ final class SessionController {
         consecutiveFailures = 0;
         restarts = 0;
         if (r.buf == null) {
-            framesDropped++;
+            if (r.dropped) framesDropped++;
+            else framesFailed++;
             submitNext();
             return;
         }
@@ -3529,7 +3570,8 @@ final class SessionController {
                 // the camera cut the exposure short: plan again around what it can do
                 prefs.noteExposureClamped(cameraId, r.expNs, exp);
                 up.releaseBuffer(r.buf);
-                replanAfterClamp(exp);
+                replanAfterClamp(exp, "The camera cut the " + ExposurePlan.seconds(r.expNs).replace(" seconds", "-second")
+                        + " exposures to " + ExposurePlan.seconds(exp));
                 return;
             }
             prefs.noteExposureDelivered(cameraId, r.expNs);
@@ -3550,7 +3592,7 @@ final class SessionController {
         info.focus = fd != null ? fd : 0f;
         up.submit(r.buf, info);
         framesDone++;
-        if (framesDone >= plan.frames && !moreForClearSky()) finishCapture(null);
+        if (framesDone >= plan.frames && !moreForClearSky()) finishCapture(null, null);
         else submitNext();
     }
 
@@ -3602,9 +3644,13 @@ final class SessionController {
         return true;
     }
 
-    private void replanAfterClamp(long deliveredNs) {
+    /**
+     * Plans the session again with frames no longer than {@code deliveredNs}, starting over ({@code why}: the start of a
+     * sentence, for the log and the report).
+     */
+    private void replanAfterClamp(long deliveredNs, String why) {
         abortInFlight();
-        plan.limitTo(deliveredNs, settings.durationSec, spec.white);
+        plan.limitTo(deliveredNs, settings.durationSec, spec.white, why);
         try {
             if (up != null) up.abort();
             if (store != null) store.deleteAll();
@@ -3619,7 +3665,8 @@ final class SessionController {
             fail("Could not create the session folder: " + e.getMessage());
             return;
         }
-        log("camera cut the exposure to " + deliveredNs / 1e9 + " s; new plan: " + plan.describe());
+        // logged in the new folder: the old one, and its log, were just deleted
+        log("decision: " + Character.toLowerCase(why.charAt(0)) + why.substring(1) + "; new plan: " + plan.describe());
         submitNext();
     }
 
@@ -3642,12 +3689,13 @@ final class SessionController {
         awayTicks = 0;
         startToken++;
         if (framesDone >= plan.frames * 0.85) {
-            finishCapture("picked up near the end");
+            finishCapture("pickedUp", "picked up near the end");
             return;
         }
         abortInFlight();
         phase = Phase.PAUSED;
         pausedAtMs = SystemClock.elapsedRealtime();
+        pauses++;
         log("paused: phone moved");
         sounds.warn();
         publishCapture();
@@ -3671,6 +3719,8 @@ final class SessionController {
 
     private void watchdog() {
         restarts++;
+        stalls++;
+        stalledMs += SystemClock.elapsedRealtime() - lastProgressMs;
         log("no frame for " + (SystemClock.elapsedRealtime() - lastProgressMs) / 1000 + " s: restarting the camera (" + restarts + ")");
         abortInFlight();
         lastProgressMs = SystemClock.elapsedRealtime();
@@ -3683,10 +3733,10 @@ final class SessionController {
             try {
                 rig.open(cameraId, cc, rawSize);
             } catch (CameraAccessException | SecurityException | IllegalArgumentException e) {
-                finishCapture("the camera could not be reopened");
+                finishCapture("camera", "the camera could not be reopened");
             }
         } else {
-            finishCapture("the camera stopped responding");
+            finishCapture("camera", "the camera stopped responding");
         }
     }
 
@@ -3825,9 +3875,11 @@ final class SessionController {
             if (r.buf != null && up != null) up.releaseBuffer(r.buf);
             r.buf = null;
             inFlight--;
-            framesDropped++;
+            framesFailed++;
             log("frame " + seq + " failed");
             ++consecutiveFailures;
+            // the camera answered, so it hasn't stalled: no restart (that would cut short the frames already exposing)
+            lastProgressMs = SystemClock.elapsedRealtime();
             long fallback = Math.max(250_000_000L, advMaxNs);
             if (framesDone == 0 && consecutiveFailures >= 2 && plan.frameExpNs > fallback) {
                 // long exposures refused outright: use the longest the camera admits to
@@ -3835,9 +3887,17 @@ final class SessionController {
                 prefs.noteExposureClamped(cameraId, plan.frameExpNs, fallback);
                 consecutiveFailures = 0;
                 firstFrameChecked = false;
-                replanAfterClamp(fallback);
+                replanAfterClamp(fallback, "Exposures of " + ExposurePlan.seconds(plan.frameExpNs) + " kept failing");
+            } else if (framesDone == 0 && consecutiveFailures >= 3 && plan.frameExpNs >= 2_000_000_000L) {
+                // even the longest the camera admits to keeps failing: half as long, for this session only (the next
+                // tries the full length again, so a passing fault doesn't shorten every session after it)
+                long half = plan.frameExpNs / 2;
+                consecutiveFailures = 0;
+                firstFrameChecked = false;
+                replanAfterClamp(half, "Exposures of " + ExposurePlan.seconds(plan.frameExpNs) + " kept failing, even the longest the "
+                        + "camera admits to");
             } else if (consecutiveFailures > 8) {
-                finishCapture("the camera kept failing");
+                finishCapture("camera", "the camera kept failing");
             } else {
                 submitNext();
             }
@@ -3859,10 +3919,29 @@ final class SessionController {
         public void onCameraError(String what) {
             log("camera: " + what);
             if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
-                if (framesDone > 0) finishCapture(what);
+                if (framesDone > 0) finishCapture(CameraRig.TAKEN.equals(what) ? "taken" : "camera", what);
                 else fail("The camera stopped: " + what);
+            } else if (phase == Phase.STARTING && openRetries++ == 0 && !CameraRig.TAKEN.equals(what)) {
+                // an error as it opens often passes (the camera still closing after another app): once more, shortly
+                log("decision: opening the camera again in 2 s");
+                rig.close();
+                final int tk = token;
+                h.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (tk != token || phase != Phase.STARTING) return;
+                        try {
+                            rig = new CameraRig(ctx, h, rigListener);
+                            rig.setFocus(focusValue);
+                            rig.open(cameraId, cc, rawSize);
+                        } catch (CameraAccessException | SecurityException | IllegalArgumentException e) {
+                            fail("Could not open the camera: " + e.getMessage());
+                        }
+                    }
+                }, 2000);
             } else if (phase.ordinal() < Phase.CAPTURING.ordinal()) {
-                fail("The camera stopped: " + what);
+                fail(phase == Phase.STARTING ? "Couldn't start the camera: " + what + ". If it happens again, restart the phone."
+                        : "The camera stopped: " + what);
             }
         }
     };
@@ -3931,7 +4010,7 @@ final class SessionController {
                 public void run() {
                     // an aborted processor (after a re-plan) also reports here; only the current one counts
                     if ((phase == Phase.CAPTURING || phase == Phase.PAUSED) && up != null && up.failed()) {
-                        finishCapture("processing failed");
+                        finishCapture("processing", "processing failed");
                     }
                 }
             });
@@ -3942,9 +4021,14 @@ final class SessionController {
     // Finish and develop
     // ------------------------------------------------------------------------------------------------
 
-    private void finishCapture(String why) {
+    /** Ends the capture and develops it; {@code key} and {@code why} say why it ended before its planned end (null if it didn't). */
+    private void finishCapture(String key, String why) {
         if (phase.ordinal() >= Phase.FINISHING.ordinal()) return;
-        if (why != null) log("capture ended early: " + why);
+        if (why != null) {
+            log("capture ended early: " + why);
+            stopKey = key;
+            stopReason = why;
+        }
         abortInFlight();
         phase = Phase.FINISHING;
         token++;
@@ -4007,9 +4091,20 @@ final class SessionController {
             Properties p = st.readSettings();
             p.setProperty("capture.framesDone", Integer.toString(framesDone));
             p.setProperty("capture.framesDropped", Integer.toString(framesDropped));
+            p.setProperty("capture.framesFailed", Integer.toString(framesFailed));
+            p.setProperty("capture.pauses", Integer.toString(pauses));
+            p.setProperty("capture.pausedMs", Long.toString(pausedTotalMs));
+            p.setProperty("capture.stalls", Integer.toString(stalls));
+            p.setProperty("capture.stalledMs", Long.toString(stalledMs));
             p.setProperty("capture.thermalMax", Integer.toString(thermalMax));
             if (thermalSevereAtMs > 0) p.setProperty("capture.thermalSevereAtMs", Long.toString(thermalSevereAtMs));
-            if (!stopReason.isEmpty()) p.setProperty("capture.stopReason", stopReason);
+            p.setProperty("capture.framesPlanned", Integer.toString(plan.frames));
+            p.setProperty("capture.framesPerUnit", Integer.toString(plan.framesPerUnit));
+            if (!plan.shortWhy.isEmpty()) p.setProperty("capture.shortWhy", plan.shortWhy);
+            if (!stopReason.isEmpty()) {
+                p.setProperty("capture.stopKey", stopKey);
+                p.setProperty("capture.stopReason", stopReason);
+            }
             if (captureStartWallMs > 0) p.setProperty("capture.startWallMs", Long.toString(captureStartWallMs));
             p.setProperty("capture.durationSec", Integer.toString(settings.durationSec));
             p.setProperty("focus.final", Float.toString(focusValue));
@@ -4614,8 +4709,10 @@ final class SessionController {
         double zp = parseDouble(props.getProperty("preflight.zeroPointNorm"));
         if (!Double.isNaN(zp)) prefs.learnZeroPoint(sp.cameraId, zp);
         if (!Double.isNaN(halo) || !Double.isNaN(zp)) {
-            st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f, clear night zero point %.2f",
-                    prefs.haloBaseline(sp.cameraId), prefs.clearZeroPoint(sp.cameraId)));
+            double spread = prefs.haloSpread(sp.cameraId);
+            st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f (%s), clear night zero point %.2f",
+                    prefs.haloBaseline(sp.cameraId), Double.isNaN(spread) ? "how much it wanders is known after 4 good sessions"
+                            : String.format(Locale.US, "readings wander %.3f", spread), prefs.clearZeroPoint(sp.cameraId)));
         }
         // a clear, dark night at a saved site: the share of the stars its check saw is what a clear night there shows
         String siteId = props.getProperty("site.id", "");
@@ -4972,8 +5069,14 @@ final class SessionController {
 
     private void log(String s) {
         if (store != null) store.log(s);
+        else if (phase.ordinal() >= Phase.STARTING.ordinal() && phase.ordinal() < Phase.CAPTURING.ordinal() && startLog.length() < 16_000) {
+            startLog.append(s).append('\n');
+        }
         android.util.Log.i("NightSky", s);
     }
+
+    /** What was logged before the session's folder existed (the camera's hiccups as it opened, a skipped check), for its log. */
+    private final StringBuilder startLog = new StringBuilder();
 
     // ------------------------------------------------------------------------------------------------
     // Status
@@ -4988,6 +5091,8 @@ final class SessionController {
         String detail = String.format(Locale.US, "Frame %d of %d  ·  %s left", Math.min(plan.frames, framesDone + (phase == Phase.CAPTURING ? 1 : 0)),
                 plan.frames, clock(remaining));
         if (liveStars > 0) detail += String.format(Locale.US, "  ·  %d stars%s", liveStars, liveAligned ? "" : " (not lined up)");
+        // no frame since the camera went quiet and was restarted (it says so until one comes)
+        if (phase == Phase.CAPTURING && restarts > 0) detail = "The camera went quiet: restarting it  ·  " + detail;
         Status s = base();
         s.headline = head;
         s.detail = detail;

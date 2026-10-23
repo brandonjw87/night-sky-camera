@@ -49,6 +49,9 @@ final class CameraRig {
         void onCameraError(String what);
     }
 
+    /** What {@link Listener#onCameraError} says when another app or the system takes the camera. */
+    static final String TAKEN = "the camera was taken by another app or the system";
+
     private final CameraManager manager;
     private final Handler handler;
     private final Listener listener;
@@ -140,16 +143,34 @@ final class CameraRig {
             public void onDisconnected(CameraDevice d) {
                 d.close();
                 if (device == d) device = null;
-                if (!closed) listener.onCameraError("the camera was taken by another app or the system");
+                if (!closed) listener.onCameraError(TAKEN);
             }
 
             @Override
             public void onError(CameraDevice d, int error) {
                 d.close();
                 if (device == d) device = null;
-                if (!closed) listener.onCameraError("camera error " + error);
+                if (!closed) listener.onCameraError(errorWords(error));
             }
         }, handler);
+    }
+
+    /** A camera device error in words. */
+    static String errorWords(int error) {
+        switch (error) {
+            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
+                return "another app is using the camera";
+            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
+                return "other apps have the cameras open";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
+                return "the camera is turned off on this phone (by a device policy)";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
+                return "the camera hit an error (code 4)";
+            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
+                return "the phone's camera service hit an error (code 5)";
+            default:
+                return "camera error " + error;
+        }
     }
 
     boolean ready() {

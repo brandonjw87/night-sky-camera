@@ -31,6 +31,8 @@ public final class PostProcessor {
         /** Seconds of exposure that went into the stack (partly used frames count in part). */
         public double integrationSeconds;
         public boolean aligned;
+        /** Star trails (the frames brightest-of, nothing lined up), not a deep-sky stack. */
+        public boolean trails;
         public float maxGain = 1f;
         /** One short line for the user, e.g. "Used 35 of 37 frames (4 min 40 s). Skipped 2 cloudy." */
         public String summary = "";
@@ -320,6 +322,16 @@ public final class PostProcessor {
                 }
                 moved = 0;
             }
+            // what happened to each frame, for the report and the review screen: in the trails, or skipped as moved
+            java.util.Set<Integer> in = new java.util.HashSet<Integer>();
+            for (TrailsStacker.Unit t : tu) in.add(t.unit);
+            for (Unit u : units) {
+                FrameReport fr = frameReport(u, null, null);
+                fr.used = in.contains(u.rec.index);
+                fr.reason = fr.used ? "" : "moved";
+                out.frames.add(fr);
+            }
+            out.trails = true;
             RgbImage img = new TrailsStacker(spec, fs, hot).stack(tu, progress);
             img.x0 = 4;
             img.y0 = 4;

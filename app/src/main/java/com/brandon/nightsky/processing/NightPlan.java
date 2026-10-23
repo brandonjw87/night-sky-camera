@@ -577,12 +577,15 @@ public final class NightPlan {
         StringBuilder sb = new StringBuilder();
         sb.append(it.what());
         if (it.trails && it.endMs > 0) sb.append(" until ").append(clock(it.endMs));
-        if (it.startMs > 0) sb.append(", from ").append(it.when);
-        if (it.trails && it.endMs > 0 && it.startMs > 0 && it.endMs - it.startMs > MAX_SESSION_SEC * 1000L) {
-            sb.append(" (").append(MAX_SESSION_SEC / 3600).append(" hours at most: it stops at ")
-                    .append(clock(it.startMs + MAX_SESSION_SEC * 1000L)).append(")");
+        if (it.startMs > 0) {
+            sb.append(", from ").append(it.when);
+            if (it.trails && it.endMs > 0 && it.endMs - it.startMs > MAX_SESSION_SEC * 1000L) {
+                sb.append(" (").append(MAX_SESSION_SEC / 3600).append(" hours at most: it stops at ")
+                        .append(clock(it.startMs + MAX_SESSION_SEC * 1000L)).append(")");
+            }
+        } else {
+            sb.append(": ").append(it.when.isEmpty() ? it.rule.words : uncapital(it.when));
         }
-        else sb.append(": ").append(it.when.isEmpty() ? it.rule.words : uncapital(it.when));
         if (it.onlyIfClear && it.startMs > 0) sb.append(", only if clear (waits until ").append(clock(it.giveUp())).append(")");
         return sb.toString();
     }

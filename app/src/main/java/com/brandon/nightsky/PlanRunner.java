@@ -204,7 +204,7 @@ final class PlanRunner {
         s.placeTimeoutMs = 5 * 60_000L;
         // a repeat of an earlier session (the same stars a sidereal day later): offered for merging with it (G1)
         s.repeatOf = it.repeatOf;
-        s.origin = String.format(Locale.US, "night plan of %s: %s, %s (try %d)", p.night, it.what(), p.describe(it), Math.max(1, it.tries));
+        s.origin = String.format(Locale.US, "night plan of %s: %s (try %d)", p.night, p.describe(it), Math.max(1, it.tries));
         // the first try starts at the planned time; a later one as soon as the sky is checked
         boolean first = it.tries <= 1 && it.startMs > now;
         long start = first ? it.startMs : now;

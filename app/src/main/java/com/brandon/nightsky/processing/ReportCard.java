@@ -45,7 +45,7 @@ public final class ReportCard {
 
     /** One problem, with what it cost and what to do about it. */
     public static final class Problem {
-        /** clouds, dew, smudge, focus, moon, bump, thermal, dropped, alignment, trails. */
+        /** clouds, dew, smudge, focus, moon, bump, moved, camera, thermal, dropped, alignment, trails. */
         public String key;
         public String title;
         /** Share of the session's light it cost (0..1). */
@@ -128,6 +128,13 @@ public final class ReportCard {
     private Input in;
     private F[] fs;
     private int n;
+    /** Star trails: nothing is lined up or averaged, so there's no noise gain, alignment or rejection to report. */
+    private boolean starTrails;
+    /**
+     * Frames (units) the capture planned and didn't get, not yet put down to a cause: the gaps take their share
+     * first ({@link #thermal}), an early stop the rest ({@link #endedEarly}).
+     */
+    private double missingUnits;
     private boolean dewRising, timed;
     private double halo0 = Double.NaN, halo1 = Double.NaN;
     private int dewOnset = -1;
@@ -144,9 +151,13 @@ public final class ReportCard {
         r.bump();
         r.moon();
         r.thermal();
-        r.alignment();
-        r.trails();
-        r.colour();
+        r.endedEarly();
+        r.combined();
+        if (!r.starTrails) {
+            r.alignment();
+            r.trails();
+            r.colour();
+        }
         Collections.sort(r.problems, new Comparator<Problem>() {
             @Override
             public int compare(Problem a, Problem b) {
@@ -155,8 +166,10 @@ public final class ReportCard {
         });
         r.scores();
         r.headline();
-        r.gain();
-        r.registration();
+        if (!r.starTrails) {
+            r.gain();
+            r.registration();
+        }
         r.skyGuide();
         r.streaks();
         r.tipAndSpeech();
@@ -174,6 +187,7 @@ public final class ReportCard {
         });
         n = list.size();
         fs = new F[n];
+        starTrails = o.trails || (in.props != null && "trails".equals(in.props.getProperty("mode")));
         timed = in.sky != null && in.sky.clockValid;
         clock = new SimpleDateFormat("h:mm a", Locale.US);
         clock.setTimeZone(in.zone);
@@ -229,7 +243,8 @@ public final class ReportCard {
             }
         }
         double limit = num("preflight.haloLimit", 1.5 * Preflight.DEFAULT_CLEAN_HALO + 0.05);
-        double clean = (limit - 0.05) / 1.5;
+        // the clean lens's ratio the limit came from (before 1.2.1 the limit was always 1.5 times it plus 0.05)
+        double clean = num("preflight.haloClean", (limit - 0.05) / 1.5);
         if (k < 3) return;
         int third = Math.max(2, k / 3);
         double[] first = Arrays.copyOfRange(h, 0, third), last = Arrays.copyOfRange(h, k - third, k);
@@ -280,13 +295,15 @@ public final class ReportCard {
             problems.add(p);
             return;
         }
-        // a glow from the start: a smudge (or dew before the session began)
+        // a glow from the start: a smudge (or dew before the session began). The check's warning counts when the
+        // session's frames bear it out, well clear of a clean lens (not just above it: the readings wander)
         boolean warned = "true".equals(in.props.getProperty("preflight.lensWarned"));
-        if ((halo0 > limit || warned) && halo0 > clean) {
-            double cost = 1 - Math.pow((1 + clean) / (1 + halo0), 2);
+        double c = Math.max(0, clean);
+        if ((halo0 > limit || warned && halo0 > 0.5 * (c + limit)) && halo0 > c) {
+            double cost = 1 - Math.pow((1 + c) / (1 + halo0), 2);
             Problem p = new Problem("smudge", "Smudged lens", cost);
             p.evidence = String.format(Locale.US, "Every star had a glow around it all session (%.0f%% of its light; a clean "
-                    + "lens gives about %.0f%%), so the lens was probably smudged or already damp.", 100 * halo0 / (1 + halo0), 100 * clean / (1 + clean));
+                    + "lens gives about %.0f%%), so the lens was probably smudged or already damp.", 100 * halo0 / (1 + halo0), 100 * c / (1 + c));
             p.fix = "Wipe the camera lens with a soft cloth before you start: a fingerprint spreads the starlight into a glow.";
             p.spoken = "The lens looks smudged.";
             problems.add(p);
@@ -435,20 +452,33 @@ public final class ReportCard {
         }
         String checks = in.props.getProperty("focus.checks", "");
         if (!checks.isEmpty()) {
-            String[] cs = checks.split(";");
-            StringBuilder moves = new StringBuilder();
-            for (String c : cs) {
+            // a check that follows straight on from a move cut short belongs to the same check: {minutes, from, to, steps}
+            List<double[]> eps = new ArrayList<double[]>();
+            for (String c : checks.split(";")) {
                 String[] q = c.split(",");
                 if (q.length < 3) continue;
                 try {
                     double m = Double.parseDouble(q[0]), a = Double.parseDouble(q[1]), b = Double.parseDouble(q[2]);
-                    if (Math.abs(b - a) < 1e-4) continue;
-                    moves.append(moves.length() == 0 ? "" : ", ").append(String.format(Locale.US, "from %.3f to %.3f after %.0f minutes", a, b, m));
+                    double[] last = eps.isEmpty() ? null : eps.get(eps.size() - 1);
+                    if (last != null && m - last[0] < 3 && Math.abs(a - last[2]) < 1e-4 && Math.abs(last[2] - last[1]) >= 1e-4) {
+                        last[2] = b;
+                        last[3]++;
+                    } else {
+                        eps.add(new double[]{m, a, b, 1});
+                    }
                 } catch (NumberFormatException ignored) {
                 }
             }
-            sb.append(String.format(Locale.US, " The stars grew during the session, so the focus was checked %s: %s.",
-                    cs.length == 1 ? "once" : cs.length + " times", moves.length() == 0 ? "it still held" : "it moved " + moves));
+            StringBuilder moves = new StringBuilder();
+            for (double[] e : eps) {
+                if (Math.abs(e[2] - e[1]) < 1e-4) continue;
+                moves.append(moves.length() == 0 ? "" : ", ").append(String.format(Locale.US, "from %.3f to %.3f%s after %.0f minutes", e[1], e[2],
+                        e[3] > 1 ? ", a step at a time," : "", e[0]));
+            }
+            if (!eps.isEmpty()) {
+                sb.append(String.format(Locale.US, " The stars grew during the session, so the focus was checked %s: %s.",
+                        eps.size() == 1 ? "once" : eps.size() + " times", moves.length() == 0 ? "it still held" : "it moved " + moves));
+            }
         }
         notes.add(sb.toString());
     }
@@ -518,8 +548,11 @@ public final class ReportCard {
         }
         if (first < 0) return;
         skyMag = measuredSkyMag();
-        double darkNl = nanoLamberts(21.0);
-        double shareSum = 0, maxAlt = -90, illum = 0, sepMid = 0, factor = 1;
+        // the sky without the Moon: this site's own when sessions or sky readings there measured it, else a dark one
+        double natural = num("site.skyMag", Double.NaN);
+        double naturalNl = nanoLamberts(Double.isNaN(natural) ? 21.0 : natural);
+        double measuredNl = Double.isNaN(skyMag) ? Double.NaN : nanoLamberts(skyMag);
+        double shareSum = 0, modelSum = 0, maxAlt = -90, illum = 0, sepMid = 0, factor = 1;
         int samples = 5;
         for (int s = 0; s < samples; s++) {
             double u = fs[first].utcMs + (fs[last].utcMs - fs[first].utcMs) * s / (samples - 1.0);
@@ -539,13 +572,24 @@ public final class ReportCard {
             }
             if (alt <= 0) continue;
             double bm = moonSkyNl(k, rho, 90 - alt, z);
-            double total = !Double.isNaN(skyMag) ? Math.max(nanoLamberts(skyMag), bm) : darkNl + bm;
-            double share = Math.min(0.95, bm / total);
+            double modelShare = Math.min(0.95, bm / (naturalNl + bm));
+            // the sky as measured holds the moonlight on top of the sky's own: a Moon behind a house, trees or a
+            // hill is up but lights little here, and the measurement shows it
+            double share = Double.isNaN(measuredNl) ? modelShare
+                    : Math.min(0.95, Math.min(bm, Math.max(0, measuredNl - naturalNl)) / measuredNl);
+            modelSum += modelShare;
             shareSum += share;
             if (s == samples / 2 || factor == 1) factor = 1 / (1 - share);
         }
         double impact = shareSum / samples;
-        if (maxAlt <= 0 || impact < 0.005) return;
+        if (maxAlt <= 0) return;
+        if (impact < 0.005) {
+            if (modelSum / samples >= 0.2) {
+                notes.add(String.format(Locale.US, "The Moon (%.0f%% lit) was up but didn't brighten the sky here, so something hid it "
+                        + "(a house, trees, a hill or a cloud).", 100 * illum));
+            }
+            return;
+        }
         Problem p = new Problem("moon", "Moonlight", impact);
         double midJd = Astro.jdUtc(fs[(first + last) / 2].utcMs / 1000.0);
         p.evidence = String.format(Locale.US, "The Moon (%.0f%% lit) was up, %.0f degrees from where the camera pointed, and "
@@ -650,26 +694,198 @@ public final class ReportCard {
         double g0 = gaps.length > 0 ? median(gaps.clone()) : 0;
         double lostSec = 0;
         for (double g : gaps) lostSec += Math.max(0, g - Math.max(1.0, 3 * g0));
-        double spanSec = n > 0 ? (fs[n - 1].t + 0.5 * fs[n - 1].r.exposure) - (fs[0].t - 0.5 * fs[0].r.exposure) : 0;
-        double impact = spanSec > 0 ? lostSec / spanSec : 0;
+        double spanSec = span();
+        double[] ex = new double[n];
+        for (int i = 0; i < n; i++) ex[i] = fs[i].r.exposure;
+        double exp = n > 0 ? median(ex) : 0;
+        // what a gap cost: the capture runs on until it has all its planned frames, so one that got them made the gaps
+        // up (they cost time, not light); one that stopped first lost what the gaps would have held. Sessions before
+        // 1.2.1 didn't say what they planned: the gaps' share of the session, as then.
+        int planned = plannedUnits();
+        missingUnits = Math.max(0, planned - n);
+        boolean madeUp = planned > 0 && n >= planned;
+        // the capture pausing while the phone was picked up or moved leaves gaps of its own: the pause, the exposure
+        // it cut short and the settling after it
+        int pauses = (int) num("capture.pauses", 0);
+        if (pauses > 0 && lostSec > 0) {
+            double movedSec = Math.min(lostSec, num("capture.pausedMs", 0) / 1000.0 + pauses * (exp + 3));
+            lostSec -= movedSec;
+            if (movedSec >= 1 && spanSec > 0) {
+                Problem p = new Problem("moved", "The phone was moved", gapCost(movedSec, spanSec, exp, planned));
+                p.evidence = "The capture paused " + times(pauses) + " when the phone was picked up or moved" + gapWords(movedSec, madeUp);
+                p.fix = FIX_MOVED;
+                p.spoken = "The capture paused when the phone was moved.";
+                problems.add(p);
+            }
+        }
+        // so does the camera losing frames, or going silent until the app restarts it, which closing apps won't cure
+        int failed = (int) num("capture.framesFailed", 0);
+        int stalls = (int) num("capture.stalls", 0);
+        if ((failed > 0 || stalls > 0) && lostSec > 0) {
+            double camSec = Math.min(lostSec, num("capture.stalledMs", 0) / 1000.0 + stalls * 3 + failed * (exp + 1));
+            lostSec -= camSec;
+            if (camSec >= 1 && spanSec > 0) {
+                Problem p = new Problem("camera", "The camera had trouble", gapCost(camSec, spanSec, exp, planned));
+                StringBuilder e = new StringBuilder("The camera ");
+                if (failed > 0) e.append("lost ").append(count(failed, "frame"));
+                if (failed > 0 && stalls > 0) e.append(" and ");
+                if (stalls > 0) e.append("stopped sending frames ").append(times(stalls)).append(" until the app restarted it");
+                e.append(gapWords(camSec, madeUp));
+                p.evidence = e.toString();
+                p.fix = "Nothing to do if it's rare: the app carries on by itself. If it happens every session, restart the phone before the next one.";
+                p.spoken = "The camera had trouble, but the session carried on.";
+                problems.add(p);
+            }
+        }
         boolean hot = status >= 3;
-        if (!hot && impact < 0.005 && dropped == 0) return;
-        Problem p = new Problem(hot ? "thermal" : "dropped", hot ? "The phone got hot" : "Frames dropped", impact);
+        if (!hot && dropped == 0 && (lostSec < 1 || spanSec <= 0 || lostSec / spanSec < 0.005)) return;
+        Problem p = new Problem(hot ? "thermal" : "dropped", hot ? "The phone got hot" : "Frames dropped", gapCost(lostSec, spanSec, exp, planned));
         StringBuilder e = new StringBuilder();
         if (hot) {
             e.append("The phone reported it was ").append(thermalName(status)).append(" hot");
             if (!Double.isNaN(hotAt)) e.append(" from ").append(clock.format(new Date((long) hotAt)));
-            e.append(lostSec >= 1 ? String.format(Locale.US, ", and %.0f seconds of the session weren't exposed", lostSec) : "");
-        } else {
-            e.append(String.format(Locale.US, "%.0f seconds of the session weren't exposed", lostSec));
         }
-        if (dropped > 0) e.append(" (").append(count(dropped, "frame")).append(" dropped").append(hot ? "" : " while the phone caught up").append(')');
-        e.append('.');
+        if (dropped > 0) {
+            String d = count(dropped, "frame") + " dropped" + (hot ? "" : " while the phone caught up");
+            if (e.length() == 0) e.append(d);
+            else e.append(" (").append(d).append(')');
+        }
+        if (lostSec >= 1) {
+            if (e.length() == 0) e.append(String.format(Locale.US, "%.0f seconds of the session weren't exposed", lostSec))
+                    .append(madeUp ? "; the session ran that much longer to get all its frames" : "");
+            else if (madeUp) e.append(gapWords(lostSec, true));
+            else e.append(String.format(Locale.US, ", and %.0f seconds of the session weren't exposed", lostSec));
+        }
+        if (e.length() == 0 || e.charAt(e.length() - 1) != '.') e.append('.');
         p.evidence = e.toString();
-        p.fix = hot ? "Start with a cool phone: take the case off, keep it out of the sun and warm pockets, and don't charge it during a session."
-                : "Close other apps before a session so the phone can keep up.";
+        p.fix = hot ? FIX_HOT : "Close other apps before a session so the phone can keep up.";
         p.spoken = hot ? "The phone got hot." : "Some frames were dropped.";
         problems.add(p);
+    }
+
+    private static final String FIX_MOVED = "Lay the phone where nothing will knock it and leave it until it says Done (picking it up pauses "
+            + "the capture; it carries on once it's back down).";
+    private static final String FIX_HOT = "Start with a cool phone: take the case off, keep it out of the sun and warm pockets, and don't "
+            + "charge it during a session.";
+
+    /**
+     * The share of the session's light {@code sec} seconds without exposures cost: none if the capture made them up
+     * (it runs on until it has its planned frames), else the frames they would have held, out of those planned and
+     * not got; without a plan (sessions before 1.2.1), their share of the session.
+     */
+    private double gapCost(double sec, double spanSec, double exp, int planned) {
+        if (planned <= 0) return spanSec > 0 ? sec / spanSec : 0;
+        if (exp <= 0) return 0;
+        double units = Math.min(missingUnits, sec / exp);
+        missingUnits -= units;
+        return units / planned;
+    }
+
+    /** How a gap of {@code sec} seconds ends its sentence: made up by capturing longer, or time not exposed. */
+    private static String gapWords(double sec, boolean madeUp) {
+        return madeUp ? String.format(Locale.US, "; the session ran %.0f seconds longer to get all its frames.", sec)
+                : String.format(Locale.US, ", so %.0f seconds of the session weren't exposed.", sec);
+    }
+
+    /** Units (frames as stacked) the capture planned, with any time added, or 0 if the session didn't say (before 1.2.1). */
+    private int plannedUnits() {
+        int frames = (int) num("capture.framesPlanned", 0);
+        int per = Math.max(1, (int) num("capture.framesPerUnit", 1));
+        return (frames + per - 1) / per;
+    }
+
+    /** Seconds from the start of the first frame to the end of the last. */
+    private double span() {
+        return n > 0 ? (fs[n - 1].t + 0.5 * fs[n - 1].r.exposure) - (fs[0].t - 0.5 * fs[0].r.exposure) : 0;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // a capture that ended before its planned end: why, and the share of the session it cost
+
+    private void endedEarly() {
+        String key = in.props != null ? in.props.getProperty("capture.stopKey", "") : "";
+        String why = in.props != null ? in.props.getProperty("capture.stopReason", "") : "";
+        if (key.isEmpty() || why.isEmpty() || n == 0) return;
+        int planned = plannedUnits();
+        double plannedSec = num("capture.durationSec", 0), spanSec = span();
+        String frames = planned > n ? String.format(Locale.US, "%d of %d frames", n, planned) : count(n, "frame");
+        if (key.equals("you") || key.equals("pickedUp") || key.equals("end") || key.equals("dawn")) {
+            // planned, or done by hand: worth a line, not a problem
+            String at = String.format(Locale.US, " after %s (%s)", PostProcessor.duration(spanSec), frames);
+            notes.add(key.equals("you") ? capital(why) + at + "."
+                    : key.equals("pickedUp") ? "The session ended when the phone was picked up near the end," + at + "."
+                    : key.equals("end") ? "Stopped as planned: " + why + "."
+                    : "Stopped as planned at " + why + ".");
+            return;
+        }
+        // what the early end cost: the planned frames it didn't get, less those the gaps before it already account for
+        double missed = planned > 0 ? missingUnits / planned : 0;
+        String target, title, fix, spoken;
+        switch (key) {
+            case "camera":
+                target = "camera";
+                title = "The camera stopped";
+                fix = "Restart the phone before the next session.";
+                spoken = "The camera stopped, so the session ended early.";
+                break;
+            case "taken":
+                target = "camera";
+                title = "Another app took the camera";
+                fix = "Don't open the Camera app or start a video call during a session: they take the camera over.";
+                spoken = "Another app took the camera, so the session ended early.";
+                break;
+            case "battery":
+                target = "battery";
+                title = "The battery ran low";
+                fix = "Charge the phone before a long session, or run it from a power bank.";
+                spoken = "The battery ran low, so the session ended early.";
+                break;
+            case "storage":
+                target = "storage";
+                title = "Storage ran low";
+                fix = "Free up space on the phone before the next session, or keep fewer sessions' frames (Settings, Sessions and storage).";
+                spoken = "Storage ran low, so the session ended early.";
+                break;
+            case "hot":
+                target = "thermal";
+                title = "The phone got hot";
+                fix = FIX_HOT;
+                spoken = "The phone got too hot, so the session ended early.";
+                break;
+            case "moved":
+                target = "moved";
+                title = "The phone was moved";
+                fix = FIX_MOVED;
+                spoken = "The phone was picked up, so the session ended early.";
+                break;
+            default:
+                target = "early";
+                title = "The session ended early";
+                fix = "If it happens again, restart the phone before the next session.";
+                spoken = "The session ended early.";
+                break;
+        }
+        // what it had by then, in exposure (the session may have run longer: a camera that went quiet is waited for)
+        double captured = 0;
+        for (F f : fs) captured += f.r.exposure;
+        String after = String.format(Locale.US, "with %s%s captured (%s)", PostProcessor.duration(captured),
+                plannedSec > captured + 1 ? " of the planned " + PostProcessor.duration(plannedSec) : "", frames);
+        String evidence = capital(why) + ", so the session stopped " + after + ".";
+        // the same trouble may already be a problem (the camera faltering before it stopped, the heat): one line for both
+        Problem p = null;
+        for (Problem q : problems) if (q.key.equals(target)) p = q;
+        if (p == null) {
+            p = new Problem(target, title, missed);
+            p.evidence = evidence;
+            problems.add(p);
+        } else {
+            p.title = title;
+            p.impact += missed;
+            // the heat's own line already says how hot it got
+            p.evidence += " " + (key.equals("hot") ? "That ended the session " + after + "." : evidence);
+        }
+        p.fix = fix;
+        p.spoken = spoken;
     }
 
     static String thermalName(int s) {
@@ -771,8 +987,14 @@ public final class ReportCard {
         double[] snr = new double[n];
         float[] sv = new float[n], hv = new float[n], nv = new float[n];
         int ks = 0, kh = 0, kn = 0;
-        for (F f : fs) if (f.r.used && f.r.noise > 0) nv[kn++] = (float) f.r.noise;
+        float[] ev = new float[n];
+        int ke = 0;
+        for (F f : fs) {
+            if (f.r.used && f.r.noise > 0) nv[kn++] = (float) f.r.noise;
+            if (f.r.used && f.r.exposure > 0) ev[ke++] = (float) f.r.exposure;
+        }
         double noiseMed = kn > 0 ? Stats.median(nv, kn) : 1;
+        double expMed = ke > 0 ? Stats.median(ev, ke) : 0;
         for (int i = 0; i < n; i++) {
             F f = fs[i];
             if (!f.r.used) continue;
@@ -806,10 +1028,15 @@ public final class ReportCard {
                     double t = T(f) / tRef;
                     double lT = 1 - Math.min(1, t * t);
                     double sig = f.r.noise > 0 ? f.r.noise : noiseMed;
-                    double nr = sig / noiseMed;
+                    // a unit short of its frames (the session stopped part way through it) holds less light, and is
+                    // noisier for that alone: not a brighter sky
+                    double ex = expMed > 0 && f.r.exposure > 0 ? Math.min(1, f.r.exposure / expMed) : 1;
+                    double lE = 1 - ex;
+                    double nr = sig / noiseMed * Math.sqrt(ex);
                     double lN = 1 - Math.min(1, 1 / (nr * nr));
-                    double m = Math.max(Math.max(lShare, lSharp), Math.max(lT, lN));
+                    double m = Math.max(Math.max(Math.max(lShare, lSharp), Math.max(lT, lN)), lE);
                     if (m == lShare) fr.reason = String.format(Locale.US, "cloud over part of it (%.0f%% used)", 100 * f.share);
+                    else if (m == lE) fr.reason = String.format(Locale.US, "shorter (%.0f s, the others %.0f s)", f.r.exposure, expMed);
                     else if (m == lT) fr.reason = String.format(Locale.US, f.tDew < 0.9 ? "dew on the lens (%.0f%% light)" : "thin cloud (%.0f%% light)", 100 * T(f));
                     else if (m == lSharp) fr.reason = String.format(Locale.US, "soft stars (%.1f vs %.1f px)", 2 * f.r.hfr, 2 * hRef);
                     else fr.reason = String.format(Locale.US, "brighter sky (%.1f times the noise)", nr);
@@ -1167,17 +1394,23 @@ public final class ReportCard {
         problems.addAll(keep);
         if (top != null) {
             tip = top.fix;
+        } else if (starTrails) {
+            tip = "Everything worked: trails grow with time, so a longer session (30 minutes or more) draws longer arcs.";
         } else if (n > 1 && nEff >= 0.8 * n) {
             tip = "Everything worked: next time try a longer session (+5 minutes) for an even smoother picture.";
         } else {
             tip = "Lay the phone flat on something firm and let it run the full session.";
         }
         StringBuilder sb = new StringBuilder("Done. ");
-        sb.append(goodFrames == 1 ? "One good frame" : goodFrames + " good frames");
-        if (n > 1 && equivalentSec > 0) sb.append(", like a ").append(duration(equivalentSec, true)).append(" exposure");
+        if (starTrails) sb.append("Star trails from ").append(goodFrames == 1 ? "one frame" : goodFrames + " frames");
+        else sb.append(goodFrames == 1 ? "One good frame" : goodFrames + " good frames");
+        if (!starTrails && n > 1 && equivalentSec > 0) {
+            String d = duration(equivalentSec, true);
+            sb.append(", like ").append(article(d)).append(' ').append(d).append(" exposure");
+        }
         sb.append('.');
         if (top != null && top.impact >= 0.05) sb.append(' ').append(top.spoken);
-        else if (top == null && n > 1) sb.append(" A clear, steady session.");
+        else if (top == null && n > 1 && !starTrails) sb.append(" A clear, steady session.");
         spoken = sb.toString();
     }
 
@@ -1351,8 +1584,30 @@ public final class ReportCard {
         return sb.toString();
     }
 
+    /**
+     * Frames added up from shorter exposures: said, as the capture counted exposures ("frame 44 of 44") and the report
+     * counts frames, and so you know what the camera does.
+     */
+    private void combined() {
+        int per = (int) num("capture.framesPerUnit", 1);
+        double sec = num("frameExposureNs", 0) / 1e9;
+        if (per <= 1 || !(sec > 0)) return;
+        String why = in.props != null ? in.props.getProperty("capture.shortWhy", "") : "";
+        if (why.isEmpty()) why = "The exposures were shorter than planned";
+        int done = (int) num("capture.framesDone", 0);
+        String len = Math.abs(sec - Math.rint(sec)) < 0.05 ? Long.toString(Math.round(sec)) : String.format(Locale.US, "%.1f", sec);
+        notes.add(String.format(Locale.US, "%s, so each frame here is %s %s-second exposures added together%s.", why, small(per), len,
+                done > per ? " (" + done + " in all)" : ""));
+    }
+
     // ------------------------------------------------------------------------------------------------
     // helpers
+
+    /** "two" to "ten", then digits. */
+    static String small(int k) {
+        String[] w = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"};
+        return k >= 0 && k < w.length ? w[k] : Integer.toString(k);
+    }
 
     private double num(String key, double def) {
         String v = in.props != null ? in.props.getProperty(key) : null;
@@ -1393,6 +1648,15 @@ public final class ReportCard {
     /** "1 frame", "3 frames". */
     static String count(int k, String noun) {
         return k + " " + noun + (k == 1 ? "" : "s");
+    }
+
+    /** "a" or "an" before a number in digits, as it's said: an 8-minute, an 80-second, an 11-minute, a 10-minute. */
+    static String article(String s) {
+        return s.matches("(8|11|18)(\\D.*)?|8\\d.*") ? "an" : "a";
+    }
+
+    static String times(int k) {
+        return k == 1 ? "once" : k == 2 ? "twice" : k + " times";
     }
 
     static String capital(String s) {
