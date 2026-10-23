@@ -24,6 +24,9 @@ final class ZoomImageView extends ImageView {
     /** One finger painting over the picture: where, and the brush's radius, in its pixels; {@code start} on touching down. */
     interface PaintListener {
         void onPaint(float x, float y, float radius, boolean start);
+
+        /** The stroke just begun was the first finger of a pinch: take it back. */
+        void onStrokeCancelled();
     }
 
     /** Drawn over the picture, in its pixels; {@code scale} screen pixels per picture pixel. */
@@ -40,6 +43,11 @@ final class ZoomImageView extends ImageView {
     private boolean keepView;
     private TapListener tap;
     private PaintListener painter;
+    /** A second finger this soon after the first makes the first's stroke part of a pinch, not paint (ms). */
+    private static final long PINCH_MS = 300;
+    /** A one-finger stroke is being painted, and when it began. */
+    private boolean stroke;
+    private long strokeMs;
     private float brushPx;
     private Overlay overlay;
     /** The gesture has had two fingers down (it zooms and moves, it doesn't paint); and the pinch's last centre. */
@@ -196,7 +204,15 @@ final class ZoomImageView extends ImageView {
         if (a == MotionEvent.ACTION_DOWN) multi = false;
         if (e.getPointerCount() > 1) multi = true;
         if (painter != null) {
-            if (!multi && (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE)) {
+            if (a == MotionEvent.ACTION_DOWN) {
+                stroke = true;
+                strokeMs = e.getEventTime();
+            } else if (a == MotionEvent.ACTION_POINTER_DOWN && stroke) {
+                // two fingers zoom and move: a stroke only just begun was the first of them landing
+                stroke = false;
+                if (e.getEventTime() - strokeMs < PINCH_MS) painter.onStrokeCancelled();
+            }
+            if (stroke && !multi && (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE)) {
                 float[] p = toPicture(e.getX(), e.getY());
                 painter.onPaint(p[0], p[1], brushPx / 2f / scale(), a == MotionEvent.ACTION_DOWN);
             }

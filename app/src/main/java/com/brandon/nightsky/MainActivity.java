@@ -2692,6 +2692,10 @@ public final class MainActivity extends Activity {
         /** The foreground painting (null when the stack can't change), and its cells over the picture (a pixel each). */
         EdgeMask painting;
         Bitmap cells;
+        /** The painting before each stroke or clearing, newest last, for Undo; and the stroke's own, until it paints. */
+        final ArrayList<EdgeMask> undo = new ArrayList<EdgeMask>();
+        EdgeMask strokeBefore;
+        boolean strokeKept;
         /** What one finger does on the Ground tab: paints ground, sky, rubs out ({@link EdgeMask} values), or -1 moves. */
         int brush = -1;
         int brushDp = 36;
@@ -2706,6 +2710,8 @@ public final class MainActivity extends Activity {
         TextView hint;
         /** Lining a frame up by hand, over the edit screen (null when not shown). */
         View tapView;
+        /** The Ground tab's Undo (null when another tab is shown). */
+        Button undoButton;
     }
 
     /** Reads what editing the photo needs (the session's frames and foreground), then opens the edit screen. */
@@ -2848,6 +2854,7 @@ public final class MainActivity extends Activity {
     private void fillEditTab(EditState es) {
         LinearLayout box = es.tabBox;
         box.removeAllViews();
+        es.undoButton = null;
         boolean ground = TAB_GROUND.equals(es.tab);
         if (editZoom != null) {
             editZoom.setOverlay(ground ? groundOverlay(es) : null);
@@ -3382,17 +3389,32 @@ public final class MainActivity extends Activity {
         });
         box.addView(sl, gap(8));
         box.addView(size);
+        LinearLayout ur = row();
+        final Button undo = smallButton("Undo", false);
+        undo.setEnabled(!es.undo.isEmpty());
+        es.undoButton = undo;
+        undo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                undoPainting(es);
+            }
+        });
+        ur.addView(undo, weight());
         Button clear = smallButton("Clear the painting", false);
         clear.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                if (es.painting.isBlank()) return;
+                pushUndo(es, es.painting);
                 es.painting = new EdgeMask(es.painting.width, es.painting.height);
                 es.cells = null;
                 if (editZoom != null) editZoom.setOverlay(groundOverlay(es));
                 editHint(es);
+                undo.setEnabled(true);
             }
         });
-        box.addView(clear, gap(10));
+        ur.addView(clear, weight());
+        box.addView(ur, gap(10));
         box.addView(text("Ground: something in the way that wasn't found. Sky: sky that was taken for ground. Stars on the ground are "
                 + "left out of lining up the frames.", 12, RED_DIM, false), gap(6));
     }
@@ -3446,14 +3468,49 @@ public final class MainActivity extends Activity {
             public void onPaint(float x, float y, float radius, boolean start) {
                 SessionController.EditInfo in = es.info;
                 if (es.painting == null || es.brush < 0) return;
+                if (start) {
+                    es.strokeBefore = es.painting.copy();
+                    es.strokeKept = false;
+                }
                 float sx = in.cx0 + x * in.factor, sy = in.cy0 + y * in.factor, sr = radius * in.factor;
                 if (!es.painting.paintDisc(sx, sy, sr, (byte) es.brush)) return;
+                if (!es.strokeKept && es.strokeBefore != null) {
+                    // the first change of the stroke: what it changes can be undone
+                    pushUndo(es, es.strokeBefore);
+                    es.strokeKept = true;
+                    if (es.undoButton != null) es.undoButton.setEnabled(true);
+                }
                 int c = EdgeMask.CELL;
                 groundCells(es, (int) ((sx - sr) / c) - 1, (int) ((sy - sr) / c) - 1, (int) ((sx + sr) / c) + 1, (int) ((sy + sr) / c) + 1);
                 if (editZoom != null) editZoom.invalidate();
                 if (start) editHint(es);
             }
+
+            @Override
+            public void onStrokeCancelled() {
+                if (!es.strokeKept || es.undo.isEmpty()) return;
+                es.strokeKept = false;
+                undoPainting(es);
+            }
         };
+    }
+
+    /** At most this many steps back on the Ground tab. */
+    private static final int UNDO_STEPS = 20;
+
+    private static void pushUndo(EditState es, EdgeMask before) {
+        es.undo.add(before);
+        while (es.undo.size() > UNDO_STEPS) es.undo.remove(0);
+    }
+
+    /** The painting as it was before the last stroke or clearing. */
+    private void undoPainting(EditState es) {
+        if (es.undo.isEmpty()) return;
+        es.painting = es.undo.remove(es.undo.size() - 1);
+        es.cells = null;
+        if (editZoom != null) editZoom.setOverlay(groundOverlay(es));
+        editHint(es);
+        if (es.undoButton != null) es.undoButton.setEnabled(!es.undo.isEmpty());
     }
 
     private void rendersTab(final EditState es, LinearLayout box) {
