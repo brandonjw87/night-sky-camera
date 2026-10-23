@@ -4,6 +4,7 @@ import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.SessionSky;
+import com.brandon.nightsky.processing.ColorCalibration;
 import com.brandon.nightsky.processing.ColorMath;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.LiveStats;
@@ -72,6 +73,8 @@ public final class SimRunner {
         double lonDeg = System.getenv("SIM_LON") != null ? Double.parseDouble(System.getenv("SIM_LON")) : DEFAULT_LON;
         if (System.getenv("SIM_REALSKY") != null) catalog = loadCatalog();
         SkySim sim = new SkySim(W, H, truth, 42, catalog, startMs, lonDeg);
+        // SIM_BV=1: real stars coloured by their B-V, as the colour calibration (F4) expects
+        if (System.getenv("SIM_BV") != null) sim.colourByBv();
         if (events) {
             sim.satelliteFrame = frames / 4;
             sim.planeFrame = frames / 2;
@@ -138,6 +141,14 @@ public final class SimRunner {
 
         SensorSpec spec = sim.spec(calibrated);
         ColorMath.compute(spec, ColorMath.DEFAULT_CCT);
+        // SIM_CAST=red,blue: the fixed white balance off by these factors, for the colour calibration to take out
+        double[] cast = doubles(System.getenv("SIM_CAST"));
+        if (cast != null) {
+            for (int c = 0; c < 3; c++) {
+                spec.camToSrgb[c] *= (float) cast[0];
+                spec.camToSrgb[6 + c] *= (float) cast[1];
+            }
+        }
         File root = new File(outDir, "sessions");
         root.mkdirs();
         SessionStore store = SessionStore.create(root);
@@ -206,6 +217,8 @@ public final class SimRunner {
         // SIM_F2=0: leave the sensor's pattern in (to compare)
         if ("0".equals(System.getenv("SIM_F2"))) pp.patternCleanup = false;
         if (System.getenv("SIM_REF") != null) pp.forceReference = Integer.parseInt(System.getenv("SIM_REF"));
+        // SIM_NOCOLOR=1: keep the fixed white balance (to compare with the stars' own, F4)
+        if (System.getenv("SIM_NOCOLOR") != null) pp.colorCalibration = false;
         // SIM_BLEND=1: also the long-exposure blend (C7); SIM_QUICK=1: the Quick look preset's one stacking pass
         if (System.getenv("SIM_BLEND") != null) pp.blend = true;
         if (System.getenv("SIM_QUICK") != null) {
@@ -339,6 +352,7 @@ public final class SimRunner {
         writeCrop(pix, cw, ch, cw / 2 - 300, ch / 2 - 200, 600, 400, new File(outDir, "crop_center.png"));
         writeCrop(pix, cw, ch, cw - 620, 20, 600, 400, new File(outDir, "crop_corner.png"));
         if (pp.blend) blendCheck(o, spec, outDir);
+        if (o.colour != null) colourCheck(o, pix, cast, System.getenv("SIM_BV") != null);
 
         DngWriter.Meta meta = new DngWriter.Meta();
         meta.exposureSeconds = o.integrationSeconds;
@@ -347,12 +361,64 @@ public final class SimRunner {
         meta.baselineExposure = 2.0;
         OutputStream os = new BufferedOutputStream(new FileOutputStream(new File(outDir, "stack.dng")), 1 << 20);
         try {
-            DngWriter.write(os, o.image, spec, meta, o.maxGain);
+            DngWriter.write(os, o.image, o.colourSpec != null ? o.colourSpec : spec, meta, o.maxGain);
         } finally {
             os.close();
         }
         System.out.printf(Locale.US, "dng: %d ms%n", System.currentTimeMillis() - t3);
         System.out.println("session log: " + store.logFile());
+    }
+
+    /**
+     * The white balance from the stars (F4) against what it should be. The simulated stars are blackbodies seen
+     * through the fixed 5500 K balance (with SIM_BV, at their B-V temperature), so the gains must turn that
+     * balance into the calibration's white (5778 K), and undo a SIM_CAST on top; within 3%. In the rendered photo,
+     * hot stars (B-V under 0.1, like Vega) must come out blue-white and cool ones (over 1.1, like Arcturus) orange.
+     * Without SIM_BV the stars have the catalogue's spectral-type temperatures, which the B-V ones don't match, so
+     * only the rendered colours are checked.
+     */
+    static void colourCheck(PostProcessor.Output o, int[] pix, double[] cast, boolean bv) {
+        ColorCalibration.Result r = o.colour;
+        System.out.println(r.describe(ColorMath.DEFAULT_CCT));
+        if (!r.applied) {
+            System.out.println("COLOUR CHECK: not applied (" + r.reason + ")");
+            return;
+        }
+        double[] w = ColorMath.blackbodyRgb(ColorCalibration.WHITE_K, ColorMath.DEFAULT_CCT);
+        double er = (w[1] / w[0]) / (cast != null ? cast[0] : 1), eb = (w[1] / w[2]) / (cast != null ? cast[1] : 1);
+        double fr = r.gainR / r.gainG, fb = r.gainB / r.gainG;
+        boolean gainsOk = !bv || Math.abs(fr / er - 1) < 0.03 && Math.abs(fb / eb - 1) < 0.03;
+        System.out.printf(Locale.US, "colour gains: red %.4f (expected %.4f, %+.1f%%), blue %.4f (expected %.4f, %+.1f%%)%s%n", fr, er,
+                100 * (fr / er - 1), fb, eb, 100 * (fb / eb - 1), bv ? "" : " (stars by spectral type: not checked)");
+        // rendered colours at the stars' centres (3x3), by kind
+        int cw = o.analysis.cw, ch = o.analysis.ch;
+        double[] hot = new double[3], cool = new double[3];
+        int nh = 0, nc = 0;
+        for (ColorCalibration.Star s : r.stars) {
+            if (!s.skip.isEmpty() || Double.isNaN(s.dr) || !(s.bv < 0.1 || s.bv > 1.1)) continue;
+            int x = (int) Math.round(s.x) - o.analysis.cx0, y = (int) Math.round(s.y) - o.analysis.cy0;
+            if (x < 1 || y < 1 || x >= cw - 1 || y >= ch - 1) continue;
+            double[] acc = s.bv < 0.1 ? hot : cool;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int p = pix[(y + dy) * cw + x + dx];
+                    acc[0] += (p >> 16) & 0xFF;
+                    acc[1] += (p >> 8) & 0xFF;
+                    acc[2] += p & 0xFF;
+                }
+            }
+            if (s.bv < 0.1) nh++;
+            else nc++;
+        }
+        for (int c = 0; c < 3; c++) {
+            hot[c] /= Math.max(1, 9 * nh);
+            cool[c] /= Math.max(1, 9 * nc);
+        }
+        boolean hotOk = nh == 0 || hot[2] > hot[0];
+        boolean coolOk = nc == 0 || cool[0] > cool[1] && cool[1] > cool[2];
+        System.out.printf(Locale.US, "rendered: %d hot stars (B-V < 0.1) at R/G/B %.0f/%.0f/%.0f (%s), %d cool stars (B-V > 1.1) at %.0f/%.0f/%.0f (%s)%n",
+                nh, hot[0], hot[1], hot[2], hotOk ? "blue-white" : "NOT blue", nc, cool[0], cool[1], cool[2], coolOk ? "orange" : "NOT orange");
+        System.out.println(gainsOk && hotOk && coolOk ? "COLOUR CHECK PASS" : "COLOUR CHECK FAIL");
     }
 
     /**

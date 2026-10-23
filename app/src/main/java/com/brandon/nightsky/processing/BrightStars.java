@@ -11,8 +11,8 @@ import java.util.Locale;
 
 /**
  * The stars to about magnitude 6.5 (Yale Bright Star Catalogue, the app's {@code stars.csv} asset), brightest
- * first: J2000 directions, V magnitudes, colour temperatures and names. Used to solve the frames' pointing
- * and to say what the photo shows.
+ * first: J2000 directions, V magnitudes, colour temperatures, B-V colour indices and names. Used to solve the
+ * frames' pointing, to say what the photo shows and to calibrate its colours (F4).
  */
 public final class BrightStars {
     public final int n;
@@ -20,6 +20,8 @@ public final class BrightStars {
     public final double[] dir;
     public final float[] vmag;
     public final int[] kelvin;
+    /** B-V colour index (NaN where the catalogue has none). */
+    public final float[] bv;
     public final String[] con, letter, name;
 
     private BrightStars(int n) {
@@ -27,6 +29,7 @@ public final class BrightStars {
         dir = new double[3 * n];
         vmag = new float[n];
         kelvin = new int[n];
+        bv = new float[n];
         con = new String[n];
         letter = new String[n];
         name = new String[n];
@@ -59,6 +62,13 @@ public final class BrightStars {
             s.con[i] = p[4];
             s.letter[i] = p[5];
             s.name[i] = p[6];
+            s.bv[i] = Float.NaN;
+            if (p.length >= 8 && !p[7].isEmpty()) {
+                try {
+                    s.bv[i] = Float.parseFloat(p[7]);
+                } catch (NumberFormatException ignored) {
+                }
+            }
         }
         return s;
     }

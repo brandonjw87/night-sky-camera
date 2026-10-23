@@ -68,6 +68,12 @@ public final class PostProcessor {
         public double blendSeconds;
         /** Why satellites couldn't be named ("" when they could, or weren't asked for). */
         public String satellitesNote = "";
+        /**
+         * The white balance from the stars (F4; null if it wasn't tried), and the sensor's description with it in
+         * place, for the DNG (null when the fixed balance was kept).
+         */
+        public ColorCalibration.Result colour;
+        public SensorSpec colourSpec;
     }
 
     /** What happened to one unit, for the review screen and the log. */
@@ -157,6 +163,8 @@ public final class PostProcessor {
     public boolean streakCorridors = true;
     /** Also make the long-exposure blend (C7): the plain average, where drifting clouds turn into soft streaks. */
     public boolean blend;
+    /** Take the white balance from the catalogue stars when there are enough (F4; tests switch it off to compare). */
+    public boolean colorCalibration = true;
     /** Faintest satellite looked for (magnitude), and how far outside the picture a track may start (pixels). */
     static final double SAT_MAG_LIMIT = 7;
     static final float SAT_PAD = 64;
@@ -272,6 +280,10 @@ public final class PostProcessor {
                     moved > 0 ? " Skipped " + moved + " moved." : "");
             out.analysis = Renderer.analyze(img, spec);
             out.analysis.colorSigma = 3f;
+            if (colorCalibration) {
+                decide(out, "colour: the fixed " + Math.round(spec.wbCct) + " K white balance, as star trails can't be measured "
+                        + "against the catalogue's colours");
+            }
             store.log(out.summary + " " + out.analysis.describe());
             makeBlend(out, units, fs, hot, progress);
             return out;
@@ -509,6 +521,7 @@ public final class PostProcessor {
         out.referenceStars = refDetections != null ? refDetections : ref != null ? ref.stars : null;
         out.image = sr.image;
         out.analysis = Renderer.analyze(sr.image, spec);
+        calibrateColour(out);
         StringBuilder sb = new StringBuilder();
         if (out.aligned) {
             sb.append(String.format(Locale.US, "Used %d of %d frames (%s)", plans.size(), units.size(), duration(integ)));
@@ -528,6 +541,40 @@ public final class PostProcessor {
         store.log(out.summary + " " + out.analysis.describe());
         makeBlend(out, units, fs, hot, progress);
         return out;
+    }
+
+    /**
+     * The white balance from the stars (F4): the catalogue stars the plate solution matched, measured in the stack,
+     * set it in place of the fixed one when there are enough of them. Which one was used goes in the decisions.
+     */
+    private void calibrateColour(Output out) {
+        if (!colorCalibration) return;
+        String fixed = "colour: the fixed " + Math.round(spec.wbCct) + " K white balance, as ";
+        if (sky == null || sky.catalog == null || out.solution == null) {
+            decide(out, fixed + (sky == null || sky.catalog == null ? "there's no star catalogue" : "the stars weren't matched to the catalogue"));
+            return;
+        }
+        long t0 = System.currentTimeMillis();
+        try {
+            // a circle that holds a star's light, its colours included (blue halos are a little wider)
+            double ap = Stats.clamp(3 * (Double.isNaN(out.medianHfr) ? 1.5 : out.medianHfr), 3, 12);
+            ColorCalibration.Result r = ColorCalibration.calibrate(out.image, out.analysis, out.solution, sky.catalog, ap);
+            out.colour = r;
+            for (String line : r.starLines(12)) store.log("colour star: " + line);
+            if (r.applied) {
+                SensorSpec cs = spec.copy();
+                cs.camToSrgb = ColorCalibration.apply(spec.camToSrgb, r);
+                float[] n = ColorCalibration.neutral(spec.camToSrgb, r);
+                if (n != null) cs.camNeutral = n;
+                cs.wbCct = (float) ColorCalibration.WHITE_K;
+                out.colourSpec = cs;
+                out.analysis = Renderer.analyze(out.image, cs);
+            }
+            decide(out, r.describe(spec.wbCct) + String.format(Locale.US, " (%d ms)", System.currentTimeMillis() - t0));
+        } catch (RuntimeException e) {
+            // colour from the stars is a bonus: never let it cost the photo
+            decide(out, fixed + "measuring the stars' colours failed (" + e + ")");
+        }
     }
 
     /**

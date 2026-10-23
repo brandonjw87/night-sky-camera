@@ -2867,7 +2867,8 @@ final class SessionController {
         return MediaSaver.saveDng(ctx, name, meta.time, new MediaSaver.Writer() {
             @Override
             public void write(OutputStream os) throws IOException {
-                DngWriter.write(os, o.image, sp, meta, o.maxGain);
+                // the stars' white balance as the DNG's as-shot one, when it was measured (F4)
+                DngWriter.write(os, o.image, o.colourSpec != null ? o.colourSpec : sp, meta, o.maxGain);
             }
         });
     }

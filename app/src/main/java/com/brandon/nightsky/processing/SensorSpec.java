@@ -44,6 +44,41 @@ public final class SensorSpec {
         return white - (black[0] + black[1] + black[2] + black[3]) * 0.25f;
     }
 
+    /** A copy to change (the lens model and the shading map are shared: they aren't changed in place). */
+    public SensorSpec copy() {
+        SensorSpec s = new SensorSpec();
+        s.width = width;
+        s.height = height;
+        System.arraycopy(cfa, 0, s.cfa, 0, 4);
+        System.arraycopy(black, 0, s.black, 0, 4);
+        s.white = white;
+        s.model = model;
+        s.shading = shading;
+        s.camToSrgb = camToSrgb.clone();
+        s.camNeutral = camNeutral.clone();
+        s.wbCct = wbCct;
+        s.deviceMake = deviceMake;
+        s.deviceModel = deviceModel;
+        s.cameraId = cameraId;
+        s.sensorOrientation = sensorOrientation;
+        s.focalLengthMm = focalLengthMm;
+        s.fNumber = fNumber;
+        s.pixelPitchUm = pixelPitchUm;
+        s.iso = iso;
+        s.frameExposureNs = frameExposureNs;
+        s.colorMatrix1 = colorMatrix1;
+        s.colorMatrix2 = colorMatrix2;
+        s.forwardMatrix1 = forwardMatrix1;
+        s.forwardMatrix2 = forwardMatrix2;
+        s.calibration1 = calibration1;
+        s.calibration2 = calibration2;
+        s.illuminant1 = illuminant1;
+        s.illuminant2 = illuminant2;
+        System.arraycopy(noiseS, 0, s.noiseS, 0, 4);
+        System.arraycopy(noiseO, 0, s.noiseO, 0, 4);
+        return s;
+    }
+
     /** Sets {@link #cfa} from Camera2's colorFilterArrangement, shifted by the RAW buffer origin parity. */
     public void setCfaFromArrangement(int arrangement, int originX, int originY) {
         int[] base;

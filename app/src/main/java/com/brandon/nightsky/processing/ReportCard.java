@@ -145,6 +145,7 @@ public final class ReportCard {
         r.thermal();
         r.alignment();
         r.trails();
+        r.colour();
         Collections.sort(r.problems, new Comparator<Problem>() {
             @Override
             public int compare(Problem a, Problem b) {
@@ -690,6 +691,22 @@ public final class ReportCard {
             problems.add(p);
         } else {
             notes.add(text);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // colour (F4)
+
+    /** Where the photo's colours came from: the catalogue stars' own, or the camera's fixed balance and why. */
+    private void colour() {
+        ColorCalibration.Result c = in.out.colour;
+        if (c == null) return;
+        if (c.applied) {
+            notes.add(String.format(Locale.US, "Colours come from %d stars of known colour: a Sun-like star is white, hot stars like "
+                    + "Vega blue-white and cool ones like Arcturus orange (red x%.2f, blue x%.2f over the camera's own balance).",
+                    c.used, c.gainR / c.gainG, c.gainB / c.gainG));
+        } else {
+            notes.add("Colours use the camera's own balance: " + c.reason + ".");
         }
     }
 

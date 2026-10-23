@@ -3,6 +3,7 @@ package com.brandon.nightsky.sim;
 import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
+import com.brandon.nightsky.processing.ColorCalibration;
 import com.brandon.nightsky.processing.Parallel;
 import com.brandon.nightsky.processing.Rot;
 import com.brandon.nightsky.processing.SatSky;
@@ -98,6 +99,8 @@ public final class SkySim {
     private final double[] pole;
     private double[] cam0, camBump;
     private final double[] A; // camera raw response to linear sRGB (rows R, G, B)
+    /** Catalogue index of each real-sky star (the first ones in the star arrays). */
+    private int[] realIdx = new int[0];
 
     /**
      * The real sky: the bright-star catalogue (to magnitude 6.5) at this time and place, plus random fainter
@@ -177,6 +180,7 @@ public final class SkySim {
                 System.arraycopy(e, 0, enu0, 3 * k, 3);
             }
             mMin = REAL_SKY_MAG;
+            realIdx = real;
         }
         double nTotal = 0.21 * 330000 * (sr / 2.68) * (Math.pow(10, 0.42 * (magLimit - 10)) - Math.pow(10, 0.42 * (mMin - 10)));
         nStars = real.length + (int) nTotal;
@@ -211,14 +215,7 @@ public final class SkySim {
                         : (u < 0.13 ? 3000 + 900 * rnd.nextDouble() : 5600 * Math.exp(0.18 * rnd.nextGaussian()));
             }
             flux[i] = (float) (fluxZero * Math.pow(10, -0.4 * m));
-            double[] rgb = tint(t);
-            double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
-            double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
-            double bb = A[6] * rgb[0] + A[7] * rgb[1] + A[8] * rgb[2];
-            double mean = (rr + 2 * gg + bb) / 4;
-            cr[i] = (float) (rr / mean);
-            cg[i] = (float) (gg / mean);
-            cb[i] = (float) (bb / mean);
+            setColour(i, t);
         }
         // hot pixels
         int nh = (int) (W * H * 0.0004);
@@ -227,6 +224,30 @@ public final class SkySim {
         for (int i = 0; i < nh; i++) {
             hotIdx[i] = rnd.nextInt(W * H);
             hotRate[i] = (float) (rnd.nextDouble() < 0.1 ? 150 + 300 * rnd.nextDouble() : 2 + 40 * rnd.nextDouble());
+        }
+    }
+
+    /** Star i's colour on the sensor: a blackbody at t kelvin through the camera's response. */
+    private void setColour(int i, double t) {
+        double[] rgb = tint(t);
+        double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
+        double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
+        double bb = A[6] * rgb[0] + A[7] * rgb[1] + A[8] * rgb[2];
+        double mean = (rr + 2 * gg + bb) / 4;
+        cr[i] = (float) (rr / mean);
+        cg[i] = (float) (gg / mean);
+        cb[i] = (float) (bb / mean);
+    }
+
+    /**
+     * Real-sky stars coloured by their catalogue B-V (Ballesteros' temperature, what the colour calibration expects)
+     * instead of the catalogue's spectral-type temperature; ones without a B-V keep theirs.
+     */
+    public void colourByBv() {
+        if (catalog == null) return;
+        for (int i = 0; i < realIdx.length; i++) {
+            float bv = catalog.bv[realIdx[i]];
+            if (!Float.isNaN(bv)) setColour(i, ColorCalibration.kelvin(bv));
         }
     }
 

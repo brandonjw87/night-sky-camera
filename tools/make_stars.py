@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Builds app/src/main/assets/stars.csv from the Yale Bright Star Catalogue (5th revised edition,
-Hoffleit & Warren 1991), as converted to JSON by github.com/brettonw/YaleBrightStarCatalog (bsc5-short.json).
+Hoffleit & Warren 1991), as converted to JSON by github.com/brettonw/YaleBrightStarCatalog (bsc5-short.json,
+and bsc5.json for the stars' B-V colour indices).
 
-    tools/make_stars.py bsc5-short.json > app/src/main/assets/stars.csv
+    tools/make_stars.py bsc5-short.json bsc5.json > app/src/main/assets/stars.csv
 
 Columns: right ascension and declination (J2000, degrees), V magnitude, colour temperature (K, 0 if
-unknown), constellation (IAU abbreviation), Bayer letter (Greek name) or Flamsteed number, proper name.
+unknown), constellation (IAU abbreviation), Bayer letter (Greek name) or Flamsteed number, proper name,
+B-V colour index (empty if unknown).
 """
 import json, sys
 
@@ -23,8 +25,22 @@ def angle(s, hours):
     return sign * v * (15 if hours else 1)
 
 
+def colours(path):
+    """B-V by Harvard (HR) number, as printed in the catalogue ("+1.23")."""
+    out = {}
+    for s in json.load(open(path, encoding='utf-8')):
+        bv = s.get('B-V', '').strip()
+        if 'HR' in s and bv:
+            try:
+                out[str(s['HR'])] = '%.2f' % float(bv)
+            except ValueError:
+                pass
+    return out
+
+
 def main():
     stars = json.load(open(sys.argv[1], encoding='utf-8'))
+    bvs = colours(sys.argv[2]) if len(sys.argv) > 2 else {}
     out = []
     for s in stars:
         if 'RA' not in s or 'Dec' not in s or 'V' not in s:
@@ -39,10 +55,11 @@ def main():
         elif 'F' in s:
             letter = s['F']
         name = s.get('N', '').replace(',', ' ')
-        out.append((v, '%.5f,%.5f,%.2f,%s,%s,%s,%s' % (ra, dec, v, s.get('K', '0'), s.get('C', ''), letter, name)))
+        bv = bvs.get(str(s.get('HR', '')), '')
+        out.append((v, '%.5f,%.5f,%.2f,%s,%s,%s,%s,%s' % (ra, dec, v, s.get('K', '0'), s.get('C', ''), letter, name, bv)))
     out.sort()
     print('# Yale Bright Star Catalogue 5th rev. ed. (Hoffleit & Warren 1991), via brettonw/YaleBrightStarCatalog; '
-          'ra,dec (J2000 deg),V,K,constellation,Bayer/Flamsteed,name; brightest first')
+          'ra,dec (J2000 deg),V,K,constellation,Bayer/Flamsteed,name,B-V; brightest first')
     for _, line in out:
         print(line)
 
