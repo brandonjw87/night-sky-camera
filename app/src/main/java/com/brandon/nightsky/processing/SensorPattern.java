@@ -177,12 +177,15 @@ public final class SensorPattern {
      *
      * @param stack     the first stack, lens shading applied, with its crop set
      * @param statics   fixed points; their crowded cells are left out
+     * @param ground    the foreground kept still (G3), left out too: what stands still on the sensor can't be told
+     *                  from its pattern (null: none)
      * @param minT      frames are used down to this transparency (as in the stack)
      * @param budget    bytes for the per-band buffers
      */
     public static SensorPattern estimate(SensorSpec spec, CameraModel model, FrameStore store, HotPixels hot,
-                                         StaticSources statics, List<SharpStacker.Plan> plans, BackgroundGrid target,
-                                         float minT, RgbImage stack, double driftPx, long budget, Progress progress)
+                                         StaticSources statics, GroundMap ground, List<SharpStacker.Plan> plans,
+                                         BackgroundGrid target, float minT, RgbImage stack, double driftPx, long budget,
+                                         Progress progress)
             throws IOException {
         final int W = spec.width, H = spec.height, nf = plans.size();
         final SensorPattern sp = new SensorPattern(W, H, nf);
@@ -206,6 +209,7 @@ public final class SensorPattern {
         for (int f = 0; f < nf; f++) cx.inv[f] = WarpGrid.build(model, nodeB, W, H, SharpStacker.STEP, Rot.transpose(plans.get(f).R));
         cx.stars = starMask(cx);
         cx.statics = staticMask(statics, W, H);
+        if (ground != null) ground.markNear(cx.statics);
 
         // the frames whose median is the centre
         final int nsel = Math.min(nf, CENTRE_FRAMES);

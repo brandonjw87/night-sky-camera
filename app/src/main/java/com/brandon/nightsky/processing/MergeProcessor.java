@@ -183,7 +183,7 @@ public final class MergeProcessor {
 
     private final List<Session> sessions;
     public float clipHigh = 3f, clipLow = 4f;
-    /** Bytes the stack may keep per-sample buffers in; 0 sizes it from free memory (as {@link PostProcessor#stackMemory}). */
+    /** Bytes the stack may keep per-sample buffers in; 0 for the fixed {@link PostProcessor#STACK_MEMORY}. */
     public long stackMemory;
     public boolean colorCalibration = true;
     /** Outlier rejection as the base session chose it; AUTO picks per pixel by the frames there. */
@@ -347,8 +347,7 @@ public final class MergeProcessor {
         SharpStacker st = new SharpStacker(spec, model, pb.fs, pb.hot);
         st.kHigh = clipHigh;
         st.kLow = clipLow;
-        long freeMem = Runtime.getRuntime().maxMemory() - (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory());
-        st.memoryBudget = stackMemory > 0 ? stackMemory : Math.max(16L << 20, Math.min(64L << 20, (freeMem - (160L << 20)) / 2));
+        st.memoryBudget = stackMemory > 0 ? stackMemory : PostProcessor.STACK_MEMORY;
         st.method = rejection;
         st.target = pb.target;
         st.minTransparency = PostProcessor.MIN_REGION_T;

@@ -11,7 +11,8 @@ import java.util.Locale;
  * where it is well measured and from a luminance-weighted local average where it is not, display-encoded,
  * applied in proportion to the real signal (the background stays neutral), with dithered 8-bit output.
  * <p>
- * The input image is never modified, so it can be re-rendered with a different brightness.
+ * The input image is never modified, so it can be re-rendered with a different brightness, stretch, exposure,
+ * black point, saturation or look (G3).
  */
 public final class Renderer {
     private Renderer() {}
@@ -24,6 +25,23 @@ public final class Renderer {
         /** 0..1 */
         public float lumaNr = 0.6f;
         public boolean removeGradient = true;
+        /**
+         * Strength of the stretch, 1 (gentle) to 10 (strong): how far faint light is lifted above the sky background,
+         * which stays at the grey {@link #brightness} gives it. 5 is the develop step's.
+         */
+        public float stretch = 5f;
+        /** Exposure in stops, -2 to +2: the light above the sky background times 2^ev (the background stays put). */
+        public float ev;
+        /** Black point, 0 to 1: how far the sky background's grey is taken towards black (0: not at all). */
+        public float black;
+        /** The look (A7): {@link #NATURAL}, {@link #PUNCHY} or {@link #LINEAR}. */
+        public int look = NATURAL;
+
+        /**
+         * The develop step's gentle asinh stretch; more contrast and colour in the faint light just above the
+         * background (which keeps its grey); a plain linear scale, display-encoded, where bright stars clip.
+         */
+        public static final int NATURAL = 0, PUNCHY = 1, LINEAR = 2;
     }
 
     public static final class Analysis {
@@ -457,14 +475,30 @@ public final class Renderer {
     // Tone curve
     // ------------------------------------------------------------------------------------------------
 
-    /** Asinh curve for the luminance: background (0) maps to T, white point maps to 1. */
+    /**
+     * Tone curve for the luminance: background (0) maps to T, white point maps to 1. The look and the black point
+     * follow it; the exposure scales the light above the background before it.
+     */
     static final class Curve {
         float bp, s, norm;
+        /** The background's display grey. */
+        float T;
+        /** Light above the background is multiplied by this before the curve (the exposure). */
+        float gain = 1f;
+        int look = Params.NATURAL;
+        /** {@link Params#LINEAR}: display = sRGB(k * I), with the background at T. */
+        float k;
+        /** Black point in display units (0: none), and 1 / (1 - it). */
+        float black, blackScale = 1f;
+        /** {@link Params#PUNCHY}: the contrast at the background grey. */
+        static final float PUNCH = 1.4f;
 
         static Curve make(Analysis a, Params p) {
             Curve c = new Curve();
             float T = (float) (0.045 * Math.pow(0.30 / 0.045, Stats.clamp(p.brightness, 0f, 1f)));
-            c.bp = -2.2f * a.noiseY;
+            // the stretch: the curve's foot this many noise sigmas below the background; nearer lifts faint light more
+            float off = p.stretch == 5f ? 2.2f : (float) (2.2 * Math.pow(2, (5 - Stats.clamp(p.stretch, 1f, 10f)) / 2.3));
+            c.bp = -off * a.noiseY;
             double i0 = -c.bp, imax = Math.max(a.whiteY - c.bp, i0 * 4);
             // find s with asinh(i0/s)/asinh(imax/s) = T (decreasing in s)
             double lo = Math.log(i0 * 1e-6), hi = Math.log(imax * 1e6);
@@ -478,8 +512,50 @@ public final class Renderer {
             double s = Math.exp(0.5 * (lo + hi));
             c.s = (float) s;
             c.norm = (float) (1.0 / asinh(imax / s));
+            c.T = T;
+            c.look = p.look == Params.PUNCHY || p.look == Params.LINEAR ? p.look : Params.NATURAL;
+            if (p.ev != 0f) c.gain = (float) Math.pow(2, Stats.clamp(p.ev, -2f, 2f));
+            if (c.look == Params.LINEAR) c.k = (float) (srgbToLinear(T) / i0);
+            float b = Stats.clamp(p.black, 0f, 1f) * T;
+            if (b > 0f) {
+                c.black = b;
+                c.blackScale = 1f / (1f - b);
+            }
             return c;
         }
+
+        /** Display value of light I above the curve's foot (I > 0), before the black point. */
+        float display(float I) {
+            float F;
+            if (look == Params.LINEAR) {
+                float v = I * k;
+                F = v >= 1f ? 1f : linearToSrgb(v);
+            } else {
+                F = asinhf(I / s) * norm;
+                if (look == Params.PUNCHY) F = punch(F);
+            }
+            if (black > 0f) F = Math.max(0f, (F - black) * blackScale);
+            return F;
+        }
+
+        /**
+         * More contrast at the background's grey (T stays T): the noise below it darker, the faint light just above it
+         * lifted, the highlights eased into white.
+         */
+        float punch(float F) {
+            if (F <= 0f) return 0f;
+            if (F < T) return T * (float) Math.pow(F / T, PUNCH);
+            float x = Math.min(1f, (F - T) / (1f - T));
+            return T + (1f - T) * (1f - (float) Math.pow(1f - x, PUNCH));
+        }
+    }
+
+    static double srgbToLinear(double v) {
+        return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    static float linearToSrgb(float v) {
+        return v <= 0.0031308f ? 12.92f * v : 1.055f * (float) Math.pow(v, 1 / 2.4) - 0.055f;
     }
 
     static double asinh(double x) {
@@ -697,8 +773,10 @@ public final class Renderer {
             float inv = 1f / noise;
             float axR = a.axisR, axB = a.axisB;
             float nS2 = sq(a.noiseS * noiseScale), nP2 = sq(a.noiseP * noiseScale);
-            float sat = p.saturation;
+            // the punchy look's colour comes with its contrast
+            float sat = curve.look == Params.PUNCHY ? p.saturation * 1.25f : p.saturation;
             float toe = -0.5f * curve.bp;
+            boolean plainCurve = curve.look == Params.NATURAL && curve.black == 0f;
             int seed = y0 * 7919 + 17;
             for (int y = y0; y < y1; y++) {
                 int o = (y - rs) * w;
@@ -749,10 +827,10 @@ public final class Renderer {
                     fr = Math.max(0f, 1f + gs * (fr * fl - 1f));
                     fg = Math.max(0f, 1f + gs * (fg * fl - 1f));
                     fb = Math.max(0f, 1f + gs * (fb * fl - 1f));
-                    // asinh stretch of the luminance, soft toe below the black point
-                    float I = l - curve.bp;
+                    // asinh stretch of the luminance (the exposure first), soft toe below the black point
+                    float I = curve.gain == 1f ? l - curve.bp : l * curve.gain - curve.bp;
                     if (I < toe) I = toe * (float) Math.exp(I / toe - 1f);
-                    float F = asinhf(I / curve.s) * curve.norm;
+                    float F = plainCurve ? asinhf(I / curve.s) * curve.norm : curve.display(I);
                     // bright cores: desaturate just enough to fit, keeping their brightness
                     float fmax = Math.max(fr, Math.max(fg, fb));
                     if (fmax > 1f && F * fmax > 1f) {

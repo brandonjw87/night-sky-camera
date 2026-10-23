@@ -322,6 +322,19 @@ public final class SkySim {
         return i * (frameExp + gap);
     }
 
+    /** The celestial pole's direction in the camera's bearings (the phone as put down): for checking north up. */
+    public double[] poleInCamera() {
+        double[] o = new double[3];
+        Rot.apply(cam0, pole[0], pole[1], pole[2], o);
+        return o;
+    }
+
+    /** The branch's transmission per pixel (1 = open sky), or null without a branch. */
+    public float[] branchTransmission() {
+        if (branch && branchT == null) buildBranch();
+        return branchT;
+    }
+
     /** Camera orientation (rows = camera axes in ENU) for frame i at fraction f of its exposure. */
     private double[] camera(int i, double f) {
         if (bumpFrame >= 0 && (i > bumpFrame || (i == bumpFrame && f > 0.5))) return camBump;

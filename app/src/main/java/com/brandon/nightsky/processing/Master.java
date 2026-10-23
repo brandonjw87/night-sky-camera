@@ -74,6 +74,8 @@ public final class Master {
         public CameraModel model;
         public double[] solutionR;
         public double solutionJd = Double.NaN;
+        /** The frame the stack was lined up on (-1 if unknown): the edit screen's starting reference. */
+        public int referenceUnit = -1;
         /**
          * The reference frame's brightest stars, in the picture's pixels (x, y, flux; null if none): to place it on
          * another night's without its frames.
@@ -145,6 +147,14 @@ public final class Master {
         return pix;
     }
 
+    /**
+     * A recipe's photo from a stack (G3): rendered with its settings ({@link Recipe#params}), then cut and turned as
+     * its framing says ({@link Recipe#framing}); outW x outH pixels of the framing, row after row.
+     */
+    public static int[] photo(RgbImage img, Renderer.Analysis a, Renderer.Params p, Framing f) {
+        return f.apply(render(img, a, p));
+    }
+
     /** The session's sensor description with the master's colour in place. */
     public static SensorSpec colourSpec(SensorSpec base, Meta m) {
         SensorSpec s = base.copy();
@@ -173,6 +183,7 @@ public final class Master {
         m.unitsTotal = o.unitsTotal;
         m.maxGain = o.maxGain;
         m.model = o.model != null ? o.model.copy() : null;
+        m.referenceUnit = o.referenceUnit;
         if (o.solution != null) {
             m.solutionR = o.solution.R.clone();
             m.solutionJd = o.solutionJd;
@@ -429,6 +440,7 @@ public final class Master {
             j.end();
             j.put("solutionJd", m.solutionJd, 17);
         }
+        if (m.referenceUnit >= 0) j.put("referenceUnit", m.referenceUnit);
         if (m.starX != null) {
             j.obj("stars");
             floats(j, "x", m.starX);
@@ -501,6 +513,7 @@ public final class Master {
             double[] r = o.nums("solutionR");
             if (r != null && r.length == 9) m.solutionR = r;
             m.solutionJd = o.num("solutionJd", Double.NaN);
+            m.referenceUnit = o.integer("referenceUnit", -1);
             JsonTree.Obj so = o.obj("stars");
             if (so != null) {
                 m.starX = toFloats(so.nums("x"));

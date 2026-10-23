@@ -101,6 +101,11 @@ public final class SharpStacker {
         public long edgeSamples, edgeRejected;
         /** Pixel samples left out in the plans' corridors ({@link Plan#masks}). */
         public long masked;
+        /**
+         * With {@link #ground}: the output's pixels that no frame saw any sky at (as bits, row by row), which hold 0;
+         * null otherwise.
+         */
+        public long[] empty;
     }
 
     public static final int STEP = 32;
@@ -128,6 +133,20 @@ public final class SharpStacker {
     public NoiseProbe noise;
     /** Collects where each frame had samples rejected as too bright ({@link StreakEvidence}), or null. */
     public StreakEvidence evidence;
+    /**
+     * When rowTo > rowFrom: only rows [rowFrom, rowTo) are stacked, into an image that holds just those rows (row
+     * rowFrom first, not cropped): the foreground's plain average for keeping the ground still (G3), which needs only
+     * its rows. rowFrom is taken down to a multiple of four. Otherwise the whole frame.
+     */
+    public int rowFrom, rowTo;
+    /** The sensor row of the output image's first row (0 unless {@link #rowFrom} limits it). */
+    private int outRow0;
+    /**
+     * The foreground, when the ground is kept still (G3): every frame's samples on it or next to it are left out, as if
+     * off the frame, so the sky beside a branch isn't darkened by the frames in which the branch covered it. They
+     * still count for the coverage (the crop). Null: every sample counts.
+     */
+    public GroundMap ground;
 
     /** Keeping every sample needs bands at least this tall, or re-reading the frames' overlapping rows costs too much. */
     static final int MIN_KEEP_ROWS = 24;
@@ -222,14 +241,18 @@ public final class SharpStacker {
         final byte[][] doubt = doubtful(plans, nx, ny);
 
         final Result res = new Result();
-        final RgbImage out = into != null && into.width == W && into.height == H ? into : new RgbImage(W, H);
+        final boolean part = rowTo > rowFrom;
+        final int oy = part ? Math.max(0, rowFrom) & ~3 : 0, outH = part ? Math.min(H, rowTo) - oy : H;
+        if (outH <= 0) throw new IllegalArgumentException("no rows to stack");
+        outRow0 = oy;
+        final RgbImage out = into != null && into.width == W && into.height == outH ? into : new RgbImage(W, outH);
         res.image = out;
         res.rejected = new long[nf];
         res.samples = new long[nf];
         res.included = new long[nf];
         res.rowL = new int[H];
         res.rowR = new int[H];
-        if (out.clip == null || out.clip.length != W * H) out.clip = new byte[W * H];
+        if (out.clip == null || out.clip.length != W * outH) out.clip = new byte[W * outH];
 
         final boolean keep = keepsSamples(nf);
         long rows = keep ? keepRows(nf) : Math.max(32, memoryBudget / ((long) W * STREAM_BYTES));
@@ -243,6 +266,9 @@ public final class SharpStacker {
         final float[][] acc = new float[keep ? 5 : 10][bandPix * 3];
         final double[] sq = keep ? null : new double[bandPix * 3];
         final short[] cnt = new short[bandPix], icnt = new short[bandPix], ccnt = new short[bandPix];
+        // samples left out on the ground, per pixel
+        final short[] gcnt = ground != null ? new short[bandPix] : null;
+        res.empty = ground != null ? new long[(W * outH + 63) >> 6] : null;
         final short[] vals = keep ? new short[bandPix * nf * 3] : null;
         final Rejection rej = keep ? new Rejection(nf) : null;
         if (rej != null) {
@@ -280,10 +306,10 @@ public final class SharpStacker {
             }
         });
         final Loaded[] bufs = {new Loaded(), new Loaded()};
-        final int bands = (H + bandRows - 1) / bandRows;
+        final int bands = (outH + bandRows - 1) / bandRows;
         try {
             for (int b = 0; b < bands; b++) {
-                final int y0 = b * bandRows, y1 = Math.min(H, y0 + bandRows);
+                final int y0 = oy + b * bandRows, y1 = Math.min(oy + outH, y0 + bandRows);
                 final int n = (y1 - y0) * W;
                 final int iyA = Stats.clamp((int) ((y0 + 0.5) / STEP), 0, ny - 2);
                 final int iyB = Stats.clamp((int) ((y1 - 0.5) / STEP), 0, ny - 2) + 1;
@@ -299,6 +325,7 @@ public final class SharpStacker {
                 Arrays.fill(cnt, 0, n, (short) 0);
                 Arrays.fill(icnt, 0, n, (short) 0);
                 Arrays.fill(ccnt, 0, n, (short) 0);
+                if (gcnt != null) Arrays.fill(gcnt, 0, n, (short) 0);
                 if (trail != null) Arrays.fill(trail, 0, n * 3, Float.NaN);
                 if (ev != null) ev.beginBand(y0, y1);
                 for (int pass = 0; pass < 2; pass++) {
@@ -312,9 +339,9 @@ public final class SharpStacker {
                             if (!keep) normNodes(p, grids[f], doubt[f], iyA, iyB, nx, tgt, nvf);
                             long[] mb = maskBits != null && corridors(p.masks, y0, y1, maskBits) ? maskBits : null;
                             long[] kb = keepBits != null && pass == 1 && corridors(p.keep, y0, y1, keepBits) ? keepBits : null;
-                            if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, mb, res);
+                            if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, gcnt, mb, res);
                             else if (keep) integrateKept(cur, grids[f], p, nvf, iyA, f, nf, y0, y1, vals, acc, icnt, ccnt, kb, trail, res);
-                            else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, mb, res);
+                            else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, gcnt, mb, res);
                             else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, mb, kb, trail, ev, res);
                         }
                         if (progress.cancelled()) throw new CancelledException();
@@ -326,10 +353,10 @@ public final class SharpStacker {
                     }
                 }
                 if (keep) {
-                    finish(y0, y1, acc[1], acc[2], acc[3], acc[4], acc[0], false, cnt, icnt, ccnt, covThr, out, res);
+                    finish(y0, y1, acc[1], acc[2], acc[3], acc[4], acc[0], false, cnt, icnt, ccnt, gcnt, covThr, out, res);
                     if (noise != null) noise.endBand(y0, y1, acc[1], acc[2], acc[3], acc[4], icnt);
                 } else {
-                    finish(y0, y1, acc[3], acc[4], acc[5], acc[0], acc[6], true, cnt, icnt, ccnt, covThr, out, res);
+                    finish(y0, y1, acc[3], acc[4], acc[5], acc[0], acc[6], true, cnt, icnt, ccnt, gcnt, covThr, out, res);
                     if (noise != null) noise.endBand(y0, y1, acc[3], acc[4], acc[5], acc[0], icnt);
                 }
                 if (trail != null) lighten(y0, y1, trail, out);
@@ -339,7 +366,7 @@ public final class SharpStacker {
             io.shutdownNow();
         }
         applyShading(out);
-        int[] crop = cropFromSpans(res.rowL, res.rowR, W, H);
+        int[] crop = part ? new int[]{0, 0, W, outH} : cropFromSpans(res.rowL, res.rowR, W, H);
         out.x0 = crop[0];
         out.y0 = crop[1];
         out.x1 = crop[2];
@@ -387,7 +414,7 @@ public final class SharpStacker {
     /** Kept streaks over the stack: per pixel and channel the brighter of the two. */
     private void lighten(int y0, int y1, float[] trail, RgbImage out) {
         for (int j = 0; j < y1 - y0; j++) {
-            int o = (y0 + j) * W;
+            int o = (y0 + j - outRow0) * W;
             for (int x = 0; x < W; x++) {
                 int k = (j * W + x) * 3;
                 for (int c = 0; c < 3; c++) {
@@ -691,7 +718,9 @@ public final class SharpStacker {
 
     /** Pass A: every frame's normalised sample of every pixel, as half floats [pixel][frame][channel]. */
     private void collect(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int nf,
-                         final int y0, final int y1, final short[] vals, final short[] cnt, final long[] mask, final Result res) {
+                         final int y0, final int y1, final short[] vals, final short[] cnt, final short[] gcnt, final long[] mask,
+                         final Result res) {
+        final GroundMap gm = ground;
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -720,6 +749,10 @@ public final class SharpStacker {
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
                             int bp = j * W + x;
+                            if (gm != null && gm.nearAt(mx, my)) {
+                                gcnt[bp]++;
+                                continue;
+                            }
                             if (bit(mask, bp)) {
                                 msk++;
                                 continue;
@@ -969,7 +1002,8 @@ public final class SharpStacker {
      */
     private void gather(final Loaded cur, final WarpGrid grid, final float[] nvf, final int iyA, final int f, final int y0,
                         final int y1, final float[][] acc, final double[] sq, final short[] cnt, final short[] icnt,
-                        final long[] mask, final Result res) {
+                        final short[] gcnt, final long[] mask, final Result res) {
+        final GroundMap gm = ground;
         final float[] sW = acc[0], sM = acc[1], t1v = acc[3], t1s = acc[4], t2v = acc[5], t2s = acc[6];
         final float[] b1v = acc[7], b1s = acc[8], b2v = acc[9], b2s = acc[2];
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
@@ -1007,6 +1041,10 @@ public final class SharpStacker {
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
                             int bp = j * W + x;
+                            if (gm != null && gm.nearAt(mx, my)) {
+                                gcnt[bp]++;
+                                continue;
+                            }
                             if (bit(mask, bp)) {
                                 msk++;
                                 continue;
@@ -1151,6 +1189,7 @@ public final class SharpStacker {
         final float[] thr = clipThresholds(plan);
         final float[] cen = acc[1], sd = acc[2], s2 = acc[3], s3 = acc[4], s4 = acc[5], s5 = acc[0], fb = acc[6];
         final NoiseProbe probe = noise;
+        final GroundMap gm = ground;
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -1186,6 +1225,7 @@ public final class SharpStacker {
                             float t = x + 0.5f - xa;
                             float mx = ax + dx * t, my = ay + dy * t;
                             if (!(mx >= 4f && my >= 4f && mx < W - 4f && my < H - 4f)) continue;
+                            if (gm != null && gm.nearAt(mx, my)) continue;
                             int bp = j * W + x;
                             if (bit(mask, bp)) continue;
                             boolean edgeSample = du0 + ddu * t >= 0.5f;
@@ -1261,7 +1301,8 @@ public final class SharpStacker {
      */
     private void finish(final int y0, final int y1, final float[] s2, final float[] s3, final float[] s4, final float[] s5,
                         final float[] fallback, final boolean fallbackIsSum, final short[] cnt, final short[] icnt,
-                        final short[] ccnt, final int covThr, final RgbImage out, final Result res) {
+                        final short[] ccnt, final short[] gcnt, final int covThr, final RgbImage out, final Result res) {
+        final long[] empty = res.empty;
         Parallel.forRange(y1 - y0, 2, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -1271,11 +1312,16 @@ public final class SharpStacker {
                     for (int x = 0; x < W; x++) {
                         int bp = j * W + x;
                         int c = cnt[bp], ic = icnt[bp];
-                        if (c >= covThr) {
+                        if (c + (gcnt != null ? gcnt[bp] : 0) >= covThr) {
                             if (left < 0) left = x;
                             right = x + 1;
                         }
-                        int o = y * W + x;
+                        int o = (y - outRow0) * W + x;
+                        if (c == 0 && empty != null) {
+                            synchronized (empty) {
+                                empty[o >> 6] |= 1L << o;
+                            }
+                        }
                         out.clip[o] = ic > 0 ? (byte) Math.min(255, (255 * ccnt[bp] + ic - 1) / ic) : 0;
                         for (int ch = 0, k = bp * 3; ch < 3; ch++, k++) {
                             float v;
@@ -1308,12 +1354,13 @@ public final class SharpStacker {
         if (sh == null || sh.isUnity()) return;
         final int step = 16;
         final int nxs = W / step + 2;
-        Parallel.forRange(H, 8, new Parallel.Range() {
+        final int oy = outRow0;
+        Parallel.forRange(img.height, 8, new Parallel.Range() {
             @Override
             public void run(int y0, int y1) {
                 float[] gr = new float[nxs], gg = new float[nxs], gb = new float[nxs];
                 for (int y = y0; y < y1; y++) {
-                    double yc = y + 0.5;
+                    double yc = y + oy + 0.5;
                     for (int i = 0; i < nxs; i++) {
                         double xc = i * step;
                         gr[i] = sh.gain(pR, xc, yc);

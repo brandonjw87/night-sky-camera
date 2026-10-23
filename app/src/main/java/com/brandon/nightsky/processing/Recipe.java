@@ -114,9 +114,13 @@ public final class Recipe {
         return parts.size() > 1;
     }
 
-    /** A copy to edit (what it made is cleared). */
+    /**
+     * A copy to edit (what it made is cleared). It keeps the processing version: the stack is the one made before
+     * until something about it changes, and a changed stack is made by this version ({@link #restacked}).
+     */
     public Recipe edit() {
         Recipe r = new Recipe();
+        r.pipeline = pipeline;
         for (Part p : parts) r.parts.add(p.copy());
         r.trails = trails;
         r.reference = reference;
@@ -142,7 +146,135 @@ public final class Recipe {
     public Renderer.Params params() {
         Renderer.Params p = new Renderer.Params();
         p.brightness = brightness;
+        p.stretch = stretch;
+        p.ev = ev;
+        p.black = black;
+        p.saturation *= saturation;
+        p.look = LOOK_PUNCHY.equals(look) ? Renderer.Params.PUNCHY : LOOK_LINEAR.equals(look) ? Renderer.Params.LINEAR
+                : Renderer.Params.NATURAL;
         return p;
+    }
+
+    /**
+     * North's direction in the photo (the analysis' crop of the stack) when it's to be turned north up and the stack's
+     * place on the sky is known (the lens model and the plate solution); null otherwise.
+     */
+    public double[] north(Renderer.Analysis a, CameraModel model, double[] solutionR) {
+        return northUp ? Framing.north(model, solutionR, a.cx0 + a.cw / 2.0, a.cy0 + a.ch / 2.0) : null;
+    }
+
+    /** How a w x h render of this recipe is cut and turned ({@code north} from {@link #north}). */
+    public Framing framing(int w, int h, double[] north) {
+        return Framing.of(crop, north, w, h);
+    }
+
+    /**
+     * Sets up the stack of the base session as this recipe says (G3): the frames it keeps, the reference frame and the
+     * stars tapped by hand, the foreground painting and keeping the ground still, the rejection, colour from the stars,
+     * the satellites and Quick look. The caller adds the place and time and the satellite data, as for developing.
+     * Returns what of it couldn't be used, in a few words ("" when all of it could).
+     */
+    public String configure(PostProcessor pp, File baseDir) {
+        Part b = base();
+        StringBuilder missing = new StringBuilder();
+        pp.include = b != null && b.include != null ? new TreeSet<Integer>(b.include) : null;
+        pp.includeNote = b != null ? b.includeNote : "";
+        pp.forceReference = reference;
+        pp.chosenReference = reference >= 0;
+        if (!taps.isEmpty()) {
+            Map<Integer, float[]> t = new TreeMap<Integer, float[]>();
+            for (Map.Entry<Integer, float[]> e : taps.entrySet()) t.put(e.getKey(), e.getValue().clone());
+            pp.taps = t;
+        }
+        pp.rejection = Rejection.Method.parse(rejection);
+        pp.colorCalibration = colourFromStars;
+        pp.keepSatellites = keepSatellites;
+        if (quick) {
+            pp.patternCleanup = false;
+            pp.streakCorridors = false;
+        }
+        pp.freezeGround = freezeGround && !trails;
+        if (!mask.isEmpty()) {
+            EdgeMask m = EdgeMask.load(baseDir, mask);
+            if (m == null) missing.append("the foreground painting (" + mask + ") is missing");
+            pp.edgeMask = m;
+        }
+        return missing.toString();
+    }
+
+    /** Marks the stack as made by this version's processing (an edit that changes the stack is stacked again now). */
+    public void restacked() {
+        pipeline = PostProcessor.PIPELINE;
+    }
+
+    /** True if it was made by an older processing version (G3: the photo can be made again with the new one). */
+    public boolean outdated() {
+        return pipeline < PostProcessor.PIPELINE;
+    }
+
+    /** True if the two make the same stacked picture (only how it's rendered differs). */
+    public boolean sameStack(Recipe o) {
+        return o != null && stackJson().equals(o.stackJson());
+    }
+
+    /**
+     * What this recipe changes from {@code was}, in a few words for the log and the list of renders ("frames between
+     * 11:02 PM and 11:31 PM, stretch 7, 16:9 crop"; "" if nothing).
+     */
+    public String changes(Recipe was) {
+        List<String> c = new ArrayList<String>();
+        if (!partsJson().equals(was.partsJson())) {
+            Part b = base();
+            c.add(b != null && b.include != null ? (b.includeNote.isEmpty() ? "frames " + ranges(b.include) : "frames " + b.includeNote)
+                    : "all the frames");
+        }
+        if (reference != was.reference) c.add(reference < 0 ? "the reference frame chosen automatically" : "frame " + reference + " as the reference");
+        if (!tapsJson().equals(was.tapsJson())) c.add(taps.isEmpty() ? "no stars tapped by hand" : "stars tapped by hand in " + taps.size()
+                + (taps.size() == 1 ? " frame" : " frames"));
+        if (!mask.equals(was.mask)) c.add(mask.isEmpty() ? "no foreground painting" : "the foreground painted by hand");
+        if (freezeGround != was.freezeGround) c.add(freezeGround ? "the ground kept still" : "the ground lined up with the stars");
+        if (!rejection.equals(was.rejection)) c.add("rejection " + rejection.toLowerCase(Locale.US));
+        if (colourFromStars != was.colourFromStars) c.add(colourFromStars ? "colour from the stars" : "the camera's colour");
+        if (keepSatellites != was.keepSatellites) c.add(keepSatellites ? "satellites kept" : "satellites taken out");
+        if (quick != was.quick) c.add(quick ? "quick stacking" : "full stacking");
+        if (pipeline != was.pipeline) c.add("the new processing");
+        if (brightness != was.brightness) c.add("brightness " + Math.round(100 * brightness) + "%");
+        if (stretch != was.stretch) c.add("stretch " + num(stretch));
+        if (ev != was.ev) c.add((ev > 0 ? "+" : "") + num(ev) + " EV");
+        if (black != was.black) c.add("black point " + Math.round(100 * black) + "%");
+        if (saturation != was.saturation) c.add("saturation " + Math.round(100 * saturation) + "%");
+        if (!look.equals(was.look)) c.add(look + " look");
+        if (!crop.equals(was.crop)) c.add(CROP_FULL.equals(crop) ? "no crop" : crop + " crop");
+        if (northUp != was.northUp) c.add(northUp ? "north up" : "as the camera saw it");
+        StringBuilder sb = new StringBuilder();
+        for (String x : c) sb.append(sb.length() > 0 ? ", " : "").append(x);
+        return sb.toString();
+    }
+
+    /** "7", "6.5", "-0.3": a setting's value as it reads best. */
+    private static String num(float v) {
+        float r = Math.round(v * 10) / 10f;
+        return r == Math.round(r) ? Integer.toString(Math.round(r)) : String.format(Locale.US, "%.1f", r);
+    }
+
+    private String partsJson() {
+        Json j = new Json().obj().arr("parts");
+        for (Part p : parts) {
+            j.obj().put("session", p.session);
+            if (p.include != null) j.put("include", ranges(p.include));
+            j.end();
+        }
+        return j.end().end().toString();
+    }
+
+    private String tapsJson() {
+        Json j = new Json().obj();
+        for (Map.Entry<Integer, float[]> e : taps.entrySet()) {
+            j.arr(Integer.toString(e.getKey()));
+            for (float v : e.getValue()) j.val(v, 9);
+            j.end();
+        }
+        return j.end().toString();
     }
 
     // ---- the stack's identity ----

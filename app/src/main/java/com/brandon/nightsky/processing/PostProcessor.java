@@ -80,6 +80,8 @@ public final class PostProcessor {
          */
         public ColorCalibration.Result colour;
         public SensorSpec colourSpec;
+        /** Share of the frame taken from the plain average to keep the ground still (G3, A7; 0 if none). */
+        public float groundShare;
     }
 
     /** What happened to one unit, for the review screen and the log. */
@@ -148,8 +150,13 @@ public final class PostProcessor {
     private final int W, H;
     /** Outlier rejection asked for; AUTO chooses from the session. */
     public Rejection.Method rejection = Rejection.Method.AUTO;
-    /** Bytes the stack may keep per-sample buffers in; 0 sizes it from free memory (tests set it to force one pass). */
+    /** Bytes the stack may keep per-sample buffers in; 0 for {@link #STACK_MEMORY} (tests set it to force one pass). */
     public long stackMemory = 0;
+    /**
+     * The stack's buffers: always the same, never sized from the memory free at the time, so the same frames always
+     * stack the same way (G3: a recipe run again gives the same picture, bit for bit).
+     */
+    public static final long STACK_MEMORY = 64L << 20;
     /** Whether to measure the sensor's own pattern and take it out (walking noise, banding); tests switch it off. */
     public boolean patternCleanup = true;
     /** Place, time and the star catalogue, to find where the camera pointed; null to skip that. */
@@ -193,6 +200,19 @@ public final class PostProcessor {
      * lined up with the base session's model, so they all map the same way. Null to refine.
      */
     public CameraModel fixedModel;
+    /**
+     * The foreground as painted by hand (G3's edge-mask brush) over the automatic finding, or null: stars in the
+     * foreground are left out of the alignment (F3), and with {@link #freezeGround} it comes from the plain average.
+     */
+    public EdgeMask edgeMask;
+    /** Keep the ground still (A7, G3): the foreground from the frames' plain average, not lined up with the stars. */
+    public boolean freezeGround;
+    /** The foreground as used, in {@link EdgeMask#CELL}-px cells (null: not looked for, or none found). */
+    private boolean[] ground;
+    /** The foreground to a couple of pixels, for keeping it still (null when it isn't kept still, or there is none). */
+    private GroundMap groundMap;
+    /** Whether {@link #hotPixels} looks for the foreground (deep sky with a painting or keeping the ground still). */
+    private boolean wantGround;
     /** Faintest satellite looked for (magnitude), and how far outside the picture a track may start (pixels). */
     static final double SAT_MAG_LIMIT = 7;
     static final float SAT_PAD = 64;
@@ -361,7 +381,8 @@ public final class PostProcessor {
         out.model = model;
         pr.model = model;
 
-        // 1) hot pixels from the sensor-fixed average
+        // 1) hot pixels from the sensor-fixed average (and the foreground in it, when it's wanted)
+        wantGround = !trails && (edgeMask != null || freezeGround);
         pr.hot = hotPixels(pr.units, pr.fs, progress);
         out.hot = pr.hot;
         store.log("hot pixels: " + pr.hot.count());
@@ -377,6 +398,16 @@ public final class PostProcessor {
         CameraModel model = pr.model;
         // 2) star lists without fixed points (warm pixels, a branch), and the reference frame
         for (Unit u : units) u.stars = store.readStars(u.rec.index);
+        if (ground != null) {
+            int dropped = 0;
+            for (Unit u : units) {
+                StarList f = EdgeMask.filter(u.stars, ground, W);
+                if (u.stars != null && f != u.stars) dropped += u.stars.count - f.count;
+                u.stars = f;
+            }
+            decide(out, String.format(Locale.US, "alignment: left out %d detections in the foreground (%s), as it doesn't move "
+                    + "with the sky", dropped, groundWords()));
+        }
         StaticSources fixed = findFixed(units, model);
         if (fixed.count > 0) {
             for (Unit u : units) u.stars = fixed.filter(u.stars);
@@ -525,8 +556,7 @@ public final class PostProcessor {
         SharpStacker st = new SharpStacker(spec, model, fs, hot);
         st.kHigh = clipHigh;
         st.kLow = clipLow;
-        long freeMem = Runtime.getRuntime().maxMemory() - (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory());
-        st.memoryBudget = stackMemory > 0 ? stackMemory : Math.max(16L << 20, Math.min(64L << 20, (freeMem - (160L << 20)) / 2));
+        st.memoryBudget = stackMemory > 0 ? stackMemory : STACK_MEMORY;
         String[] why = new String[1];
         st.method = chooseRejection(stacked, why);
         st.target = target;
@@ -546,6 +576,8 @@ public final class PostProcessor {
         if (st.noise != null) st.noise.mask(NoiseProbe.starMask(refDetections != null ? refDetections : ref != null ? ref.stars : null, W, H));
         StreakEvidence ev = out.aligned && plans.size() >= MIN_STREAK_FRAMES ? new StreakEvidence(plans.size(), W, H) : null;
         st.evidence = ev;
+        // keeping the ground still: the lined-up stack leaves the ground's samples out, the plain average fills it in
+        if (freezeGround && groundMap != null && out.aligned) st.ground = groundMap;
         SharpStacker.Result sr;
         try {
             sr = st.stack(plans, progress);
@@ -566,6 +598,7 @@ public final class PostProcessor {
         SharpStacker.Result again = cleanPattern(out, st, sr, plans, target, fixed, model, fs, hot, progress);
         if (corridors && again == sr) again = stackWithoutStreaks(st, sr, plans, progress);
         sr = again;
+        if (st.ground != null) keepGroundStill(out, st, sr, plans, model, fs, hot, progress);
         if (st.noise != null) {
             out.noise = st.noise.result();
             out.noiseUnit = plans.get(st.noise.single).unit;
@@ -769,20 +802,19 @@ public final class PostProcessor {
         double before = SensorPattern.walkingRatio(sr.image, dr[1], dr[2]);
         store.log(String.format(Locale.US, "sensor pattern: the sky drifted %.0f px across the sensor, at %.0f deg in the stack",
                 dr[0], Math.toDegrees(Math.atan2(dr[2], dr[1]))));
-        // the estimate's full-frame maps, and room for its per-band samples
-        Runtime rt = Runtime.getRuntime();
-        long free = rt.maxMemory() - (rt.totalMemory() - rt.freeMemory());
+        // the estimate's full-frame maps, and room for its per-band samples: decided by the phone's memory, not by what
+        // happens to be free, so the same frames always give the same picture (G3)
         long maps = (long) W * H * 11L;
-        long budget = Math.min(64L << 20, (free - maps - (96L << 20)) / 2);
-        if (budget < (8L << 20)) {
+        long budget = 64L << 20;
+        if (Runtime.getRuntime().maxMemory() < maps + 2 * budget + (192L << 20)) {
             decide(out, String.format(Locale.US, "sensor pattern: not measured, not enough memory (streaks along the drift %.2f, "
                     + "1 = none)", before));
             return sr;
         }
         SensorPattern sp;
         try {
-            sp = SensorPattern.estimate(spec, model, fs, hot, fixed, plans, target, st.minTransparency, sr.image, dr[0],
-                    budget, progress);
+            sp = SensorPattern.estimate(spec, model, fs, hot, fixed, st.ground, plans, target, st.minTransparency, sr.image,
+                    dr[0], budget, progress);
         } catch (OutOfMemoryError e) {
             decide(out, "sensor pattern: not measured, ran out of memory");
             return sr;
@@ -1160,10 +1192,115 @@ public final class PostProcessor {
         float inv = 1f / Math.max(1, n);
         for (int i = 0; i < sum.length; i++) sum[i] *= inv;
         sensorSky(sum);
+        if (wantGround) findGround(sum);
         if (n < 2) return HotPixels.empty(W, H);
         // with few frames stars barely move on the sensor, so be stricter
         float k = n >= 8 ? 8f : 12f;
         return HotPixels.detect(sum, W, H, spec.cfa, k);
+    }
+
+    /**
+     * The foreground in the session's average on the sensor, as found automatically and as painted by hand over that
+     * ({@link #edgeMask}): {@link #ground}.
+     */
+    private void findGround(float[] avg) {
+        boolean[] auto = EdgeMask.automatic(avg, spec);
+        int cw = EdgeMask.cells(W), ch = EdgeMask.cells(H);
+        EdgeMask m = edgeMask;
+        if (m != null && (m.width != W || m.height != H)) {
+            store.log(String.format(Locale.US, "foreground: the painting is for a %dx%d sensor, not this %dx%d one, so it's left out",
+                    m.width, m.height, W, H));
+            m = null;
+        }
+        boolean[] g = m != null ? m.ground(auto) : auto;
+        int n = EdgeMask.count(g);
+        ground = n > 0 ? g : null;
+        int[] pt = m != null ? m.painted() : new int[2];
+        store.log(String.format(Locale.US, "foreground: %d cells found automatically%s, %d in all (%.1f%% of the frame%s)",
+                EdgeMask.count(auto), m != null ? String.format(Locale.US, ", %d painted as ground and %d as sky", pt[0], pt[1]) : "",
+                n, 100.0 * n / (cw * ch), n > 0 ? ", " + EdgeMask.where(g, cw, ch) : ""));
+        groundMap = freezeGround && ground != null ? GroundMap.build(avg, spec, ground, m) : null;
+        if (groundMap != null) {
+            store.log(String.format(Locale.US, "foreground to the pixel: %.1f%% of the frame is ground, its cells %.1f%%",
+                    100 * groundMap.share(), 100.0 * n / (cw * ch)));
+        }
+    }
+
+    /** "8% of the frame, along the left edge, 40 cells painted by hand". */
+    private String groundWords() {
+        int cw = EdgeMask.cells(W), ch = EdgeMask.cells(H), n = EdgeMask.count(ground);
+        String where = EdgeMask.where(ground, cw, ch);
+        // to the pixel when it's kept still, else its cells
+        double share = groundMap != null ? groundMap.share() : n / (double) (cw * ch);
+        StringBuilder sb = new StringBuilder(String.format(Locale.US, "%.1f%% of the frame", 100 * share));
+        if (!where.isEmpty()) sb.append(where.equals("the middle") ? ", in the middle" : ", along " + where);
+        if (edgeMask != null) {
+            int[] pt = edgeMask.painted();
+            if (pt[0] + pt[1] > 0) sb.append(String.format(Locale.US, "; %d cells painted as ground, %d as sky", pt[0], pt[1]));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Keeps the ground still (A7, G3): stacks the foreground's rows again without lining the frames up (every frame
+     * as it was, a plain average with the same outlier rejection), and puts that in over the ground ({@link GroundMap}),
+     * softened over a couple of pixels at its edge, and wherever no frame saw the sky. The sky keeps its sharp,
+     * lined-up stars, which the lined-up stack took only from the frames that saw them, so they aren't darkened next
+     * to a branch; branches and roof lines keep their edges.
+     */
+    private void keepGroundStill(Output out, SharpStacker st, SharpStacker.Result sr, List<SharpStacker.Plan> plans, CameraModel model,
+                                 FrameStore fs, HotPixels hot, Progress progress) throws IOException {
+        int cw = EdgeMask.cells(W), ch = EdgeMask.cells(H);
+        int[] rows = EdgeMask.rows(ground, cw, ch, H);
+        if (rows[1] <= rows[0]) return;
+        List<SharpStacker.Plan> still = new ArrayList<SharpStacker.Plan>();
+        for (SharpStacker.Plan p : plans) {
+            SharpStacker.Plan q = new SharpStacker.Plan();
+            q.unit = p.unit;
+            q.R = Rot.identity();
+            q.invScale = p.invScale;
+            System.arraycopy(p.black, 0, q.black, 0, 4);
+            q.t = p.t;
+            q.pattern = p.pattern;
+            q.frames = p.frames;
+            q.hot = p.hot;
+            still.add(q);
+        }
+        SharpStacker gs = new SharpStacker(spec, model, fs, hot);
+        gs.kHigh = st.kHigh;
+        gs.kLow = st.kLow;
+        gs.memoryBudget = st.memoryBudget;
+        gs.method = st.method;
+        gs.label = "Keeping the ground still";
+        gs.rowFrom = rows[0];
+        gs.rowTo = rows[1];
+        SharpStacker.Result g = gs.stack(still, progress);
+        final GroundMap gm = groundMap;
+        final long[] empty = sr.empty;
+        final RgbImage img = sr.image, gi = g.image;
+        final int y0 = rows[0] & ~3, y1 = Math.min(H, y0 + gi.height);
+        Parallel.forRange(y1 - y0, 16, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                for (int j = j0; j < j1; j++) {
+                    int y = y0 + j;
+                    for (int x = 0; x < W; x++) {
+                        int o = y * W + x;
+                        float w = empty != null && (empty[o >> 6] & (1L << o)) != 0 ? 1f : gm.weightAt(x, y);
+                        if (w <= 0f) continue;
+                        int i = y * W + x, k = j * W + x;
+                        img.r[i] += w * (gi.r[k] - img.r[i]);
+                        img.g[i] += w * (gi.g[k] - img.g[i]);
+                        img.b[i] += w * (gi.b[k] - img.b[i]);
+                        if (w >= 0.5f && img.clip != null && gi.clip != null) img.clip[i] = gi.clip[k];
+                    }
+                }
+            }
+        });
+        out.groundShare = gm.share();
+        decide(out, String.format(Locale.US, "foreground: kept still (%s) from the plain average of %d frames, not lined up "
+                + "with the stars, so its edges stay sharp; the stars beside it come only from the frames that saw them",
+                groundWords(), still.size()));
     }
 
     /** Makes {@link #sensorSky} from the session's average on the sensor (black taken off). */
@@ -1389,7 +1526,7 @@ public final class PostProcessor {
             if (todo.isEmpty()) break;
             int done = 0;
             for (Unit u : todo) {
-                u.stars = fixed.filter(deepDetect(fs, u, raw, ladder[step], hot, medHfr));
+                u.stars = EdgeMask.filter(fixed.filter(deepDetect(fs, u, raw, ladder[step], hot, medHfr)), ground, W);
                 searched++;
                 done++;
                 if (progress.cancelled()) throw new CancelledException();
@@ -1639,6 +1776,7 @@ public final class PostProcessor {
             n++;
         }
         store.log("photometry on " + n + " stars of the reference frame");
+        ps = EdgeMask.filter(ps, ground, W);
         refDetections = ps;
         double[] rb = new double[3 * n];
         double[] b = new double[3], p = new double[2];
