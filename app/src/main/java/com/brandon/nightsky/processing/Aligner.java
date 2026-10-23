@@ -176,6 +176,41 @@ public final class Aligner {
         return r;
     }
 
+    /**
+     * Matches frame {@code unit}'s stars from a guessed rotation (stars tapped by hand) instead of the motion so far,
+     * and on success puts the result in place of the frame's earlier one. The reference must be set.
+     */
+    public Result rematch(int unit, StarList s, double[] guess, double radius) {
+        Result r = new Result();
+        r.unit = unit;
+        int at = -1;
+        for (int i = 0; i < results.size(); i++) if (results.get(i).unit == unit) at = i;
+        r.t = at >= 0 ? results.get(at).t : refT;
+        if (ref == null || s == null || s.count < MIN_PAIRS) {
+            r.note = "too few stars (" + (s == null ? 0 : s.count) + ")";
+            return r;
+        }
+        r.nStars = s.count;
+        r.medianHfr = s.medianHfr(80);
+        r.background = s.background;
+        r.noise = s.noise;
+        if (!match(s, guess, 0, 0, radius, r)) return r;
+        if (radius > 4) {
+            // again from the fit, with the usual radius: a wide first radius lets near neighbours in
+            Result r2 = new Result();
+            r2.unit = unit;
+            r2.t = r.t;
+            r2.nStars = r.nStars;
+            r2.medianHfr = r.medianHfr;
+            r2.background = r.background;
+            r2.noise = r.noise;
+            if (match(s, r.R, 0, 0, 3.0, r2)) r = r2;
+        }
+        if (at >= 0) results.set(at, r);
+        else results.add(r);
+        return r;
+    }
+
     private void setReference(int unit, StarList s, double t) {
         ref = s;
         refUnit = unit;

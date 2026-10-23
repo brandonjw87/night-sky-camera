@@ -115,6 +115,8 @@ public final class PostProcessor {
         public long timestampNs;
         /** Samples it had for the stack (rejected ones included). */
         public long samples;
+        /** In a merge (G1): the session it belongs to; "" otherwise. */
+        public String session = "";
     }
 
     /** Regions per frame for transparency, weights and the sky background: 8 x 6. */
@@ -165,6 +167,26 @@ public final class PostProcessor {
     public boolean blend;
     /** Take the white balance from the catalogue stars when there are enough (F4; tests switch it off to compare). */
     public boolean colorCalibration = true;
+    /**
+     * Only these units (by index) are developed: G3's time trim and frames left out by hand; null for all of them.
+     * The sensor's defective pixels still come from every frame.
+     */
+    public java.util.Set<Integer> include;
+    /** How {@link #include} was chosen, for the decisions ("between 1:20 and 4:50, 2 left out by hand"). */
+    public String includeNote = "";
+    /** {@link #forceReference} was chosen by hand (G3), not set by a test. */
+    public boolean chosenReference;
+    /**
+     * Stars tapped by hand (F3's manual rescue, in G3): per unit, pairs of positions of one star in the reference
+     * frame and in that unit (x, y in the reference, then x, y in the unit; two pairs or more), to line up a frame
+     * the automatic matching couldn't.
+     */
+    public Map<Integer, float[]> taps;
+    /**
+     * A lens model to use as it is, not refined on this session's stars: in a merge (G1) every night's frames are
+     * lined up with the base session's model, so they all map the same way. Null to refine.
+     */
+    public CameraModel fixedModel;
     /** Faintest satellite looked for (magnitude), and how far outside the picture a track may start (pixels). */
     static final double SAT_MAG_LIMIT = 7;
     static final float SAT_PAD = 64;
@@ -193,7 +215,7 @@ public final class PostProcessor {
         H = spec.height;
     }
 
-    private static final class Unit {
+    static final class Unit {
         UnitRecord rec;
         StarList stars;
         Aligner.Result res;
@@ -217,29 +239,33 @@ public final class PostProcessor {
         double halo = Double.NaN;
     }
 
-    public Output run(boolean trails, Progress progress) throws IOException {
-        List<UnitRecord> recs = store.readUnits();
-        FrameStore fs = store.frames(W, H);
-        List<Unit> units = new ArrayList<Unit>();
-        for (UnitRecord r : recs) {
-            if (!fs.exists(r.index)) continue;
-            Unit u = new Unit();
-            u.rec = r;
-            units.add(u);
-        }
-        if (units.isEmpty()) throw new IOException("No frames were captured");
-        store.log("post-processing " + units.size() + " units, mode " + (trails ? "trails" : "deep sky"));
-        Output out = new Output();
-        out.unitsTotal = units.size();
-        out.maxGain = spec.shading != null ? spec.shading.maxGain() : 1f;
-        CameraModel model = spec.model != null ? spec.model
-                : CameraModel.nominal(W, H, W / (2 * Math.tan(Math.toRadians(35))));
-        out.model = model;
+    /**
+     * A session read and checked up to the stack: its frames, the sensor's defective pixels, the lens model and,
+     * for deep sky, the alignment, the grading and every frame's plan. A merge (G1) prepares each of its sessions
+     * this way and stacks them together ({@link MergeProcessor}).
+     */
+    static final class Prep {
+        final Output out = new Output();
+        List<UnitRecord> recs;
+        FrameStore fs;
+        HotPixels hot;
+        CameraModel model;
+        final List<Unit> units = new ArrayList<Unit>();
+        Unit ref;
+        StaticSources fixed;
+        List<Unit> stacked;
+        BackgroundGrid target;
+        final List<SharpStacker.Plan> plans = new ArrayList<SharpStacker.Plan>();
+        int cloudy, moved, blurred, lost, partly;
+        double integ;
+    }
 
-        // 1) hot pixels from the sensor-fixed average
-        HotPixels hot = hotPixels(units, fs, progress);
-        out.hot = hot;
-        store.log("hot pixels: " + hot.count());
+    public Output run(boolean trails, Progress progress) throws IOException {
+        Prep pr = begin(trails, progress);
+        Output out = pr.out;
+        List<Unit> units = pr.units;
+        FrameStore fs = pr.fs;
+        HotPixels hot = pr.hot;
 
         if (trails) {
             List<TrailsStacker.Unit> tu = new ArrayList<TrailsStacker.Unit>();
@@ -288,7 +314,61 @@ public final class PostProcessor {
             makeBlend(out, units, fs, hot, progress);
             return out;
         }
+        prepare(pr, progress);
+        return finish(pr, progress);
+    }
 
+    /** Deep sky up to the stack, for a merge (G1): {@link #run} stops here. */
+    Prep prepareOnly(Progress progress) throws IOException {
+        Prep pr = begin(false, progress);
+        prepare(pr, progress);
+        return pr;
+    }
+
+    /** The units on disk (of those {@link #include} keeps), the lens model and the sensor's defective pixels. */
+    private Prep begin(boolean trails, Progress progress) throws IOException {
+        Prep pr = new Prep();
+        pr.recs = store.readUnits();
+        pr.fs = store.frames(W, H);
+        int left = 0;
+        for (UnitRecord r : pr.recs) {
+            if (!pr.fs.exists(r.index)) continue;
+            if (include != null && !include.contains(r.index)) {
+                left++;
+                continue;
+            }
+            Unit u = new Unit();
+            u.rec = r;
+            pr.units.add(u);
+        }
+        if (pr.units.isEmpty()) throw new IOException(left > 0 ? "None of the chosen frames is on the phone" : "No frames were captured");
+        store.log("post-processing " + pr.units.size() + " units, mode " + (trails ? "trails" : "deep sky"));
+        Output out = pr.out;
+        if (left > 0) {
+            decide(out, String.format(Locale.US, "frames: %d of %d, %s", pr.units.size(), pr.units.size() + left,
+                    includeNote.isEmpty() ? "as chosen" : includeNote));
+        }
+        out.unitsTotal = pr.units.size();
+        out.maxGain = spec.shading != null ? spec.shading.maxGain() : 1f;
+        CameraModel model = fixedModel != null ? fixedModel : spec.model != null ? spec.model
+                : CameraModel.nominal(W, H, W / (2 * Math.tan(Math.toRadians(35))));
+        out.model = model;
+        pr.model = model;
+
+        // 1) hot pixels from the sensor-fixed average
+        pr.hot = hotPixels(pr.units, pr.fs, progress);
+        out.hot = pr.hot;
+        store.log("hot pixels: " + pr.hot.count());
+        return pr;
+    }
+
+    /** Deep sky: star lists, the reference frame, alignment, grading, and every frame's plan for the stack. */
+    private void prepare(Prep pr, Progress progress) throws IOException {
+        List<Unit> units = pr.units;
+        FrameStore fs = pr.fs;
+        HotPixels hot = pr.hot;
+        Output out = pr.out;
+        CameraModel model = pr.model;
         // 2) star lists without fixed points (warm pixels, a branch), and the reference frame
         for (Unit u : units) u.stars = store.readStars(u.rec.index);
         StaticSources fixed = findFixed(units, model);
@@ -306,17 +386,23 @@ public final class PostProcessor {
 
         if (ref != null) {
             out.referenceUnit = ref.rec.index;
-            decide(out, String.format(Locale.US, "reference: frame %d (at %d s, %d stars), the clearest frame near the middle",
-                    ref.rec.index, Math.round(ref.rec.t), ref.stars.count));
+            decide(out, String.format(Locale.US, "reference: frame %d (at %d s, %d stars), %s", ref.rec.index,
+                    Math.round(ref.rec.t), ref.stars.count, ref.rec.index == forceReference && chosenReference ? "as chosen"
+                            : "the clearest frame near the middle"));
             progress.update("Matching stars", 0f);
             Aligner al = align(model, ref, units, null);
-            ModelRefiner.Outcome oc = ModelRefiner.refine(model, al.reference(), al.results(), ref.rec.index);
-            store.log(oc.note);
-            if (oc.changed) {
-                model = oc.model;
-                al = align(model, ref, units, null);
+            if (fixedModel == null) {
+                ModelRefiner.Outcome oc = ModelRefiner.refine(model, al.reference(), al.results(), ref.rec.index);
+                store.log(oc.note);
+                if (oc.changed) {
+                    model = oc.model;
+                    al = align(model, ref, units, null);
+                }
+            } else {
+                store.log("lens model: as given, not refined (" + model + ")");
             }
             al = sparseRescue(al, model, ref, units, fs, hot, fixed, progress, out);
+            applyTaps(al, model, ref, units, out);
             out.model = model;
             for (Aligner.Result r : al.results()) {
                 Unit u = byIndex.get(r.unit);
@@ -400,6 +486,35 @@ public final class PostProcessor {
         out.unitsPartly = partly;
         out.integrationSeconds = integ;
 
+        pr.model = model;
+        pr.ref = ref;
+        pr.fixed = fixed;
+        pr.stacked = stacked;
+        pr.target = target;
+        pr.plans.addAll(plans);
+        pr.cloudy = cloudy;
+        pr.moved = moved;
+        pr.blurred = blurred;
+        pr.lost = lost;
+        pr.partly = partly;
+        pr.integ = integ;
+    }
+
+    /** Deep sky: outlier rejection, the stack (again without the sensor's pattern and streaks if needed), reports. */
+    private Output finish(Prep pr, Progress progress) throws IOException {
+        Output out = pr.out;
+        List<Unit> units = pr.units;
+        List<UnitRecord> recs = pr.recs;
+        FrameStore fs = pr.fs;
+        HotPixels hot = pr.hot;
+        CameraModel model = pr.model;
+        Unit ref = pr.ref;
+        StaticSources fixed = pr.fixed;
+        List<Unit> stacked = pr.stacked;
+        BackgroundGrid target = pr.target;
+        List<SharpStacker.Plan> plans = pr.plans;
+        int cloudy = pr.cloudy, moved = pr.moved, blurred = pr.blurred, lost = pr.lost, partly = pr.partly;
+        double integ = pr.integ;
         // 4) outlier rejection
         SharpStacker st = new SharpStacker(spec, model, fs, hot);
         st.kHigh = clipHigh;
@@ -469,41 +584,7 @@ public final class PostProcessor {
                     100.0 * sr.edgeRejected / sr.edgeSamples));
         }
         for (Unit u : units) {
-            FrameReport fr = new FrameReport();
-            fr.index = u.rec.index;
-            fr.t = u.rec.t;
-            fr.exposure = u.rec.exposure;
-            fr.used = u.used;
-            fr.predicted = u.predicted;
-            fr.reason = u.reason;
-            fr.weight = u.weight;
-            fr.transparency = u.transparency;
-            fr.stars = u.stars == null ? 0 : u.stars.count;
-            if (u.res != null && u.res.ok) fr.rms = u.res.rms;
-            fr.R = u.R;
-            fr.regionsUsed = u.regionsUsed;
-            fr.regionT = u.cellT != null ? u.cellT.clone() : null;
-            fr.alignSigma = u.sigmaPx;
-            if (u.res != null && u.res.ok) {
-                fr.measuredR = u.res.R;
-                fr.matched = u.res.nInliers;
-            }
-            if (u.res != null && u.res.ok && u.res.medianHfr > 0) fr.hfr = u.res.medianHfr;
-            else if (u.rec.hfr > 0) fr.hfr = u.rec.hfr;
-            fr.halo = u.halo;
-            if (u.bg != null && u.rec.exposure > 0) fr.background = u.bg.medianLevel(1) / u.rec.exposure;
-            else if (u.rec.background > 0 && u.rec.exposure > 0) fr.background = u.rec.background / u.rec.exposure;
-            fr.gyroMax = u.rec.gyroMax;
-            fr.disturbed = u.rec.disturbed;
-            fr.timestampNs = u.rec.sensorTimestampNs;
-            if (u.bg != null) fr.noise = u.bg.medianSigma(1);
-            else if (u.rec.noise > 0) fr.noise = u.rec.noise;
-            Integer pi = planOf.get(u.rec.index);
-            if (pi != null) {
-                fr.usedFraction = sr.samples[pi] > 0 ? sr.included[pi] / (float) sr.samples[pi] : 0f;
-                fr.samples = sr.samples[pi];
-                fr.rejectedSamples = sr.rejected[pi];
-            }
+            FrameReport fr = frameReport(u, sr, planOf.get(u.rec.index));
             out.frames.add(fr);
             store.log(String.format(Locale.US, "unit %d: %s T=%s regions=%s%s used=%s stars=%d rms=%s %s", u.rec.index,
                     u.used ? "USED" : "skipped",
@@ -543,11 +624,55 @@ public final class PostProcessor {
         return out;
     }
 
+    /** What happened to one unit, for the review screen and the log; {@code pi} is its plan's index in sr (null if none). */
+    static FrameReport frameReport(Unit u, SharpStacker.Result sr, Integer pi) {
+        FrameReport fr = new FrameReport();
+        fr.index = u.rec.index;
+        fr.t = u.rec.t;
+        fr.exposure = u.rec.exposure;
+        fr.used = u.used;
+        fr.predicted = u.predicted;
+        fr.reason = u.reason;
+        fr.weight = u.weight;
+        fr.transparency = u.transparency;
+        fr.stars = u.stars == null ? 0 : u.stars.count;
+        if (u.res != null && u.res.ok) fr.rms = u.res.rms;
+        fr.R = u.R;
+        fr.regionsUsed = u.regionsUsed;
+        fr.regionT = u.cellT != null ? u.cellT.clone() : null;
+        fr.alignSigma = u.sigmaPx;
+        if (u.res != null && u.res.ok) {
+            fr.measuredR = u.res.R;
+            fr.matched = u.res.nInliers;
+        }
+        if (u.res != null && u.res.ok && u.res.medianHfr > 0) fr.hfr = u.res.medianHfr;
+        else if (u.rec.hfr > 0) fr.hfr = u.rec.hfr;
+        fr.halo = u.halo;
+        if (u.bg != null && u.rec.exposure > 0) fr.background = u.bg.medianLevel(1) / u.rec.exposure;
+        else if (u.rec.background > 0 && u.rec.exposure > 0) fr.background = u.rec.background / u.rec.exposure;
+        fr.gyroMax = u.rec.gyroMax;
+        fr.disturbed = u.rec.disturbed;
+        fr.timestampNs = u.rec.sensorTimestampNs;
+        if (u.bg != null) fr.noise = u.bg.medianSigma(1);
+        else if (u.rec.noise > 0) fr.noise = u.rec.noise;
+        if (pi != null) {
+            fr.usedFraction = sr.samples[pi] > 0 ? sr.included[pi] / (float) sr.samples[pi] : 0f;
+            fr.samples = sr.samples[pi];
+            fr.rejectedSamples = sr.rejected[pi];
+        }
+        return fr;
+    }
+
+    /** The reference frame's stars as detected for photometry (the deepest list of it), once prepared; else null. */
+    StarList referenceDetections() {
+        return refDetections;
+    }
+
     /**
      * The white balance from the stars (F4): the catalogue stars the plate solution matched, measured in the stack,
      * set it in place of the fixed one when there are enough of them. Which one was used goes in the decisions.
      */
-    private void calibrateColour(Output out) {
+    void calibrateColour(Output out) {
         if (!colorCalibration) return;
         String fixed = "colour: the fixed " + Math.round(spec.wbCct) + " K white balance, as ";
         if (sky == null || sky.catalog == null || out.solution == null) {
@@ -1165,6 +1290,54 @@ public final class PostProcessor {
             al.process(u.rec.index, u.stars != null ? u.stars : empty, u.rec.t);
         }
         return al;
+    }
+
+    /**
+     * Frames lined up from stars tapped by hand (F3's manual rescue): the rotation the tapped pairs give is the guess
+     * the frame's own stars are matched from, and a frame that then matches takes that alignment.
+     */
+    private void applyTaps(Aligner al, CameraModel model, Unit ref, List<Unit> units, Output out) {
+        if (taps == null || taps.isEmpty()) return;
+        double[] b = new double[3], p = new double[2];
+        for (Unit u : units) {
+            float[] t = taps.get(u.rec.index);
+            if (t == null || u == ref) continue;
+            int n = t.length / 4;
+            if (n < 2) {
+                decide(out, String.format(Locale.US, "alignment: frame %d needs two stars tapped or more, it had %d", u.rec.index, n));
+                continue;
+            }
+            double[] A = new double[3 * n], B = new double[3 * n], w = new double[n];
+            int[] use = new int[n];
+            for (int k = 0; k < n; k++) {
+                model.unproject(t[4 * k], t[4 * k + 1], b);
+                System.arraycopy(b, 0, A, 3 * k, 3);
+                model.unproject(t[4 * k + 2], t[4 * k + 3], b);
+                System.arraycopy(b, 0, B, 3 * k, 3);
+                w[k] = 1;
+                use[k] = k;
+            }
+            double[] guess = Rot.solve(A, B, w, use, n);
+            // how well the taps agree with one turn of the sky: a fingertip is a few pixels wide
+            double worst = 0;
+            for (int k = 0; k < n; k++) {
+                Rot.apply(guess, A[3 * k], A[3 * k + 1], A[3 * k + 2], b);
+                worst = model.project(b[0], b[1], b[2], p) ? Math.max(worst, Math.hypot(p[0] - t[4 * k + 2], p[1] - t[4 * k + 3])) : 1e9;
+            }
+            if (worst > 60) {
+                decide(out, String.format(Locale.US, "alignment: frame %d: the stars tapped by hand don't fit one turn of the "
+                        + "sky (off by %.0f px), so they were not used", u.rec.index, worst));
+                continue;
+            }
+            Aligner.Result r = al.rematch(u.rec.index, u.stars, guess, Math.max(8, 2 * worst + 4));
+            if (r.ok) {
+                decide(out, String.format(Locale.US, "alignment: frame %d lined up from %d stars tapped by hand (they agree within "
+                        + "%.1f px), then %d of its stars matched (%.2f px)", u.rec.index, n, worst, r.nInliers, r.rms));
+            } else {
+                decide(out, String.format(Locale.US, "alignment: frame %d: the stars tapped by hand gave no match (%s)",
+                        u.rec.index, r.note));
+            }
+        }
     }
 
     /** Fixed points from every frame's star list: what stays put on the sensor while the sky drifts. */

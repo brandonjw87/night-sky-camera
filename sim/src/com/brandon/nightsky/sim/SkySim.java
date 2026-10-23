@@ -142,13 +142,26 @@ public final class SkySim {
         return r;
     }
 
-    private void build(long seed) {
-        Random rnd = new Random(seed);
-        double lat = Math.toRadians(latitudeDeg);
+    /**
+     * Puts the phone down again (another night, G1): its top edge's heading and its tilt from level toward an
+     * azimuth (degrees). The sky stays the same.
+     */
+    public void setAttitude(double headingDeg, double tiltDeg, double tiltAzDeg) {
+        this.headingDeg = headingDeg;
+        this.tiltDeg = tiltDeg;
+        attitude(tiltAzDeg);
+    }
+
+    /** True rotation from frame r of another simulation of the same sky (another night, the same sidereal start) to frame i of this one. */
+    public double[] trueRotationFrom(SkySim other, int r, int i) {
+        double tr = other.frameStart(r) + other.frameExp / 2, ti = frameStart(i) + frameExp / 2;
+        double[] Cr = other.camera(r, 0.25), Ci = camera(i, 0.75);
+        return Rot.mul(Ci, Rot.mul(sky(ti - tr), Rot.transpose(Cr)));
+    }
+
+    private void attitude(double tiltAzDeg) {
         double hd = Math.toRadians(headingDeg), tl = Math.toRadians(tiltDeg);
-        double[] E = {1, 0, 0}, N = {0, 1, 0}, U = {0, 0, 1};
-        // optical axis: zenith tilted toward azimuth 130 deg
-        double az = Math.toRadians(130);
+        double az = Math.toRadians(tiltAzDeg);
         double[] z = {Math.sin(tl) * Math.sin(az), Math.sin(tl) * Math.cos(az), Math.cos(tl)};
         double[] xh = {Math.cos(hd), Math.sin(hd), 0};
         double d = xh[0] * z[0] + xh[1] * z[1] + xh[2] * z[2];
@@ -160,6 +173,13 @@ public final class SkySim {
         double[] y = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
         cam0 = new double[]{x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]};
         camBump = Rot.mul(Rot.fromRotVec(Math.toRadians(bumpDeg), Math.toRadians(bumpDeg * 0.4), 0), cam0);
+    }
+
+    private void build(long seed) {
+        Random rnd = new Random(seed);
+        double lat = Math.toRadians(latitudeDeg);
+        // optical axis: zenith tilted toward azimuth 130 deg
+        attitude(130);
 
         // stars within 62 deg of the zenith, magnitudes from a power law N(<m) ~ 10^(0.42 m); with the real sky,
         // the catalogue's stars to magnitude 6.5 where they are and random ones only below that

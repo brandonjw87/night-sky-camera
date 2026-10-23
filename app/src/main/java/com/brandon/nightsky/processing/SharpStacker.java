@@ -70,6 +70,18 @@ public final class SharpStacker {
          * go on top of the stack (whichever is brighter) instead of away. Same layout; null for none.
          */
         public float[] keep;
+        /**
+         * Where this frame is stored and its sensor's defective pixels, when they aren't the stacker's own (a frame
+         * of another session in a merge, G1: each night is read from its own folder with its own hot pixels).
+         */
+        public FrameStore frames;
+        public HotPixels hot;
+        /**
+         * The frame's starlight at full transparency relative to the stack's (1 = the same): another night's frames
+         * (G1) may be longer, at another gain or through a clearer sky. It scales and weighs the frame like
+         * transparency does, but never cuts it out.
+         */
+        public float signal = 1f;
     }
 
     public static final class Result {
@@ -416,8 +428,9 @@ public final class SharpStacker {
                     buf.raw = new short[need];
                     buf.data = new float[need];
                 }
-                store.readBand(plan.unit, rs, re, buf.raw);
-                if (hot != null) hot.fix(buf.raw, rs, re, rs);
+                (plan.frames != null ? plan.frames : store).readBand(plan.unit, rs, re, buf.raw);
+                HotPixels hp = plan.hot != null ? plan.hot : hot;
+                if (hp != null) hp.fix(buf.raw, rs, re, rs);
                 float sc = plan.invScale;
                 short[] raw = buf.raw;
                 float[] d = buf.data;
@@ -457,9 +470,9 @@ public final class SharpStacker {
      * A frame's normalisation at the warp nodes of node rows [iyA, iyB]: per node the scale, the weight, the
      * offset per channel (normalised = value * scale + offset) and the noise per channel after normalisation.
      * Scale and cut come from the transparency interpolated to the node, so the frame is left out right up to
-     * where its cloud thins below {@link #minTransparency}, and scaled by 1 / transparency where it is used;
-     * the weight is the inverse of its noise after scaling, relative to the target's, at most 4. Last, 1 where
-     * the frame's samples are only judged against the others' limits ({@link #doubtful}).
+     * where its cloud thins below {@link #minTransparency}, and scaled by 1 / (transparency x signal) where it is
+     * used; the weight is the inverse of its noise after scaling, relative to the target's, at most 4. Last, 1
+     * where the frame's samples are only judged against the others' limits ({@link #doubtful}).
      */
     private void normNodes(Plan p, WarpGrid g, byte[] doubt, int iyA, int iyB, int nx, float[] tgt, float[] a) {
         boolean match = p.background != null && target != null;
@@ -471,11 +484,12 @@ public final class SharpStacker {
                 boolean on = mx > -1e5f && my > -1e5f;
                 float tr = p.transparency != null ? p.transparency.at(X, Y) : 1f;
                 float tc = Stats.clamp(tr, minTransparency, MAX_TRANSPARENCY);
-                float sc = 1f / tc;
+                float sg = p.signal > 0 ? p.signal : 1f;
+                float sc = 1f / (tc * sg);
                 float r = sc;
                 if (match && on) {
                     float sf = p.background.sigma(1, mx, my), st = target.sigma(1, X, Y);
-                    if (sf > 0 && st > 0) r = sf / (tc * st);
+                    if (sf > 0 && st > 0) r = sf / (tc * sg * st);
                 }
                 int o = ((iy - iyA) * nx + ix) * NK;
                 int to = ((iy - iyA) * nx + ix) * 3;
