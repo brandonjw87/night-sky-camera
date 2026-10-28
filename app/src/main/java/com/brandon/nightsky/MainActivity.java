@@ -1464,11 +1464,16 @@ public final class MainActivity extends Activity {
     // Tonight and the night plan (E2)
     // ------------------------------------------------------------------------------------------------
 
-    /** Tonight at a place: darkness, the Moon, the forecast's clouds, and the best window. Null without a place. */
+    /**
+     * Tonight at a place: darkness, the Moon, meteor showers, the forecast's clouds, and the best window, under the
+     * sky as measured at a saved site there (else a typical dark one). Null without a place.
+     */
     private Tonight tonight(Locator.Place place) {
         if (place == null) return null;
         Tonight.Forecast fc = Forecasts.cached(this, place.latDeg, place.lonDeg);
-        return Tonight.compute(place.latDeg, place.lonDeg, System.currentTimeMillis(), TimeZone.getDefault(), fc, Double.NaN);
+        Site site = Sites.at(Sites.load(prefs), place);
+        double sky = site != null ? site.skyMedian() : Double.NaN;
+        return Tonight.compute(place.latDeg, place.lonDeg, System.currentTimeMillis(), TimeZone.getDefault(), fc, sky);
     }
 
     /** Asks for a new forecast if one is due, and redraws what shows tonight when it comes. */
@@ -1598,7 +1603,23 @@ public final class MainActivity extends Activity {
         } else {
             shownForecastMs = t.hasForecast ? now - t.forecastAgeMs : 0;
             c.addView(text(t.headline, 17, RED, true));
-            for (int i = 0; i < Math.min(3, t.lines.size()); i++) c.addView(text(t.lines.get(i), 14, RED_DIM, false), gap(3));
+            for (String l : skyLines(t, 0, 3)) c.addView(text(l, 14, RED_DIM, false), gap(3));
+            // a meteor shower worth going out for, and the preset for it
+            for (Tonight.ShowerNight sn : t.showers) c.addView(text(sn.line, 14, RED_DIM, false), gap(3));
+            if (!t.showers.isEmpty() && !Preset.METEORS.equals(prefs.preset())) {
+                Button mp = button("Use the Meteors preset", false);
+                mp.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Preset m = Presets.find(prefs, Preset.METEORS);
+                        if (m == null) return;
+                        Presets.pick(prefs, m, true);
+                        sitePicked = "";
+                        rebuildHome();
+                    }
+                });
+                c.addView(mp, gap(8));
+            }
         }
         String night = Plans.planningNight(now, t, TimeZone.getDefault());
         int planned = 0;
@@ -1671,6 +1692,19 @@ public final class MainActivity extends Activity {
         return col;
     }
 
+    /** Tonight's lines but its meteor showers' (shown on their own): at most {@code n}, from the {@code from}th. */
+    static List<String> skyLines(Tonight t, int from, int n) {
+        List<String> out = new ArrayList<String>();
+        int i = 0;
+        for (String l : t.lines) {
+            boolean shower = false;
+            for (Tonight.ShowerNight s : t.showers) shower |= s.line.equals(l);
+            if (shower) continue;
+            if (i++ >= from && out.size() < n) out.add(l);
+        }
+        return out;
+    }
+
     /** Tonight's plan: its sessions, its options, and Arm (or, armed, what comes next and Cancel). */
     private void showPlan() {
         final long now = System.currentTimeMillis();
@@ -1705,7 +1739,8 @@ public final class MainActivity extends Activity {
         col.addView(text(armed ? "Tonight's plan, armed" : "Tonight's plan", 26, RED, true));
         col.addView(text(nightWords(p.night) + (t != null ? " · " + t.headline : ""), 14, RED_DIM, false), gap(4));
         if (t != null && !armed) {
-            for (int i = 1; i < Math.min(3, t.lines.size()); i++) col.addView(text(t.lines.get(i), 13, RED_DIM, false), gap(2));
+            for (String l : skyLines(t, 1, 2)) col.addView(text(l, 13, RED_DIM, false), gap(2));
+            for (Tonight.ShowerNight sn : t.showers) col.addView(text(sn.line, 13, RED_DIM, false), gap(2));
         }
 
         if (armed) {

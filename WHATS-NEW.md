@@ -1,5 +1,84 @@
 # Night Sky Camera: what's new
 
+## Version 1.5: meteors
+
+### What's new
+
+- **Meteors told from satellites and planes.** Every streak in a frame is now sorted out: a satellite the app
+  knows (named, as before), a plane (its lights blink), or a meteor. A streak counts as a meteor when no
+  satellite could have left it: it starts and ends in open sky, in the middle of the frame (a satellite crosses
+  the whole picture unless it passes into or out of the Earth's shadow, which the app works out for both ends),
+  it doesn't carry on in the next frame, or it crossed faster than any satellite can.
+- **Keep meteors.** Under **Advanced**, **Streaks: satellites, planes and meteors** now has three choices: **Take
+  them out** (as before), **Keep meteors** (new: the meteors stay in the photo at full brightness, satellites and
+  planes go) and **Keep them all** (the satellites stay too, which is what "Keep satellites" did).
+- **Every meteor listed.** The session report has a **Meteors** part: how many, from which showers, the
+  brightest, then a line for each with its time, its shower (or "sporadic"), about how bright it was, how long,
+  where in the sky it crossed and, when the photo shows it, which way it flew. The shower comes from where its
+  line points back to (the shower's radiant, worked out for that night and that place) and how fast it crossed.
+  The session log has a line for each too, and a table of them is saved as `NightSky_..._meteors.csv` in
+  `Documents/NightSky`, for Excel or Sheets.
+- **Meteor showers on the Tonight card.** When a major shower is near its peak, the card says so: about how many
+  an hour you'd see by eye from where you are at best, and when; whether the Moon hides the fainter ones; and
+  roughly how many the camera may catch. Coming up: the Northern Taurids (known for slow fireballs) on November 12,
+  the Leonids on the night of November 17, and the year's best, the Geminids, on the night of Sunday December 13.
+- **A Meteors preset**: 30 minutes, with the meteors kept. During a shower the Tonight card has a **Use the
+  Meteors preset** button.
+- **Checked on a simulated Geminid night** (8 Geminids, 3 sporadic meteors and a blinking plane in a 5-minute
+  session): all 11 meteors found and called meteors, nothing else called one, the right shower for all 11 (and
+  "sporadic" for the 3), the way each Geminid flew, both ends of each on its true path across the sky, its time
+  within its frame, and its brightness typically within half a magnitude. With **Keep meteors** they're in the
+  photo at full brightness; otherwise they're gone from it. The whole app was also run on a simulated phone
+  with two meteors crossing: both were kept, listed and saved in the table.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.4 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- Meteors are taken out of the photo with the other streaks, as before; **Keep meteors** or the **Meteors**
+  preset keeps them. If you had chosen to keep satellites, that's now **Keep them all**.
+- New: the **Meteors** preset (30 minutes, meteors kept). Your own presets keep their settings.
+- Everything else is unchanged from version 1.4.
+
+### Try today
+
+- Open **Advanced** and find the three **Streaks** choices. Nothing else to try until a clear night.
+
+### Try tonight
+
+1. Any clear night: tap the **Meteors** preset (or pick **Keep meteors**), lay the phone down and let it run its
+   30 minutes. On an ordinary night a bright meteor crosses the camera's patch of sky only now and then, so a
+   session with none is normal; if one is caught, the session report lists it.
+2. The real test is a shower night: the Tonight card will say when, with the best time. Start a Meteors session
+   then, or plan the night with several of them.
+3. If a streak is called the wrong thing (a satellite or a plane called a meteor, or a meteor taken for something
+   else), send the photo and **Session report > Share the log** here.
+
+### Not working yet, or not tested
+
+- Tested off the phone only: on simulated skies, and through the app itself with a simulated camera. Your first
+  meteor is the real test.
+- The camera catches only the brighter meteors: on simulated skies, about half of those as bright as a bright star
+  (magnitude +1.3 under a dark sky, +0.8 under a suburban one) and nearly all brighter ones. At the Geminids'
+  peak that's roughly one an hour. The Tonight card works it out for the night, as a rough guess (good to a
+  factor of two or so). A fainter meteor goes into the photo like any other passing light: spread over the whole
+  session, too faint to see. Finding fainter ones is next on the list.
+- A meteor's time is only known to within its frame (each frame lasts several seconds).
+- A meteor's brightness is an estimate: its speed in the air comes from its shower (for a sporadic one, a typical
+  speed), so a sporadic meteor that was slower than most comes out brighter than it was.
+- A sporadic meteor whose line happens to point back to a shower's radiant is counted as one of the shower's:
+  one photo can't tell them apart.
+- A satellite the app has no orbit for whose streak starts or ends mid-frame (a sudden flash of sunlight off it)
+  can be called a meteor.
+
 ## Version 1.4: a clean sky that keeps its faint stars
 
 ### What's new

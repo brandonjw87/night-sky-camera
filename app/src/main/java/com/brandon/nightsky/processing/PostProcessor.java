@@ -1547,6 +1547,12 @@ public final class PostProcessor {
         }
 
         @Override
+        public double shadowHeight(int f, double x, double y) {
+            if (site == null || solution == null || Double.isNaN(jd[f])) return Double.NaN;
+            return SatSky.shadowExit(site.moment(jd[f]), solution.direction(x, y))[1];
+        }
+
+        @Override
         public double degrees(double x0, double y0, double x1, double y1) {
             double[] a = new double[3];
             model.unproject(x0, y0, a);

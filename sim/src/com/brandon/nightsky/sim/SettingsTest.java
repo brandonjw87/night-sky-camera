@@ -34,10 +34,14 @@ public final class SettingsTest {
 
     static void presets() {
         List<Preset> b = Preset.builtIns();
-        check(b.size() == 4 && b.get(0).id.equals(Preset.BACKYARD) && b.get(3).id.equals(Preset.QUICK), "four built-in presets, in order");
+        check(b.size() == 5 && b.get(0).id.equals(Preset.BACKYARD) && b.get(3).id.equals(Preset.QUICK) && b.get(4).id.equals(Preset.METEORS),
+                "five built-in presets, in order");
         for (Preset p : b) System.out.println("  " + p.name + ": " + p.describe());
         Preset q = Preset.find(b, Preset.QUICK);
         check(q.durationMin == 2 && !q.saveDng && q.quick, "Quick look: 2 minutes, JPEG only, quick developing");
+        Preset me = Preset.find(b, Preset.METEORS);
+        check(me.durationMin == 30 && me.keepMeteors && !me.keepSatellites && !me.quick && me.describe().endsWith(", meteors kept"),
+                "Meteors: 30 minutes, the meteors kept and the satellites taken out");
         Preset c = Preset.find(b, Preset.CLOUDY);
         check(c.collectClear && c.blend, "Partly cloudy: collects clear minutes and saves the cloud blur");
         for (int i = 0; i < b.size(); i++) {

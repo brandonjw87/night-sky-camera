@@ -448,6 +448,61 @@ public class Night {
         Monkey.say("  screen: " + labels());
     }
 
+    /**
+     * Keep meteors, chosen in the settings: two bright meteors cross the picture during a 3-minute session. Both must
+     * be in the session's meteor list, kept, and on the session report.
+     */
+    static void meteors() throws Exception {
+        begin("3 minutes with Keep meteors chosen; two bright meteors cross the picture");
+        minutes(3);
+        if (findLabel("Keep meteors") == null) press("Advanced");
+        press("Keep meteors");
+        startAndPutDown();
+        untilFrames(2);
+        SimCamera cam = SimCamera.get();
+        double now = (SystemClock.elapsedRealtimeNanos() - cam.t0Ns) / 1e9;
+        cam.meteor(now + 20, 0.45, 0.40, 25, 9, 0.6, -1.5);
+        cam.meteor(now + 55, 0.30, 0.65, 200, 12, 0.5, -1.0);
+        follow(20 * 60_000L);
+        report();
+        File[] ss = Monkey.root.listFiles();
+        File d = null;
+        if (ss != null && ss.length > 0) {
+            Arrays.sort(ss);
+            d = ss[ss.length - 1];
+        }
+        File csv = d == null ? null : new File(d, "meteors.csv");
+        List<String> rows = new ArrayList<String>();
+        if (csv != null && csv.exists()) {
+            BufferedReader r = new BufferedReader(new FileReader(csv));
+            String line;
+            while ((line = r.readLine()) != null) rows.add(line);
+            r.close();
+        }
+        for (String row : rows) Monkey.say("  meteors.csv | " + row);
+        int kept = 0;
+        for (int k = 1; k < rows.size(); k++) {
+            String[] c = rows.get(k).split(",", -1);
+            if (c.length > 17 && c[17].equals("1")) kept++;
+        }
+        if (rows.size() != 3 || kept != 2) Monkey.problem(scenario + ": " + (rows.size() - 1) + " meteors in meteors.csv, " + kept + " kept (2 of 2 wanted)");
+        String rep = d == null ? "" : read(new File(d, "report.json"));
+        if (!rep.contains("\"meteors\"") || !rep.contains("All kept in the picture")) Monkey.problem(scenario + ": the report has no kept meteors");
+        // and the table, in Documents/NightSky for Excel
+        String log = d == null ? "" : read(new File(d, "log.txt"));
+        if (!log.contains("meteors: the list saved in Documents/NightSky as ")) Monkey.problem(scenario + ": the meteor table wasn't saved");
+        Monkey.idle();
+        run(500);
+        // as the app comes again
+        if (findLabel("Take them out") == null) press("Advanced");
+        press("Take them out");
+    }
+
+    static String read(File f) throws Exception {
+        if (!f.exists()) return "";
+        return new String(java.nio.file.Files.readAllBytes(f.toPath()), "UTF-8");
+    }
+
     /** Clouds over everything for three frames. */
     static void clouds() throws Exception {
         begin("3 minutes, clouds (a quarter of the light) over frames 3 to 5");

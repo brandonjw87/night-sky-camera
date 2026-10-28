@@ -118,8 +118,46 @@ public final class Tonight {
     public long forecastAgeMs = -1;
     /** One line, for the widget and the home screen: "Tonight 82/100 · best 11:10 PM to 4:40 AM". */
     public String headline = "";
-    /** A few lines: darkness, the Moon, clouds and dew, the forecast's source. */
+    /** A few lines: darkness, the Moon, meteor showers, clouds and dew, the forecast's source. */
     public final List<String> lines = new ArrayList<String>();
+
+    /** A meteor shower worth looking out for tonight ({@link #showers}). */
+    public static final class ShowerNight {
+        public MeteorShowers.Shower shower;
+        /** When it peaks (Unix ms), and the best time tonight: its radiant high in a dark sky. */
+        public long peakMs, bestMs;
+        /** Its radiant's altitude then (degrees), and how much the Moon brightens the sky then (1: not at all). */
+        public double radiantAlt, moonGain = 1;
+        /**
+         * About how many of its meteors an hour the eye would see from here then (the site's sky and the Moon),
+         * and how many the camera may catch: only the brighter ones ({@link #cameraMag}), in its smaller field.
+         */
+        public double eyeRate, cameraRate;
+        /** The sentence on the card. */
+        public String line = "";
+    }
+
+    /** The major showers tonight, the richest first; their lines are in {@link #lines} too. */
+    public final List<ShowerNight> showers = new ArrayList<ShowerNight>();
+    /**
+     * The faintest meteor the camera catches half the time (V magnitude), for one crossing at 10 degrees a second,
+     * under a dark site's sky ({@link #CAMERA_SKY_DARK} magnitudes per square arcsecond) and a suburban one
+     * ({@link #CAMERA_SKY_SUBURB}): measured on simulated full-size sessions (the simulator's MeteorLimit: +1.26
+     * and +0.81, from 58 Geminids in 4 sessions under each sky). The sky's glow is only part of the noise, so a sky
+     * 1.5 magnitudes brighter costs less than half a magnitude.
+     */
+    static final double CAMERA_MAG_DARK = 1.3, CAMERA_MAG_SUBURB = 0.8, CAMERA_SKY_DARK = 21.9, CAMERA_SKY_SUBURB = 20.4;
+    /**
+     * How fast meteors grow in number a magnitude fainter, among the bright ones the camera catches: video networks
+     * find about 2.0 for the Perseids and the Geminids, where the eye's counts (fainter meteors, the showers' own
+     * index) give 2.2 to 2.6. Taking the eye's index from magnitude 6.5 all the way up would make the camera's
+     * catch several times too small.
+     */
+    static final double CAMERA_R = 2.0;
+    /** The camera's field (pointed straight up) against the sky a meteor observer watches, by the area at meteor height. */
+    static final double CAMERA_SHARE = 0.3;
+    /** Fewest meteors an hour the eye should see from here for a shower to be mentioned. */
+    static final double MIN_EYE_RATE = 3;
     public double latDeg, lonDeg;
     public TimeZone zone;
 
@@ -217,8 +255,129 @@ public final class Tonight {
             t.slots.add(s);
         }
         t.bestWindow();
+        t.showers(nowMs, darkMag);
         t.describe(nowMs);
         return t;
+    }
+
+    /**
+     * The major meteor showers active tonight near their peak (or known for fireballs, near theirs) whose radiant is
+     * up in the dark: when each is best (its radiant high, the sky dark: the most of its meteors an observer would
+     * see), and how many then.
+     */
+    private void showers(long nowMs, double darkMag) {
+        if (duskMs == 0 && !darkNow) return;
+        long a = Math.max(nowMs, duskMs > 0 ? duskMs : fromMs), b = dawnMs > 0 ? dawnMs : toMs;
+        if (b <= a) return;
+        double lat = latDeg * Astro.DEG, lon = lonDeg * Astro.DEG;
+        double sol = MeteorShowers.solarLongitude(Astro.jdUtc((a + b) / 2));
+        for (MeteorShowers.Shower sh : MeteorShowers.ALL) {
+            if (!sh.major() || !sh.active(sol)) continue;
+            double zhr = sh.zhr(sol);
+            // near its peak: a quarter of its best rate or more (a fireball shower, flat for weeks: within 3 days)
+            if (sh.fireballs ? Math.abs(sh.fromPeak(sol)) > 3 : zhr < 0.25 * sh.zhr) continue;
+            ShowerNight n = new ShowerNight();
+            n.shower = sh;
+            double best = 0;
+            for (Slot s : slots) {
+                long c = s.ms + SLOT_MS / 2;
+                if (c < a || c > b || s.sunAlt > DARK_DEG) continue;
+                double jd = Astro.jdUtc(c);
+                double[] m = Astro.j2000ToEnu(jd, lat, lon), e = new double[3], zen = new double[3], r = sh.radiant(MeteorShowers.solarLongitude(jd));
+                Rot.apply(Rot.transpose(m), 0, 0, 1, zen);
+                r = MeteorShowers.apparentRadiant(r, zen, sh.speed);
+                Rot.apply(m, r[0], r[1], r[2], e);
+                double alt = Astro.altitude(e) / Astro.DEG;
+                if (alt <= 0) continue;
+                // the eye's faintest star there (the sky as the Moon brightens it), and the share of meteors that bright
+                double gain = 1 / Math.max(1e-6, s.moonFactor), sky = darkMag - 2.5 * Math.log10(gain);
+                double lm = limitingMag(sky);
+                double rate = zhr * Math.sin(alt * Astro.DEG) * Math.pow(sh.r, lm - 6.5);
+                if (rate * s.cloudFactor > best) {
+                    best = rate * s.cloudFactor;
+                    n.bestMs = s.ms + SLOT_MS / 2;
+                    n.radiantAlt = alt;
+                    n.moonGain = gain;
+                    n.eyeRate = rate;
+                    n.cameraRate = zhr * Math.sin(alt * Astro.DEG) * Math.pow(CAMERA_R, cameraMag(sh, alt, sky) - 6.5) * CAMERA_SHARE;
+                }
+            }
+            if (n.eyeRate < MIN_EYE_RATE) continue;
+            n.peakMs = peakTime(sh, (a + b) / 2);
+            showers.add(n);
+        }
+        java.util.Collections.sort(showers, new java.util.Comparator<ShowerNight>() {
+            @Override
+            public int compare(ShowerNight x, ShowerNight y) {
+                return Double.compare(y.eyeRate, x.eyeRate);
+            }
+        });
+        while (showers.size() > 2) showers.remove(showers.size() - 1);
+        for (ShowerNight n : showers) n.line = showerLine(n, (a + b) / 2);
+    }
+
+    /**
+     * The faintest of a shower's meteors the camera catches (V magnitude), its radiant this high, under a sky this
+     * bright (V magnitudes per square arcsecond, the Moon's light in it): between the measured dark and suburban
+     * skies by the sky (beyond the suburban one, on the same slope; no better than the dark one). A slower meteor
+     * lays its light thicker along its trail, so fainter ones show; a faster one, thinner. The camera looks
+     * straight up, so its meteors are about as far from the radiant as the zenith is (25 degrees or more, across its
+     * field), at an altitude of about 70 degrees.
+     */
+    public static double cameraMag(MeteorShowers.Shower sh, double radiantAlt, double skyMag) {
+        double f = Math.min(1, (Math.max(17, skyMag) - CAMERA_SKY_SUBURB) / (CAMERA_SKY_DARK - CAMERA_SKY_SUBURB));
+        double w = MeteorShowers.angularSpeed(sh.speed, Math.max(25, 90 - radiantAlt), 70);
+        return CAMERA_MAG_SUBURB + f * (CAMERA_MAG_DARK - CAMERA_MAG_SUBURB) + 2.5 * Math.log10(10 / w);
+    }
+
+    /**
+     * The faintest star the eye sees (V magnitude) under a sky this bright (V magnitudes per square arcsecond):
+     * Crumey's fit, as amateur astronomers use it to turn a sky meter's reading into a limiting magnitude.
+     */
+    static double limitingMag(double skyMag) {
+        return 7.93 - 5 * Math.log10(Math.pow(10, 4.316 - skyMag / 5) + 1);
+    }
+
+    /** When a shower peaks (Unix ms): the moment nearest {@code near} the Sun reaches its peak's solar longitude. */
+    static long peakTime(MeteorShowers.Shower sh, long near) {
+        long t = near;
+        for (int i = 0; i < 4; i++) {
+            double d = MeteorShowers.wrap(sh.peak - MeteorShowers.solarLongitude(Astro.jdUtc(t)));
+            t += Math.round(d / 0.9856 * 86_400_000L);
+        }
+        return t;
+    }
+
+    /**
+     * "Geminids at their peak tonight: about 75 an hour to the eye from here at best, around 1:55 AM, when their
+     * radiant is high. The camera catches only the brightest, roughly one an hour."
+     */
+    String showerLine(ShowerNight n, long mid) {
+        MeteorShowers.Shower sh = n.shower;
+        long d = n.peakMs - mid;
+        SimpleDateFormat day = new SimpleDateFormat("MMM d", Locale.US);
+        day.setTimeZone(zone != null ? zone : TimeZone.getDefault());
+        String when = Math.abs(d) <= 12 * 3600_000L ? " at their peak tonight"
+                : d > 0 && d <= 36 * 3600_000L ? ", peaking tomorrow night"
+                : d > 0 ? ", building to their peak on " + day.format(new Date(n.peakMs))
+                : d >= -36 * 3600_000L ? ", a night past their peak" : ", past their peak (" + day.format(new Date(n.peakMs)) + ")";
+        StringBuilder sb = new StringBuilder(sh.name).append(when).append(": about ").append(rate(n.eyeRate))
+                .append(" an hour to the eye from here at best, around ").append(clock(n.bestMs))
+                .append(n.radiantAlt >= 45 ? ", when their radiant is high" : ", when their radiant is highest").append('.');
+        if (sh.fireballs) sb.append(" Known for slow, bright fireballs.");
+        if (n.moonGain >= 2) sb.append(" The Moon hides the fainter ones.");
+        // the camera's share: a guess good to a factor of two or so
+        long every = Math.round(1 / n.cameraRate);
+        if (n.cameraRate >= 1.5) sb.append(" The camera catches only the brightest, roughly ").append(rate(n.cameraRate)).append(" an hour.");
+        else if (n.cameraRate >= 0.1) sb.append(" The camera catches only the brightest, roughly ")
+                .append(every <= 1 ? "one an hour." : "one every " + every + " hours.");
+        return sb.toString();
+    }
+
+    /** A rate rounded as a person would say it: 7, 40, 120. */
+    static String rate(double r) {
+        long v = r < 10 ? Math.round(r) : r < 100 ? 5 * Math.round(r / 5) : 10 * Math.round(r / 10);
+        return Long.toString(Math.max(1, v));
     }
 
     /** Low and middle cloud block the stars; high cloud (cirrus) dims them: the worst of the layers counts. */
@@ -310,6 +469,7 @@ public final class Tonight {
             moon = String.format(Locale.US, "Moon %d%% lit, below the horizon all night.", pct);
         }
         lines.add(moon);
+        for (ShowerNight n : showers) lines.add(n.line);
         // clouds and dew
         if (hasForecast) {
             String c = cloudStory();

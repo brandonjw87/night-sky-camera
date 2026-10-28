@@ -277,6 +277,8 @@ public final class MeteorTest {
     static final class Frames implements SatMatch.Frames {
         int n = 10;
         double gapAfter = -1, shadow;
+        /** How high the shadow reaches: this many km at the left edge, rising this many a pixel to the right. */
+        double shadowLeft = Double.NaN, shadowPerPx;
 
         @Override
         public int count() {
@@ -301,6 +303,11 @@ public final class MeteorTest {
         @Override
         public double shadowSpeed(int f, double x, double y) {
             return shadow;
+        }
+
+        @Override
+        public double shadowHeight(int f, double x, double y) {
+            return shadowLeft + shadowPerPx * x;
         }
 
         @Override
@@ -337,6 +344,16 @@ public final class MeteorTest {
                 + "as the shadow could go 0.5 a second");
         check(!SatMatch.satellitePossible(streak(5, 5, 600, 600, 800), fr), "but not 12.6 degrees: too fast for a satellite as high as the shadow");
         check(!SatMatch.satellitePossible(streak(5, 800, 600, 900, 700), fr), "and not both ends: it goes into or out of the shadow once");
+        fr.shadowLeft = 300;
+        fr.shadowPerPx = 0.2;
+        check(SatMatch.satellitePossible(streak(5, 5, 600, 150, 700), fr), "the shadow reaching higher at its end in open sky (330 km "
+                + "against 301): lit all along, a satellite could");
+        fr.shadowPerPx = -0.2;
+        check(!SatMatch.satellitePossible(streak(5, 5, 600, 150, 700), fr), "reaching lower there (270 km against 299): a satellite "
+                + "that high would be in the shadow along the streak, so a meteor");
+        fr.shadowLeft = 700;
+        check(SatMatch.satellitePossible(streak(5, 1995, 600, 1850, 700), fr), "from the other edge, the shadow reaching higher at its "
+                + "end in open sky (330 km against 301): a satellite could");
     }
 
     static void check(boolean ok, String what) {

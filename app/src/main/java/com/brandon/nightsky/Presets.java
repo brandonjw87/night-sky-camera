@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Presets on the phone (E6): the four that come with the app and Brandon's own (kept in the settings), the one in
+ * Presets on the phone (E6): the five that come with the app and Brandon's own (kept in the settings), the one in
  * place, and a session's settings from them.
  */
 final class Presets {

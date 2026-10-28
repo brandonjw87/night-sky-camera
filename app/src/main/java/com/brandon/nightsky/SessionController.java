@@ -34,6 +34,7 @@ import com.brandon.nightsky.processing.Framing;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
+import com.brandon.nightsky.processing.MeteorLog;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
@@ -4673,6 +4674,21 @@ final class SessionController {
                 if (home != st) text = home.readLog() + "\n---- " + st.dir.getName() + " ----\n" + text;
                 log = MediaSaver.saveText(ctx, name + "_log.txt", text);
             } catch (IOException | RuntimeException ignored) {
+            }
+            // the meteors caught, as a table for Excel or Sheets
+            if (!o.meteors.isEmpty()) {
+                try {
+                    final byte[] csv = MeteorLog.csv(o.meteors).getBytes("UTF-8");
+                    MediaSaver.saveDocument(ctx, name + "_meteors.csv", "text/csv", new MediaSaver.Writer() {
+                        @Override
+                        public void write(OutputStream os) throws IOException {
+                            os.write(csv);
+                        }
+                    });
+                    st.log("meteors: the list saved in Documents/NightSky as " + name + "_meteors.csv");
+                } catch (IOException | RuntimeException e) {
+                    st.log("meteors: the list not saved: " + e);
+                }
             }
         }
         // the photo is saved: the frames stay for editing and merging while the budget allows (an edit leaves them be)

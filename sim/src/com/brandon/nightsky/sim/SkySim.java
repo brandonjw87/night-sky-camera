@@ -19,7 +19,7 @@ import java.util.SplittableRandom;
  * Synthetic night sky as the phone's main camera would record it lying screen-down: a realistic star field
  * turning about the celestial pole, lens distortion and vignetting, sky glow with a light-pollution
  * gradient, shot/read/dark noise, hot pixels, 10-bit RAW quantisation, plus optional satellites, a plane,
- * a meteor, passing clouds and a bump.
+ * meteors, passing clouds and a bump.
  */
 public final class SkySim {
     public static final double OMEGA = 7.2921159e-5;
@@ -58,6 +58,48 @@ public final class SkySim {
     }
 
     public final java.util.List<OrbitSat> orbitSats = new java.util.ArrayList<OrbitSat>();
+
+    /**
+     * A meteor (real sky only): a point crossing the sky along a great circle at a steady angular speed, its light
+     * rising and fading the way a meteor's does, most of it late in its flight: I = I_peak 27/4 u^2 (1 - u), u going
+     * from 0 as it lights up to 1 as it goes out.
+     */
+    public static final class Meteor {
+        /** When it lights up (seconds after the start of frame 0), and how long it shines. */
+        public final double startSec, durationSec;
+        /** Where it lights up and the way it flies from there (J2000 unit vectors, at right angles). */
+        public final double[] from, dir;
+        /** How fast it crosses the sky (degrees a second), and its magnitude at its brightest. */
+        public final double speedDegS, peakMag;
+        /** Debug: per frame, how far it travelled across the picture (pixels) and its brightest line density. */
+        public final double[] pathPx, peakDensity;
+
+        public Meteor(double startSec, double durationSec, double[] from, double[] dir, double speedDegS, double peakMag, int frames) {
+            this.startSec = startSec;
+            this.durationSec = durationSec;
+            this.from = from.clone();
+            this.dir = dir.clone();
+            this.speedDegS = speedDegS;
+            this.peakMag = peakMag;
+            pathPx = new double[frames];
+            peakDensity = new double[frames];
+        }
+
+        /** Where on its path it is (J2000) t seconds after the start of frame 0 (shining or not). */
+        public double[] at(double t) {
+            double a = Math.toRadians(speedDegS * (t - startSec)), c = Math.cos(a), s = Math.sin(a);
+            return new double[]{from[0] * c + dir[0] * s, from[1] * c + dir[1] * s, from[2] * c + dir[2] * s};
+        }
+
+        /** How bright it is at time t, as a share of its brightest (0 before and after it shines). */
+        public double light(double t) {
+            double u = (t - startSec) / durationSec;
+            return u <= 0 || u >= 1 ? 0 : 6.75 * u * u * (1 - u);
+        }
+    }
+
+    /** The meteors to draw (safe to add to while frames render). */
+    public final java.util.List<Meteor> meteors = new java.util.concurrent.CopyOnWriteArrayList<Meteor>();
 
     // events
     public int satelliteFrame = -1, planeFrame = -1, meteorFrame = -1;
@@ -292,6 +334,12 @@ public final class SkySim {
         if (m0 == null) return null;
         double[] C = Rot.mul(camera(i, 0.5), sky(frameStart(i) + 0.5 * frameExp));
         return Rot.transpose(Rot.mul(C, m0));
+    }
+
+    /** Real sky: camera bearings (the phone as put down, not knocked) t seconds after the start of frame 0, to J2000; null for a random field. */
+    public double[] cameraToJ2000At(double t) {
+        if (m0 == null) return null;
+        return Rot.transpose(Rot.mul(Rot.mul(cam0, sky(t)), m0));
     }
 
     /** The plane's dashed line in frame i, sensor pixels {xa, ya, xb, yb}; null if it isn't in that frame. */
@@ -561,6 +609,7 @@ public final class SkySim {
         if (plane != null) addLine(img, plane[0], plane[1], plane[2], plane[3], 1.2, 400, 28);
         if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
         for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
+        for (Meteor me : meteors) drawMeteor(img, i, me, psfSigma, haloFrac);
         // the branch's lit leaves: fixed bright spots
         if (branchT != null) {
             for (int g : glints) {
@@ -685,21 +734,13 @@ public final class SkySim {
      */
     private void drawOrbitSat(float[] img, int i, OrbitSat o, double psf, double halo) {
         if (m0 == null) return;
-        if (sunTint == null) {
-            double[] rgb = tint(5800);
-            double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
-            double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
-            double bb = A[6] * rgb[0] + A[7] * rgb[1] + A[8] * rgb[2];
-            double mean = (rr + 2 * gg + bb) / 4;
-            sunTint = new float[]{(float) (rr / mean), (float) (gg / mean), (float) (bb / mean)};
-        }
+        if (sunTint == null) sunTint = sensorTint(5800);
         SatSky.Site site = new SatSky.Site(Math.toRadians(latitudeDeg), Math.toRadians(longitudeDeg), 0);
         SatSky.Look look = new SatSky.Look();
         double t0 = frameStart(i), dt = 0.05;
         int steps = (int) Math.round(frameExp / dt);
         double px0 = Double.NaN, py0 = 0, f0 = 0;
         double[] enu = new double[3], b = new double[3], p = new double[2];
-        int[] cfa = {0, 1, 1, 2};
         for (int k = 0; k <= steps; k++) {
             double t = t0 + k * dt;
             SatSky.Moment m = site.moment(Astro.jdUtc(startUnixMs / 1000.0 + t));
@@ -723,18 +764,83 @@ public final class SkySim {
                     if (len > 1e-6) o.peakDensity[i] = Math.max(o.peakDensity[i], flux / len * transparency(i, px) * vignetting(px, py));
                 }
                 if (len < 4000 && (inside || px0 > 0 && py0 > 0 && px0 < W && py0 < H)) {
-                    // the core in steps of 0.3 px; the lens's glow (as the stars have it) in steps of a pixel
-                    for (int part = 0; part < (halo > 0 ? 2 : 1); part++) {
-                        double share = part == 0 ? 1 - halo : halo, sg = part == 0 ? psf : haloSigma;
-                        int n = Math.max(1, (int) Math.ceil(len / (part == 0 ? 0.3 : 1.0)));
-                        for (int q = 0; q < n; q++) {
-                            double u = (q + 0.5) / n, x = px0 + (px - px0) * u, y = py0 + (py - py0) * u;
-                            if (x < -4 * sg || y < -4 * sg || x > W + 4 * sg || y > H + 4 * sg) continue;
-                            double amp = flux * share / n * transparency(i, x) * vignetting(x, y);
-                            if (branchT != null && x >= 0 && y >= 0 && x < W && y < H) amp *= branchT[(int) y * W + (int) x];
-                            addSpotTint(img, x, y, sg, amp, cfa, sunTint);
-                        }
-                    }
+                    addTrail(img, i, px0, py0, px, py, flux, psf, halo, sunTint);
+                }
+            }
+            px0 = px;
+            py0 = py;
+            f0 = f;
+        }
+    }
+
+    /**
+     * Light spread evenly along a straight piece of trail in frame i: the core in steps of 0.3 px, the lens's glow
+     * (as the stars have it) in steps of a pixel.
+     */
+    private void addTrail(float[] img, int i, double xa, double ya, double xb, double yb, double flux, double psf, double halo,
+                          float[] tint) {
+        int[] cfa = {0, 1, 1, 2};
+        double len = Math.hypot(xb - xa, yb - ya);
+        for (int part = 0; part < (halo > 0 ? 2 : 1); part++) {
+            double share = part == 0 ? 1 - halo : halo, sg = part == 0 ? psf : haloSigma;
+            int n = Math.max(1, (int) Math.ceil(len / (part == 0 ? 0.3 : 1.0)));
+            for (int q = 0; q < n; q++) {
+                double u = (q + 0.5) / n, x = xa + (xb - xa) * u, y = ya + (yb - ya) * u;
+                if (x < -4 * sg || y < -4 * sg || x > W + 4 * sg || y > H + 4 * sg) continue;
+                double amp = flux * share / n * transparency(i, x) * vignetting(x, y);
+                if (branchT != null && x >= 0 && y >= 0 && x < W && y < H) amp *= branchT[(int) y * W + (int) x];
+                addSpotTint(img, x, y, sg, amp, cfa, tint);
+            }
+        }
+    }
+
+    /** A colour temperature's light on the sensor (red, green, blue relative to the mean of the four photosites). */
+    private float[] sensorTint(double kelvin) {
+        double[] rgb = tint(kelvin);
+        double rr = A[0] * rgb[0] + A[1] * rgb[1] + A[2] * rgb[2];
+        double gg = A[3] * rgb[0] + A[4] * rgb[1] + A[5] * rgb[2];
+        double bb = A[6] * rgb[0] + A[7] * rgb[1] + A[8] * rgb[2];
+        double mean = (rr + 2 * gg + bb) / 4;
+        return new float[]{(float) (rr / mean), (float) (gg / mean), (float) (bb / mean)};
+    }
+
+    /** A meteor's light on the sensor: hot and a little green (its metals' lines). */
+    private float[] meteorTint;
+
+    /**
+     * A meteor's trail in frame i: its place every 10 ms (J2000, then the sim's own turning sky and the camera),
+     * and its light along the straight lines between, as bright as its light curve makes it there.
+     */
+    private void drawMeteor(float[] img, int i, Meteor me, double psf, double halo) {
+        if (m0 == null) return;
+        double t0 = Math.max(frameStart(i), me.startSec), t1 = Math.min(frameStart(i) + frameExp, me.startSec + me.durationSec);
+        if (t1 <= t0) return;
+        if (meteorTint == null) meteorTint = sensorTint(7500);
+        int steps = Math.max(10, (int) Math.ceil((t1 - t0) / 0.01));
+        double dt = (t1 - t0) / steps, peak = fluxZero * Math.pow(10, -0.4 * me.peakMag) * starGain;
+        double px0 = Double.NaN, py0 = 0, f0 = 0;
+        double[] enu = new double[3], b = new double[3], p = new double[2];
+        for (int k = 0; k <= steps; k++) {
+            double t = t0 + k * dt;
+            double[] j = me.at(t);
+            Rot.apply(j2000ToEnu(t), j[0], j[1], j[2], enu);
+            Rot.apply(camera(i, (t - frameStart(i)) / frameExp), enu[0], enu[1], enu[2], b);
+            double px = Double.NaN, py = 0, f = 0;
+            if (b[2] > 0.05 && truth.project(b[0], b[1], b[2], p)) {
+                px = p[0];
+                py = p[1];
+                f = peak * me.light(t);
+            }
+            if (!Double.isNaN(px) && !Double.isNaN(px0)) {
+                double len = Math.hypot(px - px0, py - py0);
+                double flux = 0.5 * (f + f0) * dt;
+                boolean inside = px > 0 && py > 0 && px < W && py < H;
+                if (inside) {
+                    me.pathPx[i] += len;
+                    if (len > 1e-6) me.peakDensity[i] = Math.max(me.peakDensity[i], flux / len * transparency(i, px) * vignetting(px, py));
+                }
+                if (len < 4000 && (inside || px0 > 0 && py0 > 0 && px0 < W && py0 < H)) {
+                    addTrail(img, i, px0, py0, px, py, flux, psf, halo, meteorTint);
                 }
             }
             px0 = px;

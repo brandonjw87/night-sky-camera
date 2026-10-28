@@ -101,6 +101,12 @@ public final class SatMatch {
          */
         double shadowSpeed(int f, double x, double y);
 
+        /**
+         * How high (km) the Earth's shadow reaches along the line of sight through stack pixel (x, y) during plan f
+         * (a satellite higher up is in sunlight); NaN where that isn't known.
+         */
+        double shadowHeight(int f, double x, double y);
+
         /** The angle (degrees) on the sky between two stack pixels. */
         double degrees(double x0, double y0, double x1, double y1);
     }
@@ -541,21 +547,26 @@ public final class SatMatch {
             }
             s.halfWidth = (float) ((spread + 1.5) * c + 2);
             s.kind = blinks(on, bestA, bestB) ? "plane" : "";
-            // where the evidence ends, and the light along it: the corridor's cells, cell by cell along the line
-            s.sx0 = (float) ((ox + ux * t0) * c);
-            s.sy0 = (float) ((oy + uy * t0) * c);
-            s.sx1 = (float) ((ox + ux * t1) * c);
-            s.sy1 = (float) ((oy + uy * t1) * c);
+            // the light along it: the corridor's cells, cell by cell along the line
             int bins = (int) Math.floor(t1 - t0) + 1;
-            s.light = new float[bins];
+            float[] light = new float[bins];
+            int[] lit = new int[bins];
             for (int i = 0; i < n; i++) {
                 if (gone[i]) continue;
                 double d = (px[i] + 0.5) * cs[a] + (py[i] + 0.5) * sn[a] - rho;
                 double t = (px[i] + 0.5) * -sn[a] + (py[i] + 0.5) * cs[a];
                 if (Math.abs(d) > spread + 1.5 || t < t0 - 0.5 || t > t1 + 0.5) continue;
                 int bin = Math.max(0, Math.min(bins - 1, (int) Math.floor(t - t0 + 0.5)));
-                s.light[bin] += ev.excess(f, px[i], py[i]);
+                light[bin] += ev.excess(f, px[i], py[i]);
+                lit[bin]++;
             }
+            // and where the evidence ends: without a lone faint cell beyond either end, noise the run's gaps let in
+            int[] ends = evidenceEnds(light, lit);
+            s.sx0 = (float) ((ox + ux * (t0 + ends[0])) * c);
+            s.sy0 = (float) ((oy + uy * (t0 + ends[0])) * c);
+            s.sx1 = (float) ((ox + ux * (t0 + ends[1])) * c);
+            s.sy1 = (float) ((oy + uy * (t0 + ends[1])) * c);
+            s.light = Arrays.copyOfRange(light, ends[0], ends[1] + 1);
             out.add(s);
             // the whole corridor's cells go (a thick trail's edge cells would otherwise come back as a second line)
             for (int i = 0; i < n; i++) {
@@ -568,6 +579,30 @@ public final class SatMatch {
             }
         }
         return out;
+    }
+
+    /**
+     * The first and last stretch of a streak's evidence ({@code light} and {@code cells} per cell's length along it):
+     * all of it, except a lone stretch at either end, two or more empty ones away from the rest, with under a
+     * quarter of the light of the streak's typical stretch (the median of those with cells). That is noise: a cell
+     * of it now and then lies on the line a little beyond the streak, and the run, which bridges the gaps in a
+     * faint streak's patchy light, takes it in. A faint streak's own stretches are about as faint as each other,
+     * so its ends stay.
+     */
+    static int[] evidenceEnds(float[] light, int[] cells) {
+        int bins = light.length, k = 0;
+        float[] v = new float[bins];
+        for (int i = 0; i < bins; i++) if (cells[i] > 0) v[k++] = light[i];
+        int[] ends = {0, bins - 1};
+        if (k < 3) return ends;
+        Arrays.sort(v, 0, k);
+        float faint = v[k / 2] / 4;
+        int next = 1, prev = bins - 2;
+        while (next < bins && cells[next] == 0) next++;
+        while (prev >= 0 && cells[prev] == 0) prev--;
+        if (next >= 3 && next < bins - 1 && light[0] < faint) ends[0] = next;
+        if (bins - 1 - prev >= 3 && prev > ends[0] && light[bins - 1] < faint) ends[1] = prev;
+        return ends;
     }
 
     /**
@@ -613,6 +648,11 @@ public final class SatMatch {
     static final double MAX_GAP_S = 3;
     /** An end this close to the edge of its frame's picture (pixels, beyond the streak's half width) may run out of it. */
     static final double EDGE_PX = 3 * StreakEvidence.CELL;
+    /**
+     * How much lower (km) the shadow may reach at a satellite's end where it goes into it than at its other end: the
+     * satellite's own climb in an exposure, and the shadow's soft edge (the Sun isn't a point).
+     */
+    static final double SHADOW_SLACK_KM = 10;
 
     /**
      * Unidentified streaks (a blinking plane is found with the line). One that continues into the next or the last
@@ -621,13 +661,21 @@ public final class SatMatch {
      * is a meteor where no satellite could have left it: longer than the fastest satellite goes in the exposure, or
      * with ends no satellite's could have: a satellite's light begins and ends at an edge of the picture (or at
      * something in it that isn't clear sky: a roof, a branch, a cloud), where it passes into or out of the Earth's
-     * shadow (at most once in an exposure), or as the exposure begins or ends, which only a session's first or last
-     * frame (or one beside a gap) leaves unseen: otherwise the frame next to it would show the satellite too.
-     * Without the frames: short ones are meteors.
+     * shadow (at most once in an exposure, and at the end where the shadow reaches higher), or as the exposure
+     * begins or ends, which only a session's first or last frame (or one beside a gap) leaves unseen: otherwise the
+     * frame next to it would show the satellite too. A plane's blinking lights are found with the line; but a
+     * broken line alone in its frame that begins and ends in open sky is a faint meteor the noise broke up (a plane
+     * doesn't light up in mid-sky). Without the frames: short ones are meteors.
      */
     static void guessKinds(List<Streak> all, int width, double degPerPx, Frames frames, List<SatPredict.Track> tracks,
                            int[] planOf) {
         for (Streak s : all) {
+            // a broken line on its own (nothing along it in its frame or the next or the last) that begins and ends in
+            // open sky: a plane's lights don't, so it's a faint meteor whose trail the noise broke up
+            if ("plane".equals(s.kind) && s.sat == null && frames != null && !partnered(s, all) && !endsPossible(s, frames, false)) {
+                s.kind = "meteor";
+                continue;
+            }
             if (s.sat != null || !s.kind.isEmpty()) continue;
             boolean continues = false;
             for (Streak o : all) {
@@ -651,13 +699,29 @@ public final class SatMatch {
         }
     }
 
+    /** Whether another streak lies along the same line in s's frame, the one before or the one after. */
+    static boolean partnered(Streak s, List<Streak> all) {
+        for (Streak o : all) if (o != s && Math.abs(o.plan - s.plan) <= 1 && collinear(s, o)) return true;
+        return false;
+    }
+
     /** Whether a satellite could have left streak s in its frame alone (see {@link #guessKinds}). */
     public static boolean satellitePossible(Streak s, Frames fr) {
+        double ax = Float.isNaN(s.sx0) ? s.x0 : s.sx0, ay = Float.isNaN(s.sx0) ? s.y0 : s.sy0;
+        double bx = Float.isNaN(s.sx0) ? s.x1 : s.sx1, by = Float.isNaN(s.sx0) ? s.y1 : s.sy1;
+        if (fr.degrees(ax, ay, bx, by) > SAT_MAX_DEG_S * fr.exposure(s.plan)) return false;
+        return endsPossible(s, fr, true);
+    }
+
+    /**
+     * Whether something that shines steadily across the sky could have begun and ended where streak s does in its
+     * frame: a satellite (with {@code shadow}: it may go into or come out of the Earth's shadow), or a plane's lights.
+     */
+    static boolean endsPossible(Streak s, Frames fr, boolean shadow) {
         int f = s.plan;
         double ax = Float.isNaN(s.sx0) ? s.x0 : s.sx0, ay = Float.isNaN(s.sx0) ? s.y0 : s.sy0;
         double bx = Float.isNaN(s.sx0) ? s.x1 : s.sx1, by = Float.isNaN(s.sx0) ? s.y1 : s.sy1;
         double deg = fr.degrees(ax, ay, bx, by), t = fr.exposure(f);
-        if (deg > SAT_MAX_DEG_S * t) return false;
         // a stacked frame just before it, or just after it, would show the satellite as this one's exposure began or ended
         double s0 = fr.start(f), s1 = s0 + fr.exposure(f);
         boolean before = false, after = false;
@@ -668,10 +732,14 @@ public final class SatMatch {
             after |= g1 > s1 && g0 <= s1 + MAX_GAP_S;
         }
         double near = EDGE_PX + s.halfWidth;
-        // how each end could be a satellite's: 0 an edge, 1 the shadow, 2 the exposure's start, 3 its end
-        // (in the shadow's case, a satellite as high as the shadow begins there, fast enough to have left the streak)
-        boolean[] a = {fr.inside(f, ax, ay) <= near, deg <= fr.shadowSpeed(f, ax, ay) * t, !before, !after};
-        boolean[] b = {fr.inside(f, bx, by) <= near, deg <= fr.shadowSpeed(f, bx, by) * t, !before, !after};
+        // how each end could be a satellite's: 0 an edge, 1 the shadow, 2 the exposure's start, 3 its end. In the
+        // shadow's case, a satellite as high as the shadow reaches there, fast enough to have left the streak; and
+        // lit all along it, so the shadow reaches no higher at its other end (a satellite keeps its height)
+        double ha = shadow ? fr.shadowHeight(f, ax, ay) : Double.NaN, hb = shadow ? fr.shadowHeight(f, bx, by) : Double.NaN;
+        boolean[] a = {fr.inside(f, ax, ay) <= near,
+                shadow && deg <= fr.shadowSpeed(f, ax, ay) * t && !(ha < hb - SHADOW_SLACK_KM), !before, !after};
+        boolean[] b = {fr.inside(f, bx, by) <= near,
+                shadow && deg <= fr.shadowSpeed(f, bx, by) * t && !(hb < ha - SHADOW_SLACK_KM), !before, !after};
         for (int i = 0; i < 4; i++) {
             for (int j = 0; j < 4; j++) {
                 // both ends at edges, yes; but one shadow, one start and one end at most

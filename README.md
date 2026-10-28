@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.4.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.5.
 
 ## What it does
 
@@ -25,14 +25,18 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.4.
 - **A clean sky that keeps its faint stars.** The photo's grain and blotches are taken out of the sky between
   the stars, which are found and set aside first, so they keep their light, down to the faintest ones the
   stack shows.
+- **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
+  (one no satellite could have left). Meteors are taken out with the rest, or kept in the photo with **Keep
+  meteors**. Each one caught is listed with its time, its shower, how bright it was and where it crossed, and the
+  **Tonight** card says when a shower is worth going out for.
 - **Session report.** What the photo shows (constellations, planets, the Milky Way, galaxies to look for), a
   score for every frame, and what went wrong with the fix.
 - **Edit any photo again.** Look, crop, north up, which frames go in, the reference frame, stars lined up by
   hand, the ground kept sharp. Every save is a new version; nothing is ever written over.
 - **Photos that add up.** Add 5 minutes to the session you just took, or merge nights of the same sky.
 - **Night plan.** Plan the night, arm it, and sessions start by themselves when it's dark and clear.
-- **Presets and sites.** Backyard, Dark site, Partly cloudy, Quick look and your own; places you shoot from
-  remember their preset.
+- **Presets and sites.** Backyard, Dark site, Partly cloudy, Quick look, Meteors and your own; places you shoot
+  from remember their preset.
 - **Tile, widget and shortcuts.** Two taps from the lock screen to a session.
 - **Sky reading.** How dark is the sky here, in magnitudes per square arcsecond.
 - **Viewer.** Watch the photo build up from a laptop, tablet or another phone on the same Wi-Fi.
@@ -118,6 +122,23 @@ Under the photo:
 - **Edit** opens the edit screen (below).
 - **Sessions** lists every session kept on the phone: open its photo again, merge nights, develop a session
   that wasn't finished, or delete frames to free space.
+
+## Meteor showers
+
+- **Tonight** names a major shower when it's near its peak: about how many meteors an hour you'd see by eye from
+  there at best and when, whether the Moon hides the fainter ones, and roughly how many the camera may catch (only
+  the brighter ones, in its smaller patch of sky). **Use the Meteors preset** sets up for it: 30 minutes, meteors
+  kept.
+- **Streaks** (under **Advanced**): **Take them out** (the default) takes satellites, planes and meteors out of
+  the photo; **Keep meteors** keeps the meteors at full brightness and takes the rest out; **Keep them all** keeps
+  the satellites too.
+- A streak counts as a meteor when no satellite could have left it: it starts and ends in open sky, mid-frame (a
+  satellite crosses the whole picture, unless it passes into or out of the Earth's shadow, which the app works out
+  for each end), it doesn't carry on in the next frame, or it crossed faster than any satellite can. Its shower
+  comes from where its line points back to (the shower's radiant) and how fast it crossed.
+- Each meteor caught is in the **Session report** (its time, its shower or "sporadic", about how bright it was,
+  how long and where in the sky), in the session log, and in a table that opens in Excel or Sheets:
+  `NightSky_..._meteors.csv` in `Documents/NightSky`.
 
 ## Editing a photo
 
@@ -289,6 +310,8 @@ app/src/main/java/com/brandon/nightsky/
         SkySolver       plate solving against the Yale Bright Star Catalogue
         Astro, Planets  time, Sun, Moon, planets
         Sat*, Sgp4      satellite prediction, matching and masks
+        MeteorShowers   the shower calendar: radiants, their drift, rates, and which shower a meteor came from
+        MeteorLog       the meteors caught: when, how bright, where, and the table of them
         Preflight       the pre-flight check
         CameraFacts, DarkFrames  what the camera check found; dark frames measured
         Focus*          focus on the stars and its temperature model
@@ -333,9 +356,11 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 (`deep` or `trails`), events such as satellites and clouds (true/false).
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
-`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest` and
-`SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test`
-take an output folder, for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`.
+`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`, `MeteorTest`
+and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
+`MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder, for example
+`java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `MeteorLimit` (an output folder, then
+the scale) measures how faint a meteor the camera catches.
 
 ### The app off the phone
 

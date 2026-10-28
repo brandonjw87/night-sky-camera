@@ -8,14 +8,14 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * A preset (E6): a named set of session settings picked with one tap. Four come with the app (Backyard, Dark
- * site, Partly cloudy, Quick look) and Brandon can save his own. What a preset holds is what changes from one
- * kind of night to another; sounds, the viewer and the like stay as they are.
+ * A preset (E6): a named set of session settings picked with one tap. Five come with the app (Backyard, Dark
+ * site, Partly cloudy, Quick look, Meteors) and Brandon can save his own. What a preset holds is what changes from
+ * one kind of night to another; sounds, the viewer and the like stay as they are.
  */
 public final class Preset {
-    public static final String BACKYARD = "backyard", DARK = "dark", CLOUDY = "cloudy", QUICK = "quick";
+    public static final String BACKYARD = "backyard", DARK = "dark", CLOUDY = "cloudy", QUICK = "quick", METEORS = "meteors";
 
-    /** "backyard", "dark", "cloudy", "quick", or "u" and a number for Brandon's own. */
+    /** "backyard", "dark", "cloudy", "quick", "meteors", or "u" and a number for Brandon's own. */
     public String id = "";
     public String name = "";
     public boolean builtIn;
@@ -86,6 +86,13 @@ public final class Preset {
         q.saveDng = false;
         q.quick = true;
         l.add(q);
+        // meteors are few, even on a shower's best night: a long session, and each one caught stays in the picture
+        Preset m = new Preset();
+        m.id = METEORS;
+        m.name = "Meteors";
+        m.durationMin = 30;
+        m.keepMeteors = true;
+        l.add(m);
         for (Preset p : l) p.builtIn = true;
         return l;
     }

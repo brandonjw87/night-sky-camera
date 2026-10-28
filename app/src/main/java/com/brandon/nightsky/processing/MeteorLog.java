@@ -14,8 +14,9 @@ import java.util.TimeZone;
  * The brightness: a meteor of magnitude m crossing the sky at w pixels a second leaves 10^(0.4 (zp - m)) / (w T) of
  * a frame's light per pixel of its trail, where zp is the zero point of the reference frame's catalogue stars (the
  * light of a magnitude-0 star in one frame of T seconds). The trail's light is what its frame's green samples were
- * rejected for above the stack, summed across it: twice the star detector's units, which average a cell's two
- * greens. Its speed comes from its shower's speed and how far from the radiant it was, or a typical sporadic
+ * rejected for above the stack, summed across it: four times the star detector's units (the stack has a green value
+ * at every pixel, as bright as a green photosite's; the detector's pixels are 2 x 2 photosites, the mean of their
+ * two greens). Its speed comes from its shower's speed and how far from the radiant it was, or a typical sporadic
  * meteor's (40 km/s, 45 degrees from its radiant), at the height meteors burn. Good to about a magnitude: the
  * trail's faint edges weren't rejected, and the speed is taken, not measured.
  */
@@ -178,7 +179,7 @@ public final class MeteorLog {
                 : MeteorShowers.angularSpeed(SPORADIC_SPEED, SPORADIC_DISTANCE, alt);
         if (best > 0 && !Double.isNaN(sol.zeroPoint) && refExposure > 0) {
             // detector units per pixel of trail, and the scale along it there
-            double perPx = best / StreakEvidence.CELL / 2;
+            double perPx = best / StreakEvidence.CELL / 4;
             double ux = (bx - ax) / lenPx, uy = (by - ay) / lenPx;
             double degPx = Astro.sep(p, sol.direction(px + 10 * ux, py + 10 * uy)) / Astro.DEG / 10;
             double w = m.speedDegS / Math.max(1e-6, degPx);

@@ -857,6 +857,8 @@ public final class SatSessionTest {
         PostProcessor.Output out;
         SkySim sim;
         SessionSky sky;
+        /** The session's meteors.csv, or null if it has none. */
+        String meteorsCsv;
     }
 
     static SkySim newSim(int scale, long startMs, BrightStars catalog) {
@@ -878,6 +880,12 @@ public final class SatSessionTest {
      */
     static Result run(File dir, SkySim sim, int frames, long seed, long startMs, BrightStars catalog, SatCatalog cat,
                       boolean corridors, double placeOffKm, double accuracyM) throws Exception {
+        return run(dir, sim, frames, seed, startMs, catalog, cat, corridors, placeOffKm, accuracyM, false);
+    }
+
+    /** As above, with Keep meteors on or off. */
+    static Result run(File dir, SkySim sim, int frames, long seed, long startMs, BrightStars catalog, SatCatalog cat,
+                      boolean corridors, double placeOffKm, double accuracyM, boolean keepMeteors) throws Exception {
         dir.mkdirs();
         SensorSpec spec = sim.spec(true);
         ColorMath.compute(spec, ColorMath.DEFAULT_CCT);
@@ -917,6 +925,7 @@ public final class SatSessionTest {
         pp.sky = sky;
         pp.satellites = cat;
         pp.streakCorridors = corridors;
+        pp.keepMeteors = keepMeteors;
         long t0 = System.currentTimeMillis();
         PostProcessor.Output o = pp.run(false, new Progress() {
             @Override
@@ -936,6 +945,11 @@ public final class SatSessionTest {
         r.sky = sky;
         java.nio.file.Files.copy(store.logFile().toPath(), new File(dir, "session.log").toPath(),
                 java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        r.meteorsCsv = store.readText(PostProcessor.METEORS_CSV);
+        if (r.meteorsCsv != null) {
+            java.nio.file.Files.write(new File(dir, PostProcessor.METEORS_CSV).toPath(),
+                    r.meteorsCsv.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
         store.deleteBulk();
         return r;
     }

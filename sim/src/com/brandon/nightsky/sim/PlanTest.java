@@ -1,5 +1,6 @@
 package com.brandon.nightsky.sim;
 
+import com.brandon.nightsky.processing.MeteorShowers;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.Tonight;
@@ -29,6 +30,7 @@ public final class PlanTest {
 
     public static void main(String[] args) {
         tonight();
+        showers();
         forecast();
         threeSessions();
         lensCovered();
@@ -92,6 +94,60 @@ public final class PlanTest {
         Tonight s = Tonight.compute(58.0, 10.0, at(2026, 6, 21, 18, 0), TimeZone.getTimeZone("Europe/Oslo"), null, Double.NaN);
         System.out.println("  58N on 21 June: " + s.headline + " | " + s.lines.get(s.lines.size() > 1 ? 1 : 0));
         check(s.duskMs == 0 && s.bestStartMs == 0, "58N midsummer: no full darkness, no window");
+    }
+
+    /** Meteor showers on the Tonight card (1.5): the major ones near their peak, the best time, about how many. */
+    static void showers() {
+        System.out.println("== meteor showers on the Tonight card");
+        // the Geminids peak on 14 Dec 2026 near 13:00 UTC: the night of the 13th is theirs, the Moon nearly new
+        Tonight g = Tonight.compute(LAT, LON, at(2026, 12, 13, 17, 0), NY, null, Double.NaN);
+        for (String l : g.lines) System.out.println("  | " + l);
+        Tonight.ShowerNight gem = g.showers.isEmpty() ? null : g.showers.get(0);
+        check(gem != null && gem.shower.code.equals("GEM") && gem.line.startsWith("Geminids at their peak tonight: about ")
+                        && g.lines.contains(gem.line),
+                "13 Dec 2026: the Geminids at their peak" + (gem == null ? "" : ": " + gem.line));
+        // their radiant (RA 7h 28m, Dec +33) crosses the meridian at Philadelphia near 2 AM, 83 degrees up
+        check(gem != null && near(gem.bestMs, at(2026, 12, 14, 2, 0), 30 * 60_000L) && gem.radiantAlt > 75,
+                "best around 2 AM, the radiant high" + (gem == null ? "" : String.format(Locale.US, " (%s, %.0f degrees)", t(gem.bestMs), gem.radiantAlt)));
+        // a suburban sky (limiting magnitude about 6.1) shows about half the zenithal hourly rate of 150; the camera
+        // only the brightest, about one an hour (a guess good to a factor of two or so)
+        check(gem != null && gem.eyeRate > 50 && gem.eyeRate < 110 && gem.cameraRate > 0.3 && gem.cameraRate < 3
+                        && gem.line.contains(" The camera catches only the brightest, roughly "),
+                "about 75 an hour to the eye, the camera far fewer" + (gem == null ? "" : String.format(Locale.US, " (%.0f, %.2f)", gem.eyeRate, gem.cameraRate)));
+        // a dark sky shows more of them, to the eye and to the camera
+        Tonight d = Tonight.compute(LAT, LON, at(2026, 12, 13, 17, 0), NY, null, 21.8);
+        check(!d.showers.isEmpty() && gem != null && d.showers.get(0).eyeRate > 1.3 * gem.eyeRate
+                && d.showers.get(0).cameraRate > gem.cameraRate, "a dark site sees more of them, and so does the camera");
+        // the camera's faintest: fainter in a darker sky, brighter for faster meteors (the Perseids against the
+        // Geminids) and for ones far from their radiant
+        MeteorShowers.Shower gs = MeteorShowers.byCode("GEM"), ps = MeteorShowers.byCode("PER");
+        double dark = Tonight.cameraMag(gs, 60, 21.9), suburb = Tonight.cameraMag(gs, 60, 20.4), city = Tonight.cameraMag(gs, 60, 18.5);
+        check(dark > suburb && suburb > city && Tonight.cameraMag(ps, 60, 21.9) < dark - 0.3 && Tonight.cameraMag(gs, 20, 21.9) < dark,
+                String.format(Locale.US, "the camera's faintest Geminid %.1f under a dark sky, %.1f suburban, %.1f in a city; a Perseid %.1f; "
+                        + "a Geminid far from its radiant %.1f", dark, suburb, city, Tonight.cameraMag(ps, 60, 21.9), Tonight.cameraMag(gs, 20, 21.9)));
+        // the night before: building, peaking tomorrow night
+        Tonight b = Tonight.compute(LAT, LON, at(2026, 12, 12, 17, 0), NY, null, Double.NaN);
+        check(!b.showers.isEmpty() && b.showers.get(0).line.startsWith("Geminids, peaking tomorrow night: "), "12 Dec: peaking tomorrow night");
+        // a week after the peak: nothing to say about them
+        Tonight w = Tonight.compute(LAT, LON, at(2026, 12, 21, 17, 0), NY, null, Double.NaN);
+        boolean gemAfter = false;
+        for (Tonight.ShowerNight n : w.showers) gemAfter |= n.shower.code.equals("GEM");
+        check(!gemAfter, "21 Dec: the Geminids are over");
+        // the Perseids' peak, 12-13 Aug 2027 (the Moon a thin crescent): best before dawn, their radiant high in the northeast
+        Tonight p = Tonight.compute(LAT, LON, at(2027, 8, 12, 17, 0), NY, null, Double.NaN);
+        Tonight.ShowerNight per = p.showers.isEmpty() ? null : p.showers.get(0);
+        check(per != null && per.shower.code.equals("PER") && per.bestMs > at(2027, 8, 13, 3, 0) && per.bestMs < at(2027, 8, 13, 5, 0),
+                "12 Aug 2027: the Perseids, best before dawn" + (per == null ? "" : ": " + per.line));
+        // the southern alpha-Centaurids never rise at Philadelphia
+        Tonight a = Tonight.compute(LAT, LON, at(2027, 2, 8, 17, 0), NY, null, Double.NaN);
+        boolean ace = false;
+        for (Tonight.ShowerNight n : a.showers) ace |= n.shower.code.equals("ACE");
+        check(!ace, "8 Feb 2027: the alpha-Centaurids' radiant never rises here");
+        // a bright Moon's sky hides most of a shower: the Perseids of 2027 a few nights later are fewer
+        Tonight l = Tonight.compute(LAT, LON, at(2027, 8, 16, 17, 0), NY, null, Double.NaN);
+        double perLate = 0;
+        for (Tonight.ShowerNight n : l.showers) if (n.shower.code.equals("PER")) perLate = n.eyeRate;
+        check(per != null && perLate < 0.5 * per.eyeRate, String.format(Locale.US, "16 Aug 2027: past the peak and a waxing Moon, %.0f an hour", perLate));
     }
 
     static void forecast() {

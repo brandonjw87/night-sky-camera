@@ -1525,12 +1525,17 @@ public final class ReportCard {
         else if (top == null && n > 1 && !starTrails) sb.append(" A clear, steady session.");
         List<MeteorLog.Meteor> ms = in.out.meteors;
         if (ms != null && !ms.isEmpty()) {
+            // the shower most of them came from (the first to get there, on a tie)
             MeteorShowers.Shower main = null;
             int members = 0;
             for (MeteorLog.Meteor m : ms) {
-                if (m.shower == null) continue;
-                if (main == null) main = m.shower;
-                if (m.shower == main) members++;
+                if (m.shower == null || m.shower == main) continue;
+                int c = 0;
+                for (MeteorLog.Meteor o : ms) if (o.shower == m.shower) c++;
+                if (c > members) {
+                    main = m.shower;
+                    members = c;
+                }
             }
             if (ms.size() == 1) sb.append(" Caught ").append(ms.get(0).what()).append('.');
             else sb.append(" Caught ").append(ms.size()).append(" meteors").append(main == null ? "" : members == ms.size()

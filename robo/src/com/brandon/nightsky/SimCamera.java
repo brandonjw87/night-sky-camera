@@ -130,6 +130,33 @@ public final class SimCamera {
         return sim.truth;
     }
 
+    /**
+     * A meteor across the picture: lighting up {@code t} seconds into the sky at (fx W, fy H), flying at {@code paDeg}
+     * in the picture (clockwise from its right edge), {@code degS} degrees a second for {@code dur} seconds, at
+     * magnitude {@code mag} at its brightest.
+     */
+    void meteor(double t, double fx, double fy, double paDeg, double degS, double dur, double mag) {
+        double x = fx * W, y = fy * H, pa = Math.toRadians(paDeg);
+        double[] a = new double[3], b = new double[3], ja = new double[3], jb = new double[3];
+        sim.truth.unproject(x, y, a);
+        sim.truth.unproject(x + 10 * Math.cos(pa), y + 10 * Math.sin(pa), b);
+        double[] R = sim.cameraToJ2000At(t);
+        com.brandon.nightsky.processing.Rot.apply(R, a[0], a[1], a[2], ja);
+        com.brandon.nightsky.processing.Rot.apply(R, b[0], b[1], b[2], jb);
+        unit(ja);
+        unit(jb);
+        double d = ja[0] * jb[0] + ja[1] * jb[1] + ja[2] * jb[2];
+        double[] dir = {jb[0] - d * ja[0], jb[1] - d * ja[1], jb[2] - d * ja[2]};
+        unit(dir);
+        sim.meteors.add(new SkySim.Meteor(t, dur, ja, dir, degS, mag, 2));
+        note(String.format(Locale.US, "a meteor at %.1f s, from (%.0f, %.0f), %.0f deg/s for %.1f s, magnitude %.1f", t, x, y, degS, dur, mag));
+    }
+
+    private static void unit(double[] v) {
+        double n = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        for (int i = 0; i < 3; i++) v[i] /= n;
+    }
+
     void note(String s) {
         events.add(String.format(Locale.US, "%8.1f s  %s", (SystemClock.elapsedRealtimeNanos() - t0Ns) / 1e9, s));
     }
