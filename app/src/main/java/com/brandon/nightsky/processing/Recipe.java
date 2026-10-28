@@ -87,6 +87,8 @@ public final class Recipe {
     // ---- what it made ----
     public int number;
     public int pipeline = PostProcessor.PIPELINE;
+    /** The rendering's version that made it ({@link Renderer#VERSION}; 1 for renders made before 1.4 wrote it down). */
+    public int renderer = Renderer.VERSION;
     public String app = "";
     public long createdMs;
     /** The photo's file name (no extension), and where it was saved ("" if not known). */
@@ -121,6 +123,7 @@ public final class Recipe {
     public Recipe edit() {
         Recipe r = new Recipe();
         r.pipeline = pipeline;
+        r.renderer = renderer;
         for (Part p : parts) r.parts.add(p.copy());
         r.trails = trails;
         r.reference = reference;
@@ -207,9 +210,23 @@ public final class Recipe {
         pipeline = PostProcessor.PIPELINE;
     }
 
-    /** True if it was made by an older processing version (G3: the photo can be made again with the new one). */
-    public boolean outdated() {
+    /**
+     * Brings it up to this version's processing: its stack made again where the stacking changed since
+     * ({@link #restacked}), and rendered with this version's rendering, which only needs the stack.
+     */
+    public void renew() {
+        if (stackOutdated()) restacked();
+        renderer = Renderer.VERSION;
+    }
+
+    /** True if its stack was made by an older processing version: only the frames can make it with the new one. */
+    public boolean stackOutdated() {
         return pipeline < PostProcessor.PIPELINE;
+    }
+
+    /** True if it was made by an older processing version, of its stack or of its rendering (G3: it can be made again). */
+    public boolean outdated() {
+        return stackOutdated() || renderer < Renderer.VERSION;
     }
 
     /** True if the two make the same stacked picture (only how it's rendered differs). */
@@ -237,7 +254,7 @@ public final class Recipe {
         if (colourFromStars != was.colourFromStars) c.add(colourFromStars ? "colour from the stars" : "the camera's colour");
         if (keepSatellites != was.keepSatellites) c.add(keepSatellites ? "satellites kept" : "satellites taken out");
         if (quick != was.quick) c.add(quick ? "quick stacking" : "full stacking");
-        if (pipeline != was.pipeline) c.add("the new processing");
+        if (pipeline != was.pipeline || renderer != was.renderer) c.add("the new processing");
         if (brightness != was.brightness) c.add("brightness " + Math.round(100 * brightness) + "%");
         if (stretch != was.stretch) c.add("stretch " + num(stretch));
         if (ev != was.ev) c.add((ev > 0 ? "+" : "") + num(ev) + " EV");
@@ -319,7 +336,8 @@ public final class Recipe {
 
     public String toJson() {
         Json j = new Json().obj();
-        j.put("file", "recipe").put("number", number).put("pipeline", pipeline).put("app", app).put("created", createdMs);
+        j.put("file", "recipe").put("number", number).put("pipeline", pipeline).put("renderer", renderer).put("app", app)
+                .put("created", createdMs);
         j.put("name", name).put("uri", uri).put("note", note);
         j.raw("stack", stackJson());
         j.obj("render").put("brightness", brightness, 9).put("stretch", stretch, 9).put("ev", ev, 9).put("black", black, 9)
@@ -336,6 +354,7 @@ public final class Recipe {
         Recipe r = new Recipe();
         r.number = o.integer("number", 0);
         r.pipeline = o.integer("pipeline", 0);
+        r.renderer = o.integer("renderer", 1);
         r.app = o.str("app", "");
         r.createdMs = o.lng("created", 0);
         r.name = o.str("name", "");

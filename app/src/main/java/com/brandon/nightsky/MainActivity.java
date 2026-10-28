@@ -2693,8 +2693,9 @@ public final class MainActivity extends Activity {
                 }
             });
             more.add(eb);
-            if (r.recipe.outdated() && r.merge == null) {
-                // made by an older version: offered again with this one's processing (G3)
+            if (r.recipe.outdated() && (r.merge == null || !r.recipe.stackOutdated())) {
+                // made by an older version: offered again with this one's processing (G3); a merge's stack can't be made
+                // again, but a newer rendering only needs the stack
                 Button nb = smallButton("New processing", false);
                 nb.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -2705,7 +2706,7 @@ public final class MainActivity extends Activity {
                                     public void run() {
                                         if (service == null || r.recipe == null) return;
                                         Recipe e = r.recipe.edit();
-                                        e.restacked();
+                                        e.renew();
                                         service.controller().saveEdit(e, null);
                                     }
                                 });
@@ -3621,14 +3622,14 @@ public final class MainActivity extends Activity {
             }
             box.addView(c, gap(8));
         }
-        if (es.info.was.outdated() && es.info.noRestack.isEmpty()) {
+        if (es.info.was.outdated() && (es.info.noRestack.isEmpty() || !es.info.was.stackOutdated())) {
             Button again = smallButton("Make it again with the new processing", false);
             again.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     if (service == null) return;
                     Recipe e = es.info.was.edit();
-                    e.restacked();
+                    e.renew();
                     es.saved = true;
                     service.controller().saveEdit(e, null);
                     closeReport();

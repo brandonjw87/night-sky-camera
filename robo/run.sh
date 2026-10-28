@@ -5,6 +5,7 @@
 #   robo/run.sh Monkey [starts]      taps every control on every screen
 #   robo/run.sh Shots [screens]      draws the screens to PNG
 #   robo/run.sh Launches             opens the app every way Android can
+#   robo/run.sh EditFlow             edits a kept session (SESSIONS: the one folder of sessions sim/G3Test writes)
 #
 # Output goes to $OUT (default build/robo): the test's log and pictures, and TEST.out (the console, whose end is shown).
 # Environment: ROBO_HOME (as for robo/setup.sh); ANDROID_JAR and ANDROID_RES_JAR (as for tools/build_apk.sh); SESSIONS,

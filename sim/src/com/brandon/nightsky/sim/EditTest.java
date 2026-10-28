@@ -3,6 +3,7 @@ package com.brandon.nightsky.sim;
 import com.brandon.nightsky.processing.FramePreview;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Recipe;
+import com.brandon.nightsky.processing.Renderer;
 
 import java.util.Locale;
 import java.util.Random;
@@ -57,6 +58,20 @@ public final class EditTest {
         // read back as written: the same stack key, the same words
         Recipe back = Recipe.fromJson(r2.toJson());
         check("an edit's recipe reads back", back.stackKey().equals(r2.stackKey()) && back.changes(r2).isEmpty(), back.changes(r2));
+
+        // rendered before 1.4 (no rendering version written): made again from the same stack, only rendered anew
+        Recipe cur = Recipe.single("20261022_2315", false);
+        Recipe old = Recipe.fromJson(cur.toJson().replace("\"renderer\":" + Renderer.VERSION + ",", ""));
+        check("a render from before 1.4 is the old rendering's", old.renderer == 1 && old.outdated() && !old.stackOutdated(),
+                "renderer " + old.renderer);
+        Recipe again = old.edit();
+        again.renew();
+        check("made again, it keeps its stack and takes the new rendering", again.sameStack(old) && !again.outdated()
+                && again.changes(old).equals("the new processing"), again.changes(old));
+        Recipe older = old.edit();
+        older.pipeline = PostProcessor.PIPELINE - 1;
+        older.renew();
+        check("an older stack is made again too", !older.outdated() && older.pipeline == PostProcessor.PIPELINE, "pipeline " + older.pipeline);
     }
 
     private static void taps() {

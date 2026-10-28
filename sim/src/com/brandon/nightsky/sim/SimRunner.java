@@ -350,6 +350,7 @@ public final class SimRunner {
         }, null);
         long t3 = System.currentTimeMillis();
         System.out.printf(Locale.US, "render: %d ms%n", t3 - t2);
+        System.out.println("noise reduction: " + o.analysis.noiseNote());
         writePng(pix, cw, ch, new File(outDir, trails ? "trails.png" : "stack.png"));
         if (System.getenv("SIM_DEBUG") != null) debugStars(o, pix, cw, ch, spec);
         // crops at native resolution: centre and a corner

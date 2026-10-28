@@ -1,5 +1,67 @@
 # Night Sky Camera: what's new
 
+## Version 1.4: a clean sky that keeps its faint stars
+
+### What's new
+
+- **A smoother sky, the faint stars kept.** Every saved photo now has the sky's grain and blotchy noise taken out
+  between the stars. The stars are found first and set aside, so the ones it finds keep all their light; fainter
+  ones, hard to tell from the noise, keep part of it. On a simulated night sky, about a quarter of the fine grain
+  is left (23% of the finest, 29% of the next size up) and a bit over a third of the wider blotches (38%). Stars
+  only as bright as the noise keep about half their light, stars twice as bright 80%, and stars three times as
+  bright or more all of it (97 to 100%). A faint glow like the Milky Way keeps 91% of its light. The photo's sky
+  comes out about three times smoother (3.7 against 12.2 levels of noise in the JPEG).
+- **Measured on each photo, part by part.** How much to take out comes from the photo itself: its noise is
+  measured between the stars, at several sizes and region by region. The corners (which the lens's shading
+  correction brightens) and the edges (where fewer frames overlap) are usually noisier, so each part of the sky
+  is cleaned as much as it needs. The session log says what it found.
+- **Quick look's half-size photos are cleaned too**, the same way at their size.
+- **Photos from earlier versions can have it.** Open one from the sessions page and tap **New processing** on its
+  result screen, or **Make it again with the new processing** in the edit screen. It's rendered again from the
+  stacked picture the app keeps with the session, so it usually takes a few seconds. It's saved as a new render;
+  the old one stays. Edits of an older photo get it too, and their note says so ("edited: the new processing,
+  stretch 7").
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.3 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- New: every saved photo, full size or Quick look, has the sky's noise taken out. There's no setting for it.
+- Everything else is unchanged from version 1.3.
+
+### Try today
+
+- If you've already taken a session: open it from the sessions page, tap **New processing**, then compare the
+  two photos in Google Photos, zoomed in on the sky between the stars.
+- If you haven't yet: the **camera check** (from version 1.3) is still the thing to run first.
+
+### Try tonight
+
+1. Tap **Start**, lay the phone down and let it run 5 minutes. Open the photo in Google Photos and zoom in on the
+   dark sky between the stars: it should look smooth rather than speckled, with the faint stars still there as
+   points of light.
+2. If anything looks off (smeared or missing faint stars, blotchy patches, dark rings around stars), send the
+   photo here with **Session report > Share the log**.
+
+### Not working yet, or not tested
+
+- Tested off the phone only: on simulated skies, and through the app itself with a simulated camera. Your first
+  night's photo is the real test.
+- There's no strength setting yet: every photo loses the same share of its noise.
+- What the screen shows while a session stacks, the edit screen's picture and the laptop viewer aren't cleaned:
+  they're small enough that the grain hardly shows. The saved photos are.
+- Saving a full-size photo takes a few seconds longer (about 3 seconds for the full 12.5-megapixel photo on a
+  4-core computer). Developing still needs at most about 320 MB of the 512 MB of memory Android gives the app.
+- Haze is still only measured once the app has seen a clear night.
+
 ## Version 1.3: a camera check before your first night
 
 ### What's new

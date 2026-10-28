@@ -6,7 +6,8 @@ import java.util.Locale;
  * Turns the linear stacked image into the final picture:
  * camera RGB -> linear sRGB (the sensor's own colour matrices, night white balance), clipped star cores
  * made neutral, background gradient removal and neutralization (robust 2D polynomial fitted to star-masked
- * cell medians), gentle luminance noise reduction (sigma filter), asinh stretch of the luminance with the
+ * cell medians), the sky's noise taken out of the luminance with the stars set aside ({@link Denoise}, 1.4),
+ * asinh stretch of the luminance with the
  * sky background at a chosen grey, and colour carried as ratios to the luminance: taken from the pixel
  * where it is well measured and from a luminance-weighted local average where it is not, display-encoded,
  * applied in proportion to the real signal (the background stays neutral), with dithered 8-bit output.
@@ -17,13 +18,23 @@ import java.util.Locale;
 public final class Renderer {
     private Renderer() {}
 
+    /**
+     * The rendering's version: raised whenever a change makes the same stack give a different photo (2: the sky's noise
+     * taken out with the stars set aside, 1.4). Saved with every recipe (G3), so a photo rendered by an older version can
+     * be rendered again from its kept stack with this one.
+     */
+    public static final int VERSION = 2;
+
     public static final class Params {
         /** 0 = dark sky, 1 = bright sky; 0.5 puts the background near 12% grey. */
         public float brightness = 0.5f;
         /** Colour strength on display-encoded colours; 1 = colorimetric. */
         public float saturation = 1.35f;
-        /** 0..1 */
-        public float lumaNr = 0.6f;
+        /**
+         * How much of the sky's noise {@link Denoise} finds is taken out of the luminance: 0 (none) to 1 (all it takes out).
+         * Full-size renders and photos saved smaller; never the quick previews.
+         */
+        public float lumaNr = 1f;
         public boolean removeGradient = true;
         /**
          * Strength of the stretch, 1 (gentle) to 10 (strong): how far faint light is lifted above the sky background,
@@ -79,6 +90,20 @@ public final class Renderer {
          * clip level towards the corners): [(c * CGY + j) * CGX + i].
          */
         public float[] clipInv;
+        /** The sky's noise, found by the first full-size render of {@link #denoised} and kept for the next ones (1.4). */
+        Denoise.Result denoise;
+        RgbImage denoised;
+        /** What the last noise reduction with this analysis found (a full-size render's or a smaller photo's). */
+        private String noiseNote = "";
+
+        /** What the noise reduction found and took out, for the log; "" until a photo has been rendered. */
+        public synchronized String noiseNote() {
+            return noiseNote;
+        }
+
+        synchronized void noted(Denoise.Result r, String size) {
+            if (r != null) noiseNote = size + r.describe();
+        }
 
         public String describe() {
             return String.format(Locale.US, "crop %dx%d+%d+%d noiseY=%.3f chroma=%.3f/%.3f whiteY=%.1f sky=%.2f/%.2f/%.2f masked=%.1f%% cells=%d",
@@ -580,6 +605,7 @@ public final class Renderer {
     /** Full-resolution render of the crop area, delivered in bands of rows to the sink. */
     public static void render(final RgbImage img, final Analysis a, final Params p, final RowSink sink, final Progress progress) {
         final Curve curve = Curve.make(a, p);
+        final Denoise.Result dn = p.lumaNr > 0 ? denoise(img, a) : null;
         final int bandRows = 32;
         final int bands = (a.ch + bandRows - 1) / bandRows;
         final int[] done = {0};
@@ -590,7 +616,7 @@ public final class Renderer {
                 int[] argb = new int[a.cw * bandRows];
                 for (int b = b0; b < b1; b++) {
                     int y0 = b * bandRows, y1 = Math.min(a.ch, y0 + bandRows);
-                    band.process(img, a, p, curve, y0, y1, 1f, true, argb);
+                    band.process(img, a, p, curve, y0, y1, 1f, dn, argb);
                     sink.rows(y0, y1 - y0, argb, a.cw);
                     synchronized (done) {
                         done[0]++;
@@ -602,10 +628,38 @@ public final class Renderer {
     }
 
     /**
+     * The sky's noise in a full-size render of {@code img}: found the first time and kept with the analysis for the next
+     * renders of the same image (an image changed in place is analysed again, which starts afresh). Null when the
+     * picture is too small or has no noise to measure.
+     */
+    static Denoise.Result denoise(RgbImage img, Analysis a) {
+        synchronized (a) {
+            if (a.denoised != img) {
+                a.denoise = Denoise.run(img, a, 1f);
+                a.denoised = img;
+            }
+            a.noted(a.denoise, "");
+            return a.denoise;
+        }
+    }
+
+    /**
      * Quick render of a binned copy (from {@link RgbImage#binned}) with the same tone curve, for the
      * brightness preview. {@code factor} is the binning factor (noise is that many times lower).
      */
     public static int[] renderSmall(RgbImage small, Analysis a, Params p, int factor) {
+        return renderSmall(small, a, p, factor, false);
+    }
+
+    /**
+     * {@link #renderSmall} for a photo saved smaller than the stack (Quick look's half size): with the sky's noise
+     * taken out as a full-size render does.
+     */
+    public static int[] renderSmallPhoto(RgbImage small, Analysis a, Params p, int factor) {
+        return renderSmall(small, a, p, factor, true);
+    }
+
+    private static int[] renderSmall(RgbImage small, Analysis a, Params p, int factor, boolean photo) {
         Curve curve = Curve.make(a, p);
         Analysis sa = new Analysis();
         sa.m = a.m;
@@ -626,13 +680,15 @@ public final class Renderer {
         sa.cy0 = 0;
         sa.cw = small.width;
         sa.ch = small.height;
+        Denoise.Result dn = photo && p.lumaNr > 0 ? Denoise.run(small, sa, 1f / factor) : null;
+        if (dn != null) a.noted(dn, factor + "x smaller: ");
         int[] out = new int[small.width * small.height];
         int bandRows = 32;
         Band band = new Band(small.width, bandRows, sa.colorSigma);
         int[] argb = new int[small.width * bandRows];
         for (int y0 = 0; y0 < small.height; y0 += bandRows) {
             int y1 = Math.min(small.height, y0 + bandRows);
-            band.process(small, sa, p, curve, y0, y1, 1f / factor, false, argb);
+            band.process(small, sa, p, curve, y0, y1, 1f / factor, dn, argb);
             System.arraycopy(argb, 0, out, y0 * small.width, (y1 - y0) * small.width);
         }
         return out;
@@ -649,7 +705,7 @@ public final class Renderer {
         final float GK2;
         final int w, rows;
         /** Luminance, chroma differences (r - Y, b - Y), colour weight (0 for clipped), weighted luminance. */
-        final float[] Y, CR, CB, HW, YC, T1, T2, T3, TH, YN, TMP;
+        final float[] Y, CR, CB, HW, YC, T1, T2, T3, TH, TMP;
         int rs, re; // crop rows held: [rs, re)
 
         Band(int w, int bandRows, float colorSigma) {
@@ -672,7 +728,6 @@ public final class Renderer {
             T2 = new float[n];
             T3 = new float[n];
             TH = new float[n];
-            YN = new float[n];
             TMP = new float[n];
         }
 
@@ -687,8 +742,11 @@ public final class Renderer {
             return k;
         }
 
-        /** {@code noiseScale}: the image's noise relative to the analysed full-resolution image. */
-        void process(RgbImage img, Analysis a, Params p, Curve curve, int y0, int y1, float noiseScale, boolean nr, int[] argb) {
+        /**
+         * {@code noiseScale}: the image's noise relative to the analysed full-resolution image; {@code dn}: the sky's noise
+         * to take out of the luminance ({@link Params#lumaNr} of it), or null.
+         */
+        void process(RgbImage img, Analysis a, Params p, Curve curve, int y0, int y1, float noiseScale, Denoise.Result dn, int[] argb) {
             float noise = a.noiseY * noiseScale;
             rs = Math.max(0, y0 - M);
             re = Math.min(a.ch, y1 + M);
@@ -767,8 +825,8 @@ public final class Renderer {
             gaussBlur(CB, T2, n);
             gaussBlur(YC, T3, n);
             gaussBlur(HW, TH, n);
-            boolean lnr = nr && p.lumaNr > 0;
-            if (lnr) sigmaFilter(Y, YN, n, 2.5f * noise);
+            short[] dy = dn != null ? dn.dy : null;
+            float nrAmt = p.lumaNr;
 
             float inv = 1f / noise;
             float axR = a.axisR, axB = a.axisB;
@@ -783,13 +841,9 @@ public final class Renderer {
                 int oo = (y - y0) * w;
                 for (int x = 0; x < w; x++) {
                     int i = o + x;
-                    float yp = Y[i];
-                    float snr = yp * inv;
-                    float l = yp;
-                    if (lnr) {
-                        float wbg = p.lumaNr * (1f - 0.7f * smooth(snr, 3f, 12f));
-                        l += wbg * (YN[i] - l);
-                    }
+                    float l = Y[i];
+                    // the sky's noise taken out (the stars keep their light: the correction is the starless sky's)
+                    if (dy != null) l += nrAmt * Half.toFloat(dy[y * w + x]);
                     // Colour as ratios to the luminance (never absolute chroma, which would spill a star's
                     // colour onto dark neighbours), from the window; clipped samples carry no weight.
                     float th = TH[i];
@@ -933,30 +987,6 @@ public final class Renderer {
                     float acc = 0;
                     for (int j = ja; j <= jb; j++) acc += k[j + r] * TMP[o + j * w + x];
                     dst[o + x] = acc * inv;
-                }
-            }
-        }
-
-        /** 5x5 sigma filter: mean of the neighbours within +-thr of the centre value. */
-        private void sigmaFilter(float[] src, float[] dst, int n, float thr) {
-            for (int y = 0; y < n; y++) {
-                int ya = Math.max(0, y - 2), yb = Math.min(n - 1, y + 2);
-                for (int x = 0; x < w; x++) {
-                    float c = src[y * w + x];
-                    float acc = 0;
-                    int cnt = 0;
-                    int xa = Math.max(0, x - 2), xb = Math.min(w - 1, x + 2);
-                    for (int yy = ya; yy <= yb; yy++) {
-                        int o = yy * w;
-                        for (int xx = xa; xx <= xb; xx++) {
-                            float v = src[o + xx];
-                            if (Math.abs(v - c) <= thr) {
-                                acc += v;
-                                cnt++;
-                            }
-                        }
-                    }
-                    dst[y * w + x] = acc / cnt;
                 }
             }
         }

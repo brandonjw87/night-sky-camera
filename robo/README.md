@@ -11,6 +11,7 @@ what it does when the camera misbehaves.
 | `Monkey` | Taps every control on every screen it can reach, and reports crashes, errors and stuck screens. | `monkey/monkey.log` |
 | `Shots` | Draws each screen to a PNG. | PNGs |
 | `Launches` | Opens the app every way Android can: the launcher, shortcuts, the widget, the quick settings tile, notifications. | `launches/` |
+| `EditFlow` | Edits a kept session through the session controller, on the session `sim/G3Test` makes: an edit that changes nothing, edits of how it's rendered and ones that stack it again, a kept stack reused, a render whose stack was deleted made again, a re-stack cancelled, and the new processing for older renders (stacked again for an older stack, only rendered again for a render from before 1.4). | `EditFlow.out`: each check, then the session's log |
 
 ## Set up (once)
 
@@ -26,6 +27,7 @@ newer, curl, and the Android build tools and jars that `tools/build_apk.sh` uses
     robo/run.sh Night base,stall,checkstall     # comma-separated scenarios
     robo/run.sh Monkey
     SESSIONS=/path/to/sessions robo/run.sh Shots
+    SESSIONS=/path/to/g3/sessions robo/run.sh EditFlow    # after: java ... sim.G3Test /path/to/g3 2 16
 
 Each run compiles the app and the tests from this tree first. `Night` runs its fake clock at twice the real one
 (`SPEED`), so a 5-minute session takes a few minutes; the whole list takes hours. A run ends with a summary: each

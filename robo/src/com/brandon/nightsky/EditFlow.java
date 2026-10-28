@@ -6,6 +6,7 @@ import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Recipe;
+import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.SessionStore;
 
 import org.junit.Test;
@@ -27,7 +28,8 @@ import java.util.TreeSet;
 /**
  * The edit flow through the session controller, off the phone (G3): open a kept session, save edits that only change
  * how it's rendered and ones that stack it again, reuse a kept stack, make a render whose stack was deleted again,
- * cancel a re-stack, and the offer of the new processing.
+ * cancel a re-stack, and the offer of the new processing: stacked again for an older stack, only rendered again for a
+ * render from before 1.4.
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -213,7 +215,7 @@ public class EditFlow {
         }, 120);
         check("an older render shows as outdated", s.result != null && s.result.recipe.number == 1 && s.result.recipe.outdated(), words(s));
         final Recipe nw = s.result.recipe.edit();
-        nw.restacked();
+        nw.renew();
         s = await(new Runnable() {
             @Override
             public void run() {
@@ -224,6 +226,53 @@ public class EditFlow {
         check("the new processing saves a new render", s.headline.equals("Saved as render 8") && r8.number == 8 && !r8.outdated()
                 && r8.note.equals("edited: the new processing"), words(s) + ", note " + r8.note);
         check("render 1 stays as it was", Recipe.list(dir).get(0).outdated(), "");
+
+        // 11. a render from before 1.4's noise reduction, its stack this version's: rendered anew from the same stack
+        File r8f = new File(new File(dir, Recipe.DIR), "r008.json");
+        write(r8f, read(r8f).replace("\"renderer\":" + Renderer.VERSION + ",", ""));
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.openRender(dir, 8);
+            }
+        }, 120);
+        check("a render from before 1.4 offers the new processing, keeping its stack", s.result != null && s.result.recipe.number == 8
+                && s.result.recipe.renderer == 1 && s.result.recipe.outdated() && !s.result.recipe.stackOutdated(), words(s));
+        final Recipe nr = s.result.recipe.edit();
+        nr.renew();
+        mark();
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.saveEdit(nr, null);
+            }
+        }, 300);
+        Recipe r9 = last(dir);
+        check("it's rendered anew from the same stack as render 9", s.headline.equals("Saved as render 9") && r9.number == 9
+                && !r9.outdated() && r9.note.equals("edited: the new processing") && r9.stackKey.equals(r8.stackKey)
+                && !sawSince(SessionController.Phase.FINISHING, "Stacking the edit")
+                && log(dir).contains("edit: the new processing, rendered from the same stack"), words(s) + ", note " + r9.note);
+        check("its log says what noise was taken out", lastLines(dir, 5).contains("decision: the sky's noise taken out of the photo"),
+                lastLines(dir, 5));
+        // an edit of how it's rendered, from render 8 as it was: the new rendering too, and its note says so
+        write(r8f, read(r8f).replace("\"renderer\":" + Renderer.VERSION + ",", ""));
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.openRender(dir, 8);
+            }
+        }, 120);
+        final Recipe st = s.result.recipe.edit();
+        st.stretch = 7f;
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.saveEdit(st, null);
+            }
+        }, 300);
+        Recipe r10 = last(dir);
+        check("an edit of a render from before 1.4 is rendered by this version, and says so", s.headline.equals("Saved as render 10")
+                && !r10.outdated() && r10.note.equals("edited: the new processing, stretch 7"), words(s) + ", note " + r10.note);
 
         // the stacked pictures kept: the develop step's, the newest and two more at most
         check("old stacks of edits are deleted to make room", Master.list(dir).size() <= 4, Master.list(dir).size() + " masters");

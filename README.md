@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.3.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.4.
 
 ## What it does
 
@@ -22,6 +22,9 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.3.
   the home screen offers to develop them.
 - **Clever stacking.** A frame half covered by cloud still gives its clear half; sparse star fields line up;
   sensor banding is taken out; the colours are measured from the stars themselves; satellites are named.
+- **A clean sky that keeps its faint stars.** The photo's grain and blotches are taken out of the sky between
+  the stars, which are found and set aside first, so they keep their light, down to the faintest ones the
+  stack shows.
 - **Session report.** What the photo shows (constellations, planets, the Milky Way, galaxies to look for), a
   score for every frame, and what went wrong with the fix.
 - **Edit any photo again.** Look, crop, north up, which frames go in, the reference frame, stars lined up by
@@ -294,6 +297,7 @@ app/src/main/java/com/brandon/nightsky/
         Master, Recipe  kept stacks and the recipes that make every render
         MergeProcessor  nights merged into one stack
         EdgeMask, GroundMap  the painted foreground and keeping the ground still
+        Denoise         the sky's noise taken out, the stars found and set aside first
         Renderer        colour and tone (asinh stretch, looks, black point, saturation)
         Framing         crops and north up
         DngWriter       16-bit linear DNG
@@ -329,8 +333,8 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 (`deep` or `trails`), events such as satellites and clouds (true/false).
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
-`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest` and `SatTest` (with the
-SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test`
+`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest` and
+`SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test`
 take an output folder, for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`.
 
 ### The app off the phone

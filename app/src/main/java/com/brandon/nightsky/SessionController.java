@@ -1253,6 +1253,11 @@ final class SessionController {
                     publish("Nothing to save", "The edit is the photo as it is.", -1);
                     return;
                 }
+                if (e.renderer < Renderer.VERSION) {
+                    // rendered by this version whatever rendered the photo it's edited from, so its note says so too
+                    e.renderer = Renderer.VERSION;
+                    what = e.changes(cur);
+                }
                 if (e.sameStack(cur)) {
                     e.note = "edited: " + what;
                     st.log("edit: " + what + ", rendered from the same stack");
@@ -1330,6 +1335,7 @@ final class SessionController {
             int factor = e.quick ? 2 : 1;
             Uri jpeg = saveJpeg(st, op.o, op.spec, p, e, op.r.north, name, null, factor, hash);
             Recipe saved = saveRecipe(st, e, op.r.master, op.o, name, jpeg, hash[0]);
+            logNoise(st, op.o);
             Bitmap bmp = previewBitmap(op.small, op.o.analysis, p, op.factor);
             Framing pf = frameFor(e, op.r.north, op.small.cropWidth(), op.small.cropHeight());
             saveThumb(st, frame(bmp, pf));
@@ -1398,7 +1404,7 @@ final class SessionController {
         Recipe e = rc.edit();
         e.note = String.format(Locale.US, "render r%03d made again", rc.number);
         if (rc.outdated()) {
-            e.restacked();
+            e.renew();
             e.note += " with the new processing";
         }
         st.log("decision: " + e.note + " from its recipe: its stacked picture was deleted to make room");
@@ -4628,6 +4634,7 @@ final class SessionController {
             jpeg = saveJpeg(home, o, sp, params, m.recipe, north, name, null, factor, hash);
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
         }
+        logNoise(home, o);
         if (m.again != null) {
             home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s%s", m.again.number,
                     sameAs(m.again, master, hash[0]), same ? ", so it isn't saved twice" : recipe != null
@@ -4881,6 +4888,12 @@ final class SessionController {
         return "Done. Your photo is ready.";
     }
 
+    /** What the noise reduction took out of the photo just saved from {@code o}, in {@code st}'s log (nothing if it found no noise). */
+    private static void logNoise(SessionStore st, PostProcessor.Output o) {
+        String noise = o.analysis.noiseNote();
+        if (!noise.isEmpty()) st.log("decision: the sky's noise taken out of the photo, the stars set aside first: " + noise);
+    }
+
     /** The photo as a JPEG, {@code factor} photo pixels to a JPEG pixel each way (1: full size), with {@code d} drawn on. */
     private Uri saveJpeg(SessionStore st, PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor)
             throws IOException {
@@ -4903,7 +4916,7 @@ final class SessionController {
         try {
             if (sm != null) {
                 // smaller (Quick look): the full photo's stretch, on its binned copy
-                int[] px = Renderer.renderSmall(sm, o.analysis, p, factor);
+                int[] px = Renderer.renderSmallPhoto(sm, o.analysis, p, factor);
                 sm = null;
                 bmp.setPixels(px, 0, cw, 0, 0, cw, ch);
             } else {
@@ -4928,7 +4941,7 @@ final class SessionController {
     private Uri saveFramed(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Framing f, String name, Decor d,
                            int factor, String[] hash) throws IOException {
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
-        int[] px = sm != null ? Renderer.renderSmall(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
+        int[] px = sm != null ? Renderer.renderSmallPhoto(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
         int pw = sm != null ? sm.cropWidth() : o.analysis.cw, ph = sm != null ? sm.cropHeight() : o.analysis.ch;
         sm = null;
         if (pw != f.w || ph != f.h) throw new IOException("the framing is for a " + f.w + "x" + f.h + " photo, not " + pw + "x" + ph);
@@ -4985,7 +4998,7 @@ final class SessionController {
     /** The SHA-256 of the pixels of the photo {@link #saveJpeg} would save with these settings, without saving it. */
     private static String photoHash(PostProcessor.Output o, Renderer.Params p, Recipe rc, double[] north, int factor) {
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
-        int[] px = sm != null ? Renderer.renderSmall(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
+        int[] px = sm != null ? Renderer.renderSmallPhoto(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
         Framing f = frameFor(rc, north, o.analysis.cw / factor, o.analysis.ch / factor);
         return Master.pixelHash(f != null ? f.apply(px) : px);
     }
@@ -5052,6 +5065,8 @@ final class SessionController {
             r.pixelHash = hash != null ? hash : "";
             r.summary = o.summary;
             r.app = BuildInfo.VERSION;
+            // the photo was just rendered: by this version's rendering, whatever the recipe it came from said
+            r.renderer = Renderer.VERSION;
             r.save(st.dir);
             st.log(String.format(Locale.US, "render r%03d saved: %s (%s)", r.number, name, r.note));
             return r;
