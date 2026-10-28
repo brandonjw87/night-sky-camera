@@ -298,6 +298,7 @@ app/src/main/java/com/brandon/nightsky/
         Framing         crops and north up
         DngWriter       16-bit linear DNG
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies
+robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
 tools/build_apk.sh      builds the APK without Gradle
 tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright Star Catalogue
 ```
@@ -331,3 +332,11 @@ The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsT
 `PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest` and `SatTest` (with the
 SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test`
 take an output folder, for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`.
+
+### The app off the phone
+
+`robo/` runs the app itself (its screens, the session's state machine, the capture loop and developing) on a
+desktop JVM with Robolectric, without Gradle or Google's Maven repository. `robo/setup.sh` fetches what it needs
+from Maven Central once; then `robo/run.sh Night base,stall` runs whole sessions through the real capture code
+with a simulated camera that renders the real stars and can stop, stall, fail or be taken away, and
+`robo/run.sh Monkey` taps every control on every screen. [robo/README.md](robo/README.md) lists every scenario.
