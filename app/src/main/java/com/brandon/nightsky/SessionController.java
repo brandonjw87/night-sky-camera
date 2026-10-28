@@ -22,6 +22,7 @@ import android.util.Size;
 import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.BrightStars;
+import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
@@ -191,6 +192,8 @@ final class SessionController {
         Preflight.Report preflight;
         /** Failed for want of storage: the screen offers to free some. */
         boolean storageShort;
+        /** A failed session's log, kept in Documents/NightSky to share (null if there was nothing to keep). */
+        Uri failLog;
         /** How the last session or attempt ended (null while one runs, or before the first), and the details. */
         NightPlan.Outcome outcome;
         String outcomeDetail = "";
@@ -261,6 +264,8 @@ final class SessionController {
     /** Longest session that "+5 minutes" can build up to. */
     private static final int MAX_DURATION_SEC = 2 * 60 * 60;
     private static final long SETTLE_MS = 1500;
+    /** After a fresh capture session, a moment for the lens to reach the focus again (ms). */
+    private static final long RENEW_SETTLE_MS = 300;
     /** A capture paused this long (phone not put back down) is finished with what it has. */
     private static final long MAX_PAUSE_MS = 5 * 60_000L;
     /** A rotation rate above this during an exposure spoils the frame (rad/s). */
@@ -346,6 +351,8 @@ final class SessionController {
     private long testSentMs, graceUntilMs;
     private Preflight.Report preflightReport;
     private boolean startedAfterWarnings, storageShort;
+    /** The last failed session's log in Documents/NightSky (null if none). */
+    private volatile Uri failLog;
     /** A sky reading's frames so far, and the reading made from them (null if none). */
     private final List<Preflight.Report> readingReports = new ArrayList<Preflight.Report>();
 
@@ -428,6 +435,17 @@ final class SessionController {
     private long stalledMs;
     /** Times the camera was opened again after an error as it opened (once: such errors often pass). */
     private int openRetries;
+    /**
+     * Frames to take in one capture session before renewing it (some cameras stop after so many in a row: learned by
+     * the camera check or a stop in an earlier session; 0 if this one never has), whether renewing means opening
+     * the camera again, how many times this session renewed it, and whether a renewal is under way.
+     */
+    private int renewAfter, renewals;
+    private boolean renewReopen, renewing;
+    /** Frames the capture session in use when the camera last stopped had given (for learning when it stops). */
+    private int stoppedAfter;
+    /** The frames in a row this session's own stop came after, when the renewals were learned from it; else 0. */
+    private int renewLearnedAt;
     /** When the capture began by the wall clock (for Repeat tomorrow), 0 before it has. */
     private long captureStartWallMs;
     /** The hottest the phone said it got during the capture (PowerManager thermal status), and when it first
@@ -894,11 +912,11 @@ final class SessionController {
                                 nr.brightness = brightness;
                                 nr.note = "brightness changed";
                             }
-                            r.jpeg = saveJpeg(o, sp, paramsOf(nr, brightness), nr, r.north, name, null, r.jpegFactor, hash);
+                            SessionStore st = new SessionStore(new File(root, r.session));
+                            r.jpeg = saveJpeg(st, o, sp, paramsOf(nr, brightness), nr, r.north, name, null, r.jpegFactor, hash);
                             r.brightness = brightness;
                             prefs.setLastResultUri(r.jpeg.toString());
                             if (nr != null) {
-                                SessionStore st = new SessionStore(new File(root, r.session));
                                 Recipe saved = saveRecipe(st, nr, r.master, o, name, r.jpeg, hash[0]);
                                 if (saved != null) r.recipe = saved;
                             }
@@ -959,8 +977,8 @@ final class SessionController {
                     public void run() {
                         String err = null;
                         try {
-                            r.labelled = saveJpeg(o, sp, paramsOf(r.recipe, brightness), r.recipe, r.north, r.name + "_labelled", d,
-                                    r.jpegFactor, null);
+                            r.labelled = saveJpeg(new SessionStore(new File(root, r.session)), o, sp, paramsOf(r.recipe, brightness),
+                                    r.recipe, r.north, r.name + "_labelled", d, r.jpegFactor, null);
                         } catch (Throwable t) {
                             err = "Could not save: " + (t instanceof OutOfMemoryError ? "out of memory" : t.getMessage());
                         }
@@ -1310,7 +1328,7 @@ final class SessionController {
             String[] hash = new String[1];
             Renderer.Params p = paramsOf(e, Float.NaN);
             int factor = e.quick ? 2 : 1;
-            Uri jpeg = saveJpeg(op.o, op.spec, p, e, op.r.north, name, null, factor, hash);
+            Uri jpeg = saveJpeg(st, op.o, op.spec, p, e, op.r.north, name, null, factor, hash);
             Recipe saved = saveRecipe(st, e, op.r.master, op.o, name, jpeg, hash[0]);
             Bitmap bmp = previewBitmap(op.small, op.o.analysis, p, op.factor);
             Framing pf = frameFor(e, op.r.north, op.small.cropWidth(), op.small.cropHeight());
@@ -1727,6 +1745,14 @@ final class SessionController {
             if (realtimeClock) setClock(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos());
             plan = ExposurePlan.make(spec.model.fx, place != null ? place.latDeg : ExposurePlan.DEFAULT_LATITUDE, s.durationSec, advMax,
                     prefs.verifiedExposureNs(cameraId), prefs.clampDeliveredNs(cameraId), isoStart, isoMin, spec.white);
+            renewAfter = prefs.renewAfter(cameraId);
+            renewReopen = "reopen".equals(prefs.renewHow(cameraId));
+            CameraFacts facts = CameraFacts.parse(prefs.cameraFacts(cameraId));
+            if (facts != null) log(facts.logLine(System.currentTimeMillis()));
+            if (renewAfter > 0) {
+                log(String.format(Locale.US, "capture: a fresh capture session every %d frames, as this camera has stopped after a "
+                        + "few more in a row (%s)", renewAfter, renewReopen ? "by opening it again" : "by a new capture session"));
+            }
             // the focus to start from: tonight's sweep, if there is one, refines it
             lens = focusLens(cc, spec);
             focusModel = FocusModel.parse(prefs.focusModel(cameraId));
@@ -1969,6 +1995,7 @@ final class SessionController {
         reading = null;
         startedAfterWarnings = false;
         storageShort = false;
+        failLog = null;
         siteChecked = false;
         siteLog = "";
         siteLine = "";
@@ -1993,6 +2020,10 @@ final class SessionController {
         stalls = 0;
         stalledMs = 0;
         openRetries = 0;
+        renewals = 0;
+        renewing = false;
+        stoppedAfter = 0;
+        renewLearnedAt = 0;
         liveStars = 0;
         liveAligned = false;
         cancelDevelop = false;
@@ -3534,11 +3565,24 @@ final class SessionController {
     private void submitNext() {
         if (phase != Phase.CAPTURING || rig == null || !rig.ready()) return;
         if (focusCheckDue || focusCheckStep != 0) {
-            // a focus check between frames (F7), once the frames in flight are in
-            if (focusCheckStep == 0 && inFlight == 0) startFocusCheck();
+            // a focus check between frames (F7), once the frames in flight are in (its two frames in a fresh capture
+            // session if they'd take the camera past its renewal)
+            if (focusCheckStep == 0 && inFlight == 0) {
+                if (renewAfter > 0 && rig.sessionCaptures() + 2 > renewAfter) {
+                    renewSession();
+                    return;
+                }
+                startFocusCheck();
+            }
             if (focusCheckDue || focusCheckStep != 0) return;
         }
         while (inFlight < 2 && framesDone + inFlight < plan.frames) {
+            if (renewAfter > 0 && rig.sessionCaptures() >= renewAfter) {
+                // the camera has stopped after a few more than this in a row: a fresh capture session first, once the
+                // frames in flight are in (about a second, against the minute it takes to notice a stop)
+                if (inFlight == 0) renewSession();
+                return;
+            }
             int seq = ++seqCounter;
             Req r = new Req(seq, FRAME, plan.frameExpNs);
             if (!rig.capture(seq, plan.frameExpNs, plan.iso)) break;
@@ -3554,6 +3598,7 @@ final class SessionController {
         inFlight--;
         lastProgressMs = SystemClock.elapsedRealtime();
         consecutiveFailures = 0;
+        if (restarts > 0) learnStop();
         restarts = 0;
         if (r.buf == null) {
             if (r.dropped) framesDropped++;
@@ -3717,7 +3762,61 @@ final class SessionController {
         }, SETTLE_MS);
     }
 
+    /**
+     * The camera is going again after it stopped: if it had given a fair run of frames in that capture session, a
+     * camera that stops after so many in a row is renewed before then from now on, this session and the next (the
+     * cure that worked: a fresh capture session, or opening it again). A stop short of the renewals already planned
+     * makes them sooner: a camera may stop sooner with a night's long frames than with the check's one-second ones,
+     * and a renewal too many costs about a second against the best part of a minute for a stop.
+     */
+    private void learnStop() {
+        if (stoppedAfter < CameraFacts.MIN_RUN) return;
+        boolean reopen = restarts > 2;
+        int every = stoppedAfter - 3;
+        if (renewAfter > 0 && every >= renewAfter) {
+            // not short of the planned renewals: only a cure that took opening it again is news
+            if (reopen && !renewReopen) {
+                renewReopen = true;
+                prefs.noteRenew(cameraId, renewAfter, "reopen");
+                log("decision: renewals open the camera again from now on, as a new capture session didn't get it going");
+            }
+            return;
+        }
+        int was = renewAfter;
+        renewAfter = every;
+        renewReopen |= reopen;
+        renewLearnedAt = stoppedAfter;
+        prefs.noteRenew(cameraId, renewAfter, renewReopen ? "reopen" : "session");
+        log(String.format(Locale.US, "decision: the camera stopped after %d frames in a row%s and %s got it going: from now on a fresh "
+                        + "capture session every %d frames", stoppedAfter,
+                was > 0 ? String.format(Locale.US, " (renewals were planned every %d)", was) : "",
+                reopen ? "opening it again" : "a new capture session", renewAfter));
+    }
+
+    private void renewSession() {
+        renewing = true;
+        renewals++;
+        lastProgressMs = SystemClock.elapsedRealtime();
+        log(String.format(Locale.US, "decision: %s after %d frames in a row (renewal %d), before this camera's stop after a few more",
+                renewReopen ? "the camera opened again" : "a fresh capture session", rig.sessionCaptures(), renewals));
+        if (renewReopen) reopenRig();
+        else rig.restartSession();
+    }
+
+    /** Closes the camera and opens it again (it keeps the focus); a failure ends the capture. */
+    private void reopenRig() {
+        rig.close();
+        rig = new CameraRig(ctx, h, rigListener);
+        rig.setFocus(focusValue);
+        try {
+            rig.open(cameraId, cc, rawSize);
+        } catch (CameraAccessException | SecurityException | IllegalArgumentException e) {
+            finishCapture("camera", "the camera could not be reopened");
+        }
+    }
+
     private void watchdog() {
+        if (restarts == 0) stoppedAfter = rig.sessionResults();
         restarts++;
         stalls++;
         stalledMs += SystemClock.elapsedRealtime() - lastProgressMs;
@@ -3727,14 +3826,7 @@ final class SessionController {
         if (restarts <= 2) {
             rig.restartSession();
         } else if (restarts <= 4) {
-            rig.close();
-            rig = new CameraRig(ctx, h, rigListener);
-            rig.setFocus(focusValue);
-            try {
-                rig.open(cameraId, cc, rawSize);
-            } catch (CameraAccessException | SecurityException | IllegalArgumentException e) {
-                finishCapture("camera", "the camera could not be reopened");
-            }
+            reopenRig();
         } else {
             finishCapture("camera", "the camera stopped responding");
         }
@@ -3743,11 +3835,25 @@ final class SessionController {
     private final CameraRig.Listener rigListener = new CameraRig.Listener() {
         @Override
         public void onReady() {
+            boolean renewed = renewing;
+            renewing = false;
             if (phase == Phase.STARTING) {
                 phase = Phase.PLACE;
                 publishPlace();
             } else if (phase == Phase.CAPTURING) {
-                submitNext();
+                if (renewed) {
+                    lastProgressMs = SystemClock.elapsedRealtime();
+                    // the lens is sent to the focus again with the new requests: a moment for it to get there
+                    final int tk = startToken;
+                    h.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (tk == startToken) submitNext();
+                        }
+                    }, RENEW_SETTLE_MS);
+                } else {
+                    submitNext();
+                }
             }
         }
 
@@ -3918,6 +4024,14 @@ final class SessionController {
         @Override
         public void onCameraError(String what) {
             log("camera: " + what);
+            if (renewing && phase == Phase.CAPTURING && !renewReopen && !CameraRig.TAKEN.equals(what)) {
+                // the fresh capture session failed to come up: open the camera again instead
+                log("decision: opening the camera again, as the fresh capture session didn't come up (and so from now on)");
+                renewReopen = true;
+                prefs.noteRenew(cameraId, renewAfter, "reopen");
+                reopenRig();
+                return;
+            }
             if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
                 if (framesDone > 0) finishCapture(CameraRig.TAKEN.equals(what) ? "taken" : "camera", what);
                 else fail("The camera stopped: " + what);
@@ -4040,10 +4154,11 @@ final class SessionController {
         if (frames > 0 && store != null) recordCapture(store);
         if (frames == 0 || up == null || store == null) {
             if (up != null) up.abort();
-            if (store != null) store.deleteAll();
             up = null;
-            store = null;
+            // its log is kept for the failure screen first
+            SessionStore gone = store;
             fail("No frames were captured" + (why != null ? " (" + why + ")." : "."));
+            if (gone != null) gone.deleteAll();
             return;
         }
         publish("Developing", "Saving the last frames", -1);
@@ -4096,6 +4211,12 @@ final class SessionController {
             p.setProperty("capture.pausedMs", Long.toString(pausedTotalMs));
             p.setProperty("capture.stalls", Integer.toString(stalls));
             p.setProperty("capture.stalledMs", Long.toString(stalledMs));
+            if (renewals > 0) {
+                p.setProperty("capture.renewals", Integer.toString(renewals));
+                p.setProperty("capture.renewAfter", Integer.toString(renewAfter));
+                if (renewLearnedAt > 0) p.setProperty("capture.renewLearned", Integer.toString(renewLearnedAt));
+                if (renewReopen) p.setProperty("capture.renewHow", "reopen");
+            }
             p.setProperty("capture.thermalMax", Integer.toString(thermalMax));
             if (thermalSevereAtMs > 0) p.setProperty("capture.thermalSevereAtMs", Long.toString(thermalSevereAtMs));
             p.setProperty("capture.framesPlanned", Integer.toString(plan.frames));
@@ -4504,7 +4625,7 @@ final class SessionController {
             recipe = m.again;
             hash[0] = m.again.pixelHash;
         } else {
-            jpeg = saveJpeg(o, sp, params, m.recipe, north, name, null, factor, hash);
+            jpeg = saveJpeg(home, o, sp, params, m.recipe, north, name, null, factor, hash);
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
         }
         if (m.again != null) {
@@ -4516,7 +4637,7 @@ final class SessionController {
         if (o.blend != null && !same) {
             post(Phase.DEVELOPING, "Saving", "The cloud-blur version", -1f);
             try {
-                blendUri = saveBlend(o, sp, brightness, name + "_blend");
+                blendUri = saveBlend(home, o, sp, brightness, name + "_blend");
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 st.log("cloud blur: not saved: " + e);
             }
@@ -4761,19 +4882,21 @@ final class SessionController {
     }
 
     /** The photo as a JPEG, {@code factor} photo pixels to a JPEG pixel each way (1: full size), with {@code d} drawn on. */
-    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor) throws IOException {
-        return saveJpeg(o, sp, paramsOf(null, brightness), null, null, name, d, factor, null);
+    private Uri saveJpeg(SessionStore st, PostProcessor.Output o, SensorSpec sp, float brightness, String name, Decor d, int factor)
+            throws IOException {
+        return saveJpeg(st, o, sp, paramsOf(null, brightness), null, null, name, d, factor, null);
     }
 
     /**
      * Saves the photo rendered with {@code p}, cut and turned as {@code rc} says ({@code north} its north; rc null: as
      * it is); with {@code hash}, the photo's pixels' SHA-256 goes in hash[0] (before anything is drawn on it, which is
-     * drawn before the framing).
+     * drawn before the framing). A photo whose EXIF block couldn't be written is saved without it, and {@code st}'s log
+     * says so.
      */
-    private Uri saveJpeg(PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Recipe rc, double[] north, String name, Decor d,
-                         int factor, String[] hash) throws IOException {
+    private Uri saveJpeg(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Recipe rc, double[] north,
+                         String name, Decor d, int factor, String[] hash) throws IOException {
         Framing f = frameFor(rc, north, o.analysis.cw / factor, o.analysis.ch / factor);
-        if (f != null) return saveFramed(o, sp, p, f, name, d, factor, hash);
+        if (f != null) return saveFramed(st, o, sp, p, f, name, d, factor, hash);
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
         final int cw = sm != null ? sm.cropWidth() : o.analysis.cw, ch = sm != null ? sm.cropHeight() : o.analysis.ch;
         final Bitmap bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
@@ -4795,15 +4918,15 @@ final class SessionController {
             }
             if (hash != null) hash[0] = pixelHash(bmp);
             if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
-            return MediaSaver.saveJpeg(ctx, bmp, name, exif(o, sp, cw, ch));
+            return writeJpeg(st, bmp, name, exif(o, sp, cw, ch));
         } finally {
             bmp.recycle();
         }
     }
 
     /** {@link #saveJpeg} with a crop or a turn: rendered whole (and drawn on), then framed. */
-    private Uri saveFramed(PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Framing f, String name, Decor d, int factor,
-                           String[] hash) throws IOException {
+    private Uri saveFramed(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Framing f, String name, Decor d,
+                           int factor, String[] hash) throws IOException {
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
         int[] px = sm != null ? Renderer.renderSmall(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
         int pw = sm != null ? sm.cropWidth() : o.analysis.cw, ph = sm != null ? sm.cropHeight() : o.analysis.ch;
@@ -4827,10 +4950,22 @@ final class SessionController {
         try {
             bmp.setPixels(out, 0, f.outW, 0, 0, f.outW, f.outH);
             out = null;
-            return MediaSaver.saveJpeg(ctx, bmp, name, exif(o, sp, f.outW, f.outH));
+            return writeJpeg(st, bmp, name, exif(o, sp, f.outW, f.outH));
         } finally {
             bmp.recycle();
         }
+    }
+
+    /** {@link MediaSaver#saveJpeg}, with a line in {@code st}'s log when the photo had to be saved without its EXIF block. */
+    private Uri writeJpeg(SessionStore st, Bitmap bmp, String name, MediaSaver.Exif ex) throws IOException {
+        Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex);
+        if (ex.failed != null) {
+            String s = "decision: " + name + ".jpg saved without its EXIF block (the date, camera and exposure the gallery shows), "
+                    + "as it couldn't be written: " + ex.failed;
+            if (st != null) st.log(s);
+            android.util.Log.w("NightSky", s);
+        }
+        return u;
     }
 
     private static MediaSaver.Exif exif(PostProcessor.Output o, SensorSpec sp, int w, int h) {
@@ -4948,14 +5083,14 @@ final class SessionController {
     }
 
     /** The cloud-blur version (C7), with a stretch of its own: clouds and trails make it a different picture. */
-    private Uri saveBlend(PostProcessor.Output o, SensorSpec sp, float brightness, String name) throws IOException {
+    private Uri saveBlend(SessionStore st, PostProcessor.Output o, SensorSpec sp, float brightness, String name) throws IOException {
         PostProcessor.Output b = new PostProcessor.Output();
         b.image = o.blend;
         b.analysis = Renderer.analyze(o.blend, sp);
         b.integrationSeconds = o.blendSeconds;
         b.summary = String.format(Locale.US, "Cloud blur: the plain average of %d frames (%s), not lined up", o.blendFrames,
                 PostProcessor.duration(o.blendSeconds));
-        return saveJpeg(b, sp, brightness, name, null, 1);
+        return saveJpeg(st, b, sp, brightness, name, null, 1);
     }
 
     private Uri saveDng(final PostProcessor.Output o, final SensorSpec sp, String name) throws IOException {
@@ -5025,6 +5160,7 @@ final class SessionController {
         startToken++;
         stopLocating();
         if (store != null) store.log("failed: " + msg);
+        failLog = saveFailLog(msg);
         releaseCapture();
         if (up != null) {
             up.abort();
@@ -5077,6 +5213,30 @@ final class SessionController {
 
     /** What was logged before the session's folder existed (the camera's hiccups as it opened, a skipped check), for its log. */
     private final StringBuilder startLog = new StringBuilder();
+
+    /**
+     * A failed session's log (or, before its folder existed, what was logged as it started) kept in Documents/NightSky,
+     * for the failure screen's Share the log: the folder of a session without frames is deleted.
+     */
+    private Uri saveFailLog(String msg) {
+        String text, id;
+        if (store != null) {
+            text = store.readLog();
+            id = store.id();
+        } else {
+            if (startLog.length() == 0) return null;
+            text = "Night Sky Camera " + BuildInfo.VERSION + " on " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                    + " (" + android.os.Build.FINGERPRINT + ")\n" + startLog + "failed: " + msg + "\n";
+            id = new java.text.SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date());
+        }
+        if (text.isEmpty()) return null;
+        try {
+            return MediaSaver.saveText(ctx, "NightSky_" + id + "_failed_log.txt", text);
+        } catch (IOException | RuntimeException e) {
+            android.util.Log.w("NightSky", "the failed session's log wasn't kept: " + e);
+            return null;
+        }
+    }
 
     // ------------------------------------------------------------------------------------------------
     // Status
@@ -5158,6 +5318,7 @@ final class SessionController {
         s.latestVersion = latestVersion;
         s.preflight = preflightReport;
         s.storageShort = storageShort;
+        s.failLog = phase == Phase.FAILED ? failLog : null;
         s.outcome = outcome;
         s.outcomeDetail = outcomeDetail;
         s.scheduled = settings != null && settings.scheduled;

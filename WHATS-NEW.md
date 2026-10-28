@@ -1,5 +1,73 @@
 # Night Sky Camera: what's new
 
+## Version 1.3: a camera check before your first night
+
+### What's new
+
+- **Camera check.** Up to three minutes indoors, with the camera against a table, and you know what this phone's
+  camera really does before a night depends on it: whether the night's long exposure comes out in full, whether
+  it keeps going frame after frame, and how its sensor looks in the dark (hot pixels, noise, the black level).
+  Sessions plan with what it finds. The home screen offers it until you've run it (or tapped **Not now**), and
+  it's always under **Advanced > Camera check**. **Share the details** sends everything it measured, and a copy is
+  saved in `Documents/NightSky`.
+- **Sessions keep going past a camera that stops after so many frames.** Some Pixels stop after 63 frames in a row
+  (another astro app fixed exactly that for Pixels 7 to 10 this summer). A session only noticed once the camera had
+  been silent for twice the frame length plus 15 seconds (47 seconds with 16-second frames), then restarted it.
+  Now, once the check or a session has seen such a stop, sessions give the camera a fresh capture session a few
+  frames before it would stop: a pause of about a second. If only closing and opening the camera gets it going,
+  that's what they do (about 2 seconds). If a night's long frames stop sooner than the check's one-second ones did,
+  the renewals come sooner from then on.
+- **The session report says when that happened** ("The camera got a fresh capture session twice (every 60
+  frames)"), or, when a session learns it from a stop of its own, says so with that stop ("It had stopped after 63
+  frames in a row, so from then on it got a fresh capture session every 60 frames"). Each session's log notes what
+  the last camera check found.
+- **Share the log.** The session report has a **Share the log** button that sends the session's log, every step
+  and choice it made, as a text file: the quickest way to show what happened on a night. A session that couldn't
+  run has one on the screen it ends on.
+- **A photo no longer depends on its details being written.** If the date, camera and exposure details (EXIF)
+  can't be added to a photo, it's saved without them and the session log says so, instead of the whole develop
+  failing.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.2.1 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- New: the home screen offers the camera check until it has been run or put off.
+- Everything else is unchanged from version 1.2.1.
+
+### Try today (indoors, any time of day)
+
+1. Open the app and tap **Check the camera** on the card at the top of the home screen.
+2. In a dim room, lay the phone screen-up on a table so the camera is against it, tap **Start**, and leave it
+   until it says it's done (up to three minutes).
+3. **Ready for the night** means you're set. If it says **Ready: sessions work around what it found** or **The
+   camera needs a look**, tap **Share the details** and paste them here in the chat.
+
+### Try tonight
+
+1. Tap **Start**, lay the phone down and let it run 5 minutes. Afterwards, **Session report > Share the log**
+   sends what happened if anything looks off.
+2. If the check found that the camera stops after so many frames, a 20- or 30-minute session is the real test:
+   its **Session report** should note the fresh capture sessions and no camera trouble.
+
+### Not working yet, or not tested
+
+- Still all tested off the phone, with a simulated camera (including one that stops after 63 frames): the camera
+  check on your Pixel is the first real test, and its shared details say exactly what the camera did.
+- Haze is only measured once the app has seen a clear night, so on the first night a hazy sky still reads "Clear
+  sky (haze not measured yet)".
+- The check can't show how the phone copes with heat over a long session.
+- Also checked at your Pixel's full 12.5-megapixel frame size: developing a session needs at most about 320 MB of
+  the 512 MB of memory Android gives the app, so there's room to spare.
+
 ## Version 1.2.1: fixes from a full dress rehearsal
 
 Before your first night, whole sessions were run through the app's own capture code with a simulated camera

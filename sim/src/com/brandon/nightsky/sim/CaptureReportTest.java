@@ -22,6 +22,7 @@ public final class CaptureReportTest {
     static int failed;
 
     public static void main(String[] args) {
+        PostProcessor.Output o0;
         // a pause while the phone was picked up: "moved", not "frames dropped"
         ReportCard r = card(frames(11, 16, 3, 25), "capture.pauses", "1", "capture.pausedMs", "6000");
         expect("pause", r, "moved", "dropped", "camera");
@@ -107,6 +108,27 @@ public final class CaptureReportTest {
         r = card(frames(5, 16, -1, 0), "capture.framesPlanned", "22", "capture.framesPerUnit", "2", "capture.durationSec", "180",
                 "capture.stopKey", "you", "capture.stopReason", "stopped by you");
         noteHas("combined frames", r, "Stopped by you after 1 min 20 s (5 of 11 frames).");
+        // the capture session renewed before the camera's known stop: a note, its short pauses not a problem
+        o0 = frames(40, 16, 19, 1.0);
+        r = card(o0, "capture.renewals", "1", "capture.renewAfter", "20", "capture.framesPlanned", "40");
+        expect("renewed", r, null);
+        noteHas("renewed", r, "The camera got a fresh capture session once (every 20 frames), as it stops after a few more in a row: "
+                + "a pause of about a second each time.");
+        // ... and a stall on top of that is still the camera's trouble
+        r = card(frames(30, 16, 25, 47), "capture.renewals", "1", "capture.renewAfter", "20", "capture.framesPlanned", "40",
+                "capture.stalls", "1", "capture.stalledMs", "47000", "capture.durationSec", "640", "capture.stopKey", "you",
+                "capture.stopReason", "stopped by you");
+        expect("renewed and stalled", r, "camera");
+        evidence("renewed and stalled", r, "camera", "stopped sending frames once until the app restarted it");
+        // ... and learned from this session's own stop: told with that stop (a note, as the frames were made up)
+        r = card(frames(40, 16, 17, 49), "capture.renewals", "1", "capture.renewAfter", "17", "capture.renewLearned", "20",
+                "capture.framesPlanned", "40", "capture.stalls", "1", "capture.stalledMs", "47000");
+        expect("learned and renewed", r, null);
+        noteContains("learned and renewed", r, "The camera stopped sending frames once until the app restarted it; the session ran ");
+        noteContains("learned and renewed", r, " seconds longer to get all its frames. It had stopped after 20 frames in a row, so from "
+                + "then on it got a fresh capture session every 17 frames (once), a pause of about a second each time.");
+        check("learned and renewed: one note", r.notes.toString().indexOf("fresh capture session") == r.notes.toString().lastIndexOf(
+                "fresh capture session"), r.notes.toString());
         // the check warned of a smudge: the report says so only if the frames bear it out, well clear of a clean lens
         PostProcessor.Output o = halos(frames(11, 16, -1, 0), 0.38);
         r = card(o, "preflight.lensWarned", "true", "preflight.haloLimit", "0.11", "preflight.haloClean", "0.005");

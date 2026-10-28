@@ -286,6 +286,49 @@ final class Prefs {
         return sp.getLong("clampDelivered|" + cameraKey(cameraId), 0L);
     }
 
+    /**
+     * Frames to take in one capture session before renewing it, learned from the camera stopping after so many in a
+     * row (by the camera check, or a session's watchdog); 0 if it never has.
+     */
+    int renewAfter(String cameraId) {
+        return sp.getInt("renewAfter|" + cameraKey(cameraId), 0);
+    }
+
+    /** What renews it: "session" (a fresh capture session) or "reopen" (closing and opening the camera). */
+    String renewHow(String cameraId) {
+        return sp.getString("renewHow|" + cameraKey(cameraId), "session");
+    }
+
+    /** {@code after} 0 forgets it. */
+    void noteRenew(String cameraId, int after, String how) {
+        SharedPreferences.Editor e = sp.edit();
+        if (after <= 0) {
+            e.remove("renewAfter|" + cameraKey(cameraId)).remove("renewHow|" + cameraKey(cameraId));
+        } else {
+            e.putInt("renewAfter|" + cameraKey(cameraId), after).putString("renewHow|" + cameraKey(cameraId),
+                    "reopen".equals(how) ? "reopen" : "session");
+        }
+        e.apply();
+    }
+
+    /** The last camera check's findings ({@link com.brandon.nightsky.processing.CameraFacts#encode}), "" if none. */
+    String cameraFacts(String cameraId) {
+        return sp.getString("cameraFacts|" + cameraKey(cameraId), "");
+    }
+
+    void setCameraFacts(String cameraId, String facts) {
+        sp.edit().putString("cameraFacts|" + cameraKey(cameraId), facts).apply();
+    }
+
+    /** The home screen has offered the camera check (it does once, until it's done or put off). */
+    boolean checkOffered() {
+        return sp.getBoolean("checkOffered", false);
+    }
+
+    void setCheckOffered() {
+        sp.edit().putBoolean("checkOffered", true).apply();
+    }
+
     /** Focus on the stars before each session (A5): a few frames, about 30 seconds the first time. */
     boolean focusAssist() {
         return sp.getBoolean("focusAssist", true);

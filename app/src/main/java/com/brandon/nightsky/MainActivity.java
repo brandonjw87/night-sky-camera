@@ -53,6 +53,7 @@ import android.widget.TextView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusModel;
 import com.brandon.nightsky.processing.FramePreview;
@@ -141,18 +142,20 @@ public final class MainActivity extends Activity {
     private Boolean windowActive;
 
     // the idle screen's pages: home, tonight's plan, a session being added, last night's summary, the saved sites,
-    // the daylight focus calibration, the sessions kept, and merging some of them
+    // the daylight focus calibration, the sessions kept, merging some of them, and the camera check
     private static final int PAGE_HOME = 0, PAGE_PLAN = 1, PAGE_EDIT = 2, PAGE_SUMMARY = 3, PAGE_SITES = 4, PAGE_FOCUS = 5,
-            PAGE_SESSIONS = 6, PAGE_MERGE = 7;
+            PAGE_SESSIONS = 6, PAGE_MERGE = 7, PAGE_CHECK = 8;
     private static final String STATE_PAGE = "page";
     /** The merge page's session to merge into, and the one ticked alone (folder names; null for all). */
     private String mergeBase, mergePick;
     /** Drops the sessions read for a page Brandon has left. */
     private int libraryToken;
-    /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate. */
-    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9;
+    /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate or check. */
+    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9, REQ_CHECK_CAMERA = 10;
     /** The daylight focus calibration's camera while its page shows (null otherwise); the camera sessions use. */
     private FocusCalibrator calibrator;
+    /** The camera check while it runs on its page (null otherwise). */
+    private CameraCheck cameraCheck;
     private static String focusCamera;
     /** The home screen's scroll view, and its presets card (filled again when a setting changes). */
     private ScrollView homeScroll;
@@ -344,6 +347,7 @@ public final class MainActivity extends Activity {
         super.onPause();
         visible = false;
         stopCalibrator();
+        stopCameraCheck();
         // the screen was turned on for the tile once; not again
         setTurnScreenOn(false);
         // settings or the plan may have changed: the widget and the shortcuts follow
@@ -489,6 +493,7 @@ public final class MainActivity extends Activity {
         satBox = null;
         setQrBright(false);
         stopCalibrator();
+        stopCameraCheck();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -518,6 +523,9 @@ public final class MainActivity extends Activity {
                 break;
             case PAGE_MERGE:
                 showMergePage();
+                break;
+            case PAGE_CHECK:
+                showCheck();
                 break;
             default:
                 showHomePage();
@@ -596,6 +604,40 @@ public final class MainActivity extends Activity {
                 }
             });
             card.addView(clean, gap(8));
+            col.addView(card, gap(16));
+        }
+
+        // before the first night: the camera check, offered until it's done or put off
+        final String checkCam = focusCameraId();
+        if (checkCam != null && !prefs.checkOffered() && prefs.cameraFacts(checkCam).isEmpty()) {
+            final LinearLayout card = card();
+            card.addView(text("Before your first night: check the camera", 16, RED, true));
+            card.addView(text("Up to three minutes, indoors, with the camera against a table. It finds whether this phone's camera "
+                    + "gives the night's long exposures in full and keeps going frame after frame, and sessions plan with what it "
+                    + "finds.", 13, RED_DIM, false), gap(4));
+            LinearLayout row = row();
+            Button go = button("Check the camera", true);
+            go.setTextSize(15);
+            go.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    openPage(PAGE_CHECK);
+                }
+            });
+            Button later = button("Not now", false);
+            later.setTextSize(15);
+            later.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setCheckOffered();
+                    ViewGroup parent = (ViewGroup) card.getParent();
+                    if (parent != null) parent.removeView(card);
+                    toastish("It's in Advanced settings whenever you want it");
+                }
+            });
+            row.addView(go, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+            row.addView(later, weight());
+            card.addView(row, gap(10));
             col.addView(card, gap(16));
         }
 
@@ -940,6 +982,19 @@ public final class MainActivity extends Activity {
             }
         });
         box.addView(cal, gap(6));
+
+        // the camera check: what the camera really does with long exposures
+        box.addView(label("Camera"), gap(20));
+        box.addView(text(checkWords(), 13, RED_DIM, false), gap(4));
+        Button chk = button("Camera check", false);
+        chk.setTextSize(15);
+        chk.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openPage(PAGE_CHECK);
+            }
+        });
+        box.addView(chk, gap(6));
 
         // satellites: the orbital data, and whether their streaks stay
         box.addView(label("Satellites"), gap(20));
@@ -1365,6 +1420,13 @@ public final class MainActivity extends Activity {
                 toastish("The calibration needs the camera: allow it in Settings > Apps > Night Sky > Permissions");
             }
             if (page == PAGE_FOCUS && screenOf(shownPhase) <= 0) showFocus();
+            return;
+        }
+        if (code == REQ_CHECK_CAMERA) {
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                toastish("The check needs the camera: allow it in Settings > Apps > Night Sky > Permissions");
+            }
+            if (page == PAGE_CHECK && screenOf(shownPhase) <= 0) showCheck();
             return;
         }
         if (code == REQ_SITES_LOCATION) {
@@ -2211,7 +2273,7 @@ public final class MainActivity extends Activity {
                 rb.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        showReport(rc, null);
+                        showReport(rc, null, null, it.session);
                     }
                 });
                 r.addView(rb, weight());
@@ -2481,7 +2543,7 @@ public final class MainActivity extends Activity {
             link.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    showReport(rc, r.merge);
+                    showReport(rc, r.merge, r.log, r.session);
                 }
             });
             col.addView(link, gap(6));
@@ -3790,8 +3852,11 @@ public final class MainActivity extends Activity {
     // Session report
     // ------------------------------------------------------------------------------------------------
 
-    /** The report card over the result screen, until Close or Back; with the sessions stacked when it's a merge. */
-    private void showReport(ReportCard rc, MergeProcessor.Result merge) {
+    /**
+     * The report card over the result screen, until Close or Back; with the sessions stacked when it's a merge, and a
+     * way to share the session's log ({@code log}, its copy in Documents/NightSky, or else made from {@code session}).
+     */
+    private void showReport(ReportCard rc, MergeProcessor.Result merge, final Uri log, final String session) {
         if (rc == null || reportOverlay != null) return;
         FrameLayout ov = new FrameLayout(this);
         ov.setBackgroundColor(BG);
@@ -3857,6 +3922,7 @@ public final class MainActivity extends Activity {
         if (!rc.conditions.isEmpty()) col.addView(text(rc.conditions, 13, RED_DIM, false), gap(6));
         col.addView(label("Next time"), gap(18));
         col.addView(text(rc.tip, 14, RED, false), gap(4));
+        LinearLayout bottom = row();
         Button close = button("Close", true);
         close.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -3864,8 +3930,65 @@ public final class MainActivity extends Activity {
                 closeReport();
             }
         });
-        col.addView(close, gap(20));
+        bottom.addView(close, weight());
+        if (log != null || (session != null && !session.isEmpty())) {
+            Button share = button("Share the log", false);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    shareLog(log, session);
+                }
+            });
+            bottom.addView(share, weight());
+        }
+        col.addView(bottom, gap(20));
         openOverlay(ov);
+    }
+
+    /**
+     * Shares a session's log, every step and decision it took, as a text file: its copy in Documents/NightSky, or
+     * (a session from before that was kept, or opened from the library) a copy made there now.
+     */
+    private void shareLog(Uri log, final String session) {
+        if (log != null) {
+            sendLog(log);
+            return;
+        }
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Uri u = null;
+                String err = null;
+                try {
+                    String text = new com.brandon.nightsky.processing.SessionStore(new File(SessionController.sessionsRoot(app), session))
+                            .readLog();
+                    if (text == null || text.isEmpty()) err = "This session's log is empty";
+                    else u = MediaSaver.saveText(app, "NightSky_" + session.replace("session_", "") + "_log.txt", text);
+                } catch (IOException | RuntimeException e) {
+                    err = "The log couldn't be read: " + e.getMessage();
+                }
+                final Uri fu = u;
+                final String fe = err;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (fu != null) sendLog(fu);
+                        else toastish(fe);
+                    }
+                });
+            }
+        }, "share-log").start();
+    }
+
+    private void sendLog(Uri log) {
+        Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, log)
+                .putExtra(Intent.EXTRA_SUBJECT, "Night Sky session log").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(i, "Share the session log"));
+        } catch (RuntimeException e) {
+            toastish("Nothing on the phone can share it: it's in Documents/NightSky");
+        }
     }
 
     /** Shows a page over the result screen until Close or Back (the report card, a merge's details). */
@@ -4667,6 +4790,175 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** What the last camera check found, in a line, for the Advanced settings. */
+    private String checkWords() {
+        String id = focusCameraId();
+        CameraFacts f = id == null ? null : CameraFacts.parse(prefs.cameraFacts(id));
+        if (f == null) {
+            return "Not checked yet: about three minutes indoors finds what this phone's camera really does with long exposures.";
+        }
+        return "Last checked " + CameraFacts.ago(System.currentTimeMillis() - f.timeMs) + ": " + f.headline() + ".";
+    }
+
+    private void stopCameraCheck() {
+        if (cameraCheck == null) return;
+        cameraCheck.stop();
+        cameraCheck = null;
+    }
+
+    /**
+     * The camera check: the night's long exposure, frame after frame, and the sensor in the dark, measured indoors in
+     * about three minutes with the camera covered; then what it found, and a way to share the details.
+     */
+    private void showCheck() {
+        page = PAGE_CHECK;
+        final LinearLayout col = pageColumn("Home");
+        col.addView(text("Camera check", 26, RED, true));
+        col.addView(text("See what this phone's camera really does with long exposures, before a night depends on it: whether the "
+                + "night's exposure comes out in full, whether it keeps going frame after frame (some Pixels stop after 63 in a "
+                + "row), and how its sensor looks in the dark. Sessions plan with what it finds.", 14, RED_DIM, false), gap(6));
+        col.addView(text("1. In a dim room, lay the phone screen-up on a table, so the camera is against the table (or put it in a "
+                + "drawer).\n2. Tap Start and leave it for up to three minutes, until it says it's done. Keep the app open.", 14, RED, false), gap(10));
+        final TextView state = text("", 15, RED, true);
+        final TextView detail = text("", 13, RED_DIM, false);
+        final ProgressBar pb = progress();
+        pb.setVisibility(View.GONE);
+        final Button go = button("Start", true);
+        final LinearLayout result = new LinearLayout(this);
+        result.setOrientation(LinearLayout.VERTICAL);
+        final String id = focusCameraId();
+        boolean busy = service != null && screenOf(service.controller().status().phase) > 0
+                && screenOf(service.controller().status().phase) < 4;
+        if (id == null) {
+            state.setText("This phone has no back camera with RAW support");
+            go.setEnabled(false);
+        } else if (busy) {
+            state.setText("Not while a session is running");
+            go.setEnabled(false);
+        } else if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            state.setText("The check needs the camera");
+            go.setText("Allow the camera");
+            go.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CHECK_CAMERA);
+                }
+            });
+        } else {
+            go.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (cameraCheck != null) {
+                        stopCameraCheck();
+                        col.setKeepScreenOn(false);
+                        pb.setVisibility(View.GONE);
+                        state.setText("Stopped");
+                        detail.setText("");
+                        go.setText("Start");
+                        return;
+                    }
+                    result.removeAllViews();
+                    final CameraCheck[] mine = new CameraCheck[1];
+                    mine[0] = cameraCheck = new CameraCheck(MainActivity.this, prefs, main, new CameraCheck.Listener() {
+                        @Override
+                        public void onState(String head, String text, int percent) {
+                            if (cameraCheck != mine[0]) return;
+                            state.setText(head);
+                            detail.setText(text);
+                            pb.setProgress(10 * percent);
+                        }
+
+                        @Override
+                        public void onDone(CameraFacts f) {
+                            if (cameraCheck != mine[0]) return;
+                            cameraCheck = null;
+                            col.setKeepScreenOn(false);
+                            pb.setVisibility(View.GONE);
+                            state.setText(f.complete() ? "Done" : "The check didn't finish");
+                            detail.setText("");
+                            go.setText("Check again");
+                            fillCheckResult(result, f, true);
+                            if (f.complete()) saveCheckText(f);
+                        }
+
+                        @Override
+                        public void onError(String text) {
+                            if (cameraCheck != mine[0]) return;
+                            cameraCheck = null;
+                            col.setKeepScreenOn(false);
+                            pb.setVisibility(View.GONE);
+                            state.setText("The camera isn't available");
+                            detail.setText(text);
+                            go.setText("Try again");
+                        }
+                    });
+                    String err = cameraCheck.start();
+                    if (err != null) {
+                        cameraCheck = null;
+                        state.setText("The camera isn't available");
+                        detail.setText(err);
+                        return;
+                    }
+                    col.setKeepScreenOn(true);
+                    pb.setProgress(0);
+                    pb.setVisibility(View.VISIBLE);
+                    go.setText("Stop");
+                }
+            });
+        }
+        col.addView(go, gap(12));
+        col.addView(state, gap(10));
+        col.addView(detail, gap(2));
+        col.addView(pb, gap(8));
+        col.addView(result, gap(16));
+        if (id != null) fillCheckResult(result, CameraFacts.parse(prefs.cameraFacts(id)), false);
+    }
+
+    /** A camera check's findings: when, the headline, a line for each finding, and a way to share the details. */
+    private void fillCheckResult(LinearLayout box, final CameraFacts f, boolean fresh) {
+        box.removeAllViews();
+        if (f == null) return;
+        box.addView(label(fresh ? "What it found" : "Last check, " + CameraFacts.ago(System.currentTimeMillis() - f.timeMs)));
+        box.addView(text(f.headline(), 17, RED, true), gap(6));
+        for (String l : f.lines()) box.addView(text("\u2022 " + l, 14, RED, false), gap(6));
+        Button share = button("Share the details", false);
+        share.setTextSize(15);
+        share.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, "Night Sky camera check").putExtra(Intent.EXTRA_TEXT, f.text());
+                startActivity(Intent.createChooser(i, "Share the camera check"));
+            }
+        });
+        box.addView(share, gap(12));
+    }
+
+    /** Keeps a finished check's details as a text file in Documents/NightSky (off the main thread). */
+    private void saveCheckText(final CameraFacts f) {
+        final Context app = getApplicationContext();
+        final String name = "camera-check_" + new SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date(f.timeMs)) + ".txt";
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try {
+                    MediaSaver.saveText(app, name, f.text());
+                    msg = "The details are saved in Documents/NightSky as " + name;
+                } catch (Exception e) {
+                    msg = "The details weren't saved: " + e.getMessage();
+                }
+                final String m = msg;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        toastish(m);
+                    }
+                });
+            }
+        }, "check-save").start();
+    }
+
     /** The saved sites: save this place, and each site's preset, name and what it has learned. */
     private void showSites() {
         page = PAGE_SITES;
@@ -4966,6 +5258,7 @@ public final class MainActivity extends Activity {
             });
             col.addView(clean, gap(18));
         }
+        LinearLayout row = row();
         Button ok = button("OK", true);
         ok.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -4974,7 +5267,20 @@ public final class MainActivity extends Activity {
                 showHome();
             }
         });
-        col.addView(ok, gap(24));
+        row.addView(ok, weight());
+        final Uri log = s.failLog;
+        if (log != null) {
+            // what happened, step by step, to send on
+            Button share = button("Share the log", false);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    sendLog(log);
+                }
+            });
+            row.addView(share, weight());
+        }
+        col.addView(row, gap(24));
     }
 
     // ------------------------------------------------------------------------------------------------

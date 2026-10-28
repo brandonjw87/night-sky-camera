@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.2.1.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.3.
 
 ## What it does
 
@@ -13,6 +13,8 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.2.
   photo with far less noise than a single shot.
 - **Star trails.** Keeps the stars where they fall in each frame, so they draw arcs around the pole star. Longer
   is better: 20 or 30 minutes.
+- **Camera check.** Up to three minutes indoors, before your first night: what this phone's camera really does
+  with long exposures, frame after frame and in the dark. Sessions plan with what it finds.
 - **Screen-down start.** Tap Start and lay the phone down. Once it's still it focuses on the stars, checks the
   sky (a smudged lens, trees, clouds, the Moon), counts down and starts. The screen goes dark while it works.
 - **Safe to interrupt.** Lifting the phone pauses the capture; lay it back down to carry on. "Hold to stop and
@@ -102,6 +104,7 @@ The app's screen is dim red so it doesn't ruin your night vision.
 Under the photo:
 
 - **Session report** opens what the picture shows, a score for every frame, and what went wrong with the fix.
+  **Share the log** at its bottom sends the session's log (every step and choice it made) as a text file.
 - **Satellites** and **Names** draw the satellites' tracks and the stars' names on the photo; **Save this copy**
   keeps that version.
 - **Add 5 minutes** (for half an hour after a session): lay the phone back down where it was and the extra
@@ -175,6 +178,22 @@ Tap **Sky reading: how dark is it here?** and lay the phone down. It measures th
 arcsecond (21.7 or more is an excellent dark sky, about 20 a suburb, under 18.5 a city), says the faintest stars
 you could see by eye, and keeps a log you can save for Excel under Advanced.
 
+## Camera check
+
+Before your first night, find out what this phone's camera really does with long exposures. It takes up to three
+minutes, indoors, at any time of day.
+
+1. In a dim room, lay the phone screen-up on a table, so the camera is against the table (or put it in a drawer).
+2. Tap **Check the camera** on the home screen's card (or open **Advanced > Camera check**), tap **Start** and
+   leave it until it says it's done. Keep the app open.
+
+It finds whether the night's long exposure comes out in full, whether the camera keeps going frame after frame
+(some Pixels stop after 63 frames in a row until the capture is started afresh), and how its sensor looks in the
+dark: hot pixels, noise and the black level. Sessions plan with what it finds: if the camera cuts long exposures
+short, shorter ones are added together from the start; if it stops after so many frames, sessions give it a fresh
+capture a few frames before then. **Share the details** sends everything it measured, and a copy is saved in
+`Documents/NightSky`. After a system update, check again: the update can change what the camera does.
+
 ## Daylight focus calibration
 
 At night the app finds the focus on the stars by itself. A few calibrations in daylight help it start closer:
@@ -210,8 +229,10 @@ tap **Stop the viewer** on the phone.
 
 ## Things to know
 
-- The Pixel decides how long each single frame can be. The app measures this the first time and adapts, so the
-  first session may start with shorter frames. It remembers what works.
+- The Pixel decides how long each single frame can be. The app measures this the first time (or in the camera
+  check) and adapts, so the first session may start with shorter frames. It remembers what works. If the camera
+  stops after so many frames in a row, the session gets it going again and from then on gives it a fresh capture
+  before it would stop.
 - A session needs free space while it runs: about 1 GB for 5 minutes, about 5 GB for 30 minutes. After
   developing, the frames stay on the phone (up to 20 GB in all, set under **Advanced > Sessions and storage**)
   so you can edit, merge and add minutes later; the oldest sessions' frames go first, and the photos always
@@ -219,7 +240,8 @@ tap **Stop the viewer** on the phone.
 - What goes online: satellite orbits from CelesTrak (nothing is sent) and the cloud forecast from Open-Meteo
   (your place rounded to about 10 km). Both can be turned off under Advanced. Nothing else leaves the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
-  the app made by itself.
+  the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
+  couldn't run ends on).
 
 ## For developers
 
@@ -235,6 +257,7 @@ app/src/main/java/com/brandon/nightsky/
     MotionMonitor       face-down and stillness detection from the gyro and gravity sensors
     SensorSpecFactory   camera calibration from Camera2 metadata
     FocusCalibrator     daylight focus calibration
+    CameraCheck         the camera check: long exposures, frame after frame, the sensor in the dark
     PlanRunner, Plans   the night plan: alarms, only-if-clear starts, the morning summary
     PlanReceiver        restarts and updates while a plan is armed
     NightTileService    the Quick Settings tile
@@ -264,6 +287,7 @@ app/src/main/java/com/brandon/nightsky/
         Astro, Planets  time, Sun, Moon, planets
         Sat*, Sgp4      satellite prediction, matching and masks
         Preflight       the pre-flight check
+        CameraFacts, DarkFrames  what the camera check found; dark frames measured
         Focus*          focus on the stars and its temperature model
         ReportCard      the session report
         NightPlan       planning the night
@@ -303,7 +327,7 @@ java -Xmx3g -cp build/sim com.brandon.nightsky.sim.SimRunner out 2 37 false deep
 Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated lens (true/false), mode
 (`deep` or `trails`), events such as satellites and clouds (true/false).
 
-The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`,
-`FocusTest`, `PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest` and `SatTest` (with the SGP4 verification
-files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output
-folder, for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`.
+The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
+`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest` and `SatTest` (with the
+SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`, `LibraryTest`, `MergeTest` and `G3Test`
+take an output folder, for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`.

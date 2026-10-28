@@ -718,6 +718,24 @@ public final class ReportCard {
                 problems.add(p);
             }
         }
+        // renewing the capture session before a camera's known stop leaves a short gap each time (planned, made up);
+        // renewals learned from this session's own stop are told with that stop
+        int renewals = (int) num("capture.renewals", 0);
+        int learned = (int) num("capture.renewLearned", 0);
+        boolean reopened = in.props != null && "reopen".equals(in.props.getProperty("capture.renewHow"));
+        String renewed = null;
+        if (renewals > 0) {
+            lostSec = Math.max(0, lostSec - renewals * (reopened ? 3.0 : 2.0));
+            int every = (int) num("capture.renewAfter", 0);
+            String pause = reopened ? "a pause of about 2 seconds each time." : "a pause of about a second each time.";
+            if (learned > 0) {
+                renewed = String.format(Locale.US, "had stopped after %d frames in a row, so from then on it %s every %d frames (%s), %s",
+                        learned, reopened ? "was opened again" : "got a fresh capture session", every, times(renewals), pause);
+            } else {
+                notes.add(String.format(Locale.US, "The camera %s %s (every %d frames), as it stops after a few more in a row: %s",
+                        reopened ? "was opened again" : "got a fresh capture session", times(renewals), every, pause));
+            }
+        }
         // so does the camera losing frames, or going silent until the app restarts it, which closing apps won't cure
         int failed = (int) num("capture.framesFailed", 0);
         int stalls = (int) num("capture.stalls", 0);
@@ -731,12 +749,17 @@ public final class ReportCard {
                 if (failed > 0 && stalls > 0) e.append(" and ");
                 if (stalls > 0) e.append("stopped sending frames ").append(times(stalls)).append(" until the app restarted it");
                 e.append(gapWords(camSec, madeUp));
+                if (renewed != null) {
+                    e.append(" It ").append(renewed);
+                    renewed = null;
+                }
                 p.evidence = e.toString();
                 p.fix = "Nothing to do if it's rare: the app carries on by itself. If it happens every session, restart the phone before the next one.";
                 p.spoken = "The camera had trouble, but the session carried on.";
                 problems.add(p);
             }
         }
+        if (renewed != null) notes.add("The camera " + renewed);
         boolean hot = status >= 3;
         if (!hot && dropped == 0 && (lostSec < 1 || spanSec <= 0 || lostSec / spanSec < 0.005)) return;
         Problem p = new Problem(hot ? "thermal" : "dropped", hot ? "The phone got hot" : "Frames dropped", gapCost(lostSec, spanSec, exp, planned));

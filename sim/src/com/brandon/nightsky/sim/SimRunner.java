@@ -209,6 +209,10 @@ public final class SimRunner {
                     u.reason == null ? "kept" : "left out: " + u.reason);
         }
 
+        // as the app does before developing: the live processor's buffers and the viewer's latest frame let go
+        up = null;
+        latest[0] = null;
+        prev = null;
         if (System.getenv("SIM_HOTTEST") != null) hotTest(sim, store, spec, W, H);
         PostProcessor pp = new PostProcessor(store, spec);
         // SIM_REJECT=winsorized|percentile|gesd|linear_fit|sigma; SIM_STACKMEM=MB for the stack's sample buffers

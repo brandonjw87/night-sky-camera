@@ -38,22 +38,31 @@ final class MediaSaver {
         float fNumber, focalLengthMm;
         Date time = new Date();
         int width, height;
+        /** Set by {@link #saveJpeg} when the block couldn't be written, so the photo was saved without it: why. */
+        String failed;
     }
 
     interface Writer {
         void write(OutputStream os) throws IOException;
     }
 
+    /**
+     * Saves {@code bmp} as a JPEG in Pictures/NightSky. If its EXIF block can't be written, the photo is saved without
+     * it and {@code exif.failed} says why: a photo without its date and exposure beats no photo.
+     */
     static Uri saveJpeg(Context c, Bitmap bmp, String name, Exif exif) throws IOException {
         File tmp = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".jpg");
         try {
-            OutputStream os = new BufferedOutputStream(new FileOutputStream(tmp), 1 << 16);
-            try {
-                if (!bmp.compress(Bitmap.CompressFormat.JPEG, 95, os)) throw new IOException("JPEG encoding failed");
-            } finally {
-                os.close();
+            encode(bmp, tmp);
+            if (exif != null) {
+                try {
+                    writeExif(tmp, exif);
+                } catch (IOException | RuntimeException e) {
+                    exif.failed = e.getMessage() != null ? e.getMessage() : e.toString();
+                    // a write that failed part of the way can leave the file broken: encoded again, as it was
+                    encode(bmp, tmp);
+                }
             }
-            if (exif != null) writeExif(tmp, exif);
             final File src = tmp;
             return insert(c, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name + ".jpg",
                     "image/jpeg", PICTURES_DIR, exif != null ? exif.time : new Date(), new Writer() {
@@ -120,6 +129,15 @@ final class MediaSaver {
                 } catch (RuntimeException ignored) {
                 }
             }
+        }
+    }
+
+    private static void encode(Bitmap bmp, File f) throws IOException {
+        OutputStream os = new BufferedOutputStream(new FileOutputStream(f), 1 << 16);
+        try {
+            if (!bmp.compress(Bitmap.CompressFormat.JPEG, 95, os)) throw new IOException("JPEG encoding failed");
+        } finally {
+            os.close();
         }
     }
 

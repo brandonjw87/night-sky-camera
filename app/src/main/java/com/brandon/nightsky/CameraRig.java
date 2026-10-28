@@ -66,6 +66,8 @@ final class CameraRig {
     private long minFrameNs;
     private boolean closed;
     private int generation;
+    /** Captures asked of the current capture session, and results it has given (a camera may stop after so many). */
+    private int sessionCaptures, sessionResults;
     /** Focus distance for the requests (0 = infinity; diopters or the lens's own units), and its range. */
     private float focus;
     private float minFocus;
@@ -197,6 +199,8 @@ final class CameraRig {
                 }, handler);
             }
             final int gen = ++generation;
+            sessionCaptures = 0;
+            sessionResults = 0;
             OutputConfiguration oc = new OutputConfiguration(reader.getSurface());
             SessionConfiguration sc = new SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
                     Collections.singletonList(oc), executor, new CameraCaptureSession.StateCallback() {
@@ -292,6 +296,7 @@ final class CameraRig {
 
                 @Override
                 public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult result) {
+                    if (gen == generation) sessionResults++;
                     listener.onResult(tag(r), result);
                 }
 
@@ -305,10 +310,21 @@ final class CameraRig {
                     listener.onBufferLost(tag(r));
                 }
             }, handler);
+            sessionCaptures++;
             return true;
         } catch (CameraAccessException | RuntimeException e) {
             return false;
         }
+    }
+
+    /** Captures asked of the current capture session (since it was made, or made again). */
+    int sessionCaptures() {
+        return sessionCaptures;
+    }
+
+    /** Results the current capture session has given. */
+    int sessionResults() {
+        return sessionResults;
     }
 
     private static int tag(CaptureRequest r) {
