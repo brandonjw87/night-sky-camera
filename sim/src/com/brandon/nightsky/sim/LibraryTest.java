@@ -70,10 +70,13 @@ public final class LibraryTest {
         Master.quantize(o1, spec, false);
         int[] rounded = Master.render(o1.image, o1.analysis, rp);
         int[] diff = compare(exact, rounded);
-        // a level here and there: the stretch is steep in the faint sky, and bright star cores near clipping move most
-        MergeTest.check(diff[0] <= exact.length / 50 && diff[2] <= exact.length / 1000 && diff[1] <= 8, String.format(Locale.US,
-                "half floats change the photo little: %.2f%% of pixels by one level, %.3f%% by more (at most %d levels)",
-                100.0 * (diff[0] - diff[2]) / exact.length, 100.0 * diff[2] / exact.length, diff[1]));
+        // a level here and there: the stretch is steep in the faint sky, and bright star cores near clipping move most.
+        // Since 1.4 the noise reduction sets stars aside by a threshold, so a noise peak right at it can go either way
+        // with the smallest change: a few pixels in a hundred thousand (alone in the sky) move by more than 8 levels
+        MergeTest.check(diff[0] <= exact.length / 50 && diff[2] <= exact.length / 1000 && diff[3] <= exact.length / 10000,
+                String.format(Locale.US, "half floats change the photo little: %.2f%% of pixels by one level, %.3f%% by more, "
+                        + "%.4f%% by more than 8 levels (at most %d)", 100.0 * (diff[0] - diff[2]) / exact.length,
+                        100.0 * diff[2] / exact.length, 100.0 * diff[3] / exact.length, diff[1]));
 
         // 2) its master, written and read back
         Master.Meta m1 = master(s1, o1, spec, r1, start1, n1, true);
@@ -296,8 +299,9 @@ public final class LibraryTest {
     }
 
     /** Pixels that differ, the largest difference of a channel (levels), and pixels that differ by more than one level. */
+    /** Pixels that differ, the most they differ by, how many by more than a level, and by more than 8. */
     static int[] compare(int[] a, int[] b) {
-        int n = 0, mx = 0, more = 0;
+        int n = 0, mx = 0, more = 0, far = 0;
         for (int i = 0; i < a.length; i++) {
             if (a[i] == b[i]) continue;
             n++;
@@ -305,8 +309,9 @@ public final class LibraryTest {
             for (int s = 0; s < 24; s += 8) d = Math.max(d, Math.abs(((a[i] >> s) & 0xFF) - ((b[i] >> s) & 0xFF)));
             mx = Math.max(mx, d);
             if (d > 1) more++;
+            if (d > 8) far++;
         }
-        return new int[]{n, mx, more};
+        return new int[]{n, mx, more, far};
     }
 
     static boolean same(RgbImage a, RgbImage b) {
