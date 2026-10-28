@@ -58,6 +58,19 @@ public final class SettingsTest {
         check(back.size() == 1 && back.get(0).sameSettings(mine) && back.get(0).name.equals(mine.name) && back.get(0).id.equals(mine.id),
                 "preset JSON round trip: " + js);
         check(Preset.listFromJson("not json").isEmpty() && Preset.listFromJson("{\"a\":1}").isEmpty(), "junk gives no presets");
+        // keeping the meteors (1.5)
+        Preset met = Preset.find(b, Preset.BACKYARD).copy();
+        met.keepMeteors = true;
+        List<Preset> ml = new ArrayList<Preset>();
+        ml.add(met);
+        check(!met.sameSettings(Preset.find(b, Preset.BACKYARD)) && met.describe().endsWith("meteors kept")
+                && Preset.listFromJson(Preset.toJson(ml)).get(0).keepMeteors, "a preset that keeps the meteors: " + met.describe());
+        Preset all = met.copy(), all2 = met.copy();
+        all.keepSatellites = all2.keepSatellites = true;
+        all.keepMeteors = false;
+        check(all.sameSettings(all2) && all.describe().endsWith("satellites and meteors kept"), "keeping them all keeps the meteors whatever "
+                + "the meteors' own setting says");
+        check("b".equals(SettingsFile.typeOf("keepMeteors")), "the settings file carries it");
     }
 
     static void sites() {

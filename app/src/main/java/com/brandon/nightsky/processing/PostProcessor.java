@@ -65,8 +65,10 @@ public final class PostProcessor {
          */
         public SatMatch.Result streaks;
         public List<SatPredict.Track> satTracks;
-        /** Whether the named satellites' streaks were kept in the picture rather than taken out. */
-        public boolean satellitesKept;
+        /** The meteors among the streaks, in time order ({@link MeteorLog}). */
+        public List<MeteorLog.Meteor> meteors = new ArrayList<MeteorLog.Meteor>();
+        /** Whether the named satellites' streaks, and the meteors', were kept in the picture rather than taken out. */
+        public boolean satellitesKept, meteorsKept;
         /**
          * The long-exposure blend at half size (null unless {@link PostProcessor#blend}), how many frames it averages
          * and their exposure (s).
@@ -176,6 +178,8 @@ public final class PostProcessor {
     public String satellitesMissing = "no satellite data on the phone";
     /** Keep the named satellites' streaks (and meteors) in the picture, at full brightness, instead of taking them out. */
     public boolean keepSatellites;
+    /** Keep meteors on top of the stack while satellites and planes are taken out ({@link #keepSatellites} keeps both). */
+    public boolean keepMeteors;
     /** Whether streaks get corridors in the next stack (tests switch it off to compare; they're still named). */
     public boolean streakCorridors = true;
     /** Also make the long-exposure blend (C7): the plain average, where drifting clouds turn into soft streaks. */
@@ -868,8 +872,8 @@ public final class PostProcessor {
      * The streaks in the first stack's rejections: the known satellites' predicted paths tried against them and
      * named where they fit, the rest found as lines (planes, meteors, satellites the data doesn't have). Each
      * streak's frame gets a corridor along it: left out of the next stack, so the faint edges the rejection
-     * missed go too; or, for named satellites and meteors when {@link #keepSatellites}, kept on top of the stack
-     * at full brightness. True if a frame has a corridor (the stack must be made again).
+     * missed go too; or kept on top of the stack at full brightness: named satellites' with {@link #keepSatellites},
+     * meteors' with it or {@link #keepMeteors}. True if a frame has a corridor (the stack must be made again).
      */
     private boolean streaks(Output out, StreakEvidence ev, List<Unit> stacked, List<SharpStacker.Plan> plans,
                             List<UnitRecord> recs, CameraModel model) {
@@ -886,7 +890,8 @@ public final class PostProcessor {
         for (int i = 0; i < plans.size(); i++) planOf[plans.get(i).unit] = i;
         double degPerPx = Math.toDegrees(1 / (out.solution != null ? out.solution.model.fx : model.fx));
         long t0 = System.currentTimeMillis();
-        SatMatch.Result r = SatMatch.match(tracks != null ? tracks : new ArrayList<SatPredict.Track>(), planOf, ev, degPerPx, W);
+        StreakFrames frames = new StreakFrames(out, stacked, plans, recs, model);
+        SatMatch.Result r = SatMatch.match(tracks != null ? tracks : new ArrayList<SatPredict.Track>(), planOf, ev, degPerPx, W, frames);
         int edges = 0;
         for (java.util.Iterator<SatMatch.Streak> it = r.streaks.iterator(); it.hasNext(); ) {
             SatMatch.Streak s = it.next();
@@ -903,6 +908,7 @@ public final class PostProcessor {
         out.streaks = r;
         out.satTracks = tracks;
         out.satellitesKept = keepSatellites;
+        out.meteorsKept = keepSatellites || keepMeteors;
         store.log(String.format(Locale.US, "streaks: %s (%d ms)", SatMatch.describe(r), System.currentTimeMillis() - t0));
         List<List<float[]>> masks = new ArrayList<List<float[]>>(), keeps = new ArrayList<List<float[]>>();
         for (int i = 0; i < plans.size(); i++) {
@@ -913,16 +919,19 @@ public final class PostProcessor {
         for (SatMatch.Streak s : r.streaks) {
             if (Float.isNaN(s.x0) || s.plan < 0 || s.plan >= plans.size()) continue;
             float[] c = {s.x0, s.y0, s.x1, s.y1, s.halfWidth};
-            boolean keep = keepSatellites && (s.sat != null || "meteor".equals(s.kind));
+            boolean keep = kept(s);
             (keep ? keeps : masks).get(s.plan).add(c);
             if (keep) kept++;
             else masked++;
             store.log(String.format(Locale.US, "streak: unit %d %s%s, (%.0f,%.0f)-(%.0f,%.0f) +-%.0f px, %d cells%s%s",
                     s.unit, s.name(), s.kind.isEmpty() ? "" : " (" + s.kind + ")", s.x0, s.y0, s.x1, s.y1, s.halfWidth, s.cells,
-                    s.sat != null ? String.format(Locale.US, " of %d, %.1f px across, %+.1f s along, mag %.1f, elements %.1f days old",
+                    "glint".equals(s.kind) ? String.format(Locale.US, ", a flash along its predicted path (mag %.1f at its brightest "
+                            + "there), elements %.1f days old", s.mag, s.track.ageDays)
+                            : s.sat != null ? String.format(Locale.US, " of %d, %.1f px across, %+.1f s along, mag %.1f, elements %.1f days old",
                             s.expected, s.across, s.alongSec, s.mag, s.track.ageDays) : "",
                     keep ? ", kept" : ", masked"));
         }
+        out.meteors = meteors(out, r, frames, stacked, recs, degPerPx);
         if (!streakCorridors) {
             store.log("streaks: corridors switched off, the stack keeps what the rejection left");
             return false;
@@ -1067,11 +1076,7 @@ public final class PostProcessor {
         for (Unit u : stacked) {
             UnitRecord r = u.rec;
             if (r.sensorTimestampNs == 0) continue;
-            double span = r.exposure;
-            if (r.frames > 1 && t0Ns != 0) {
-                double toMid = (t0Ns + r.t * 1e9 - r.sensorTimestampNs) * 1e-9;
-                span = Math.max(r.exposure, Math.min(2 * toMid, r.exposure * 1.5 + 2));
-            }
+            double span = unitSpan(r, t0Ns);
             double jd0 = sky.jdUtc(r.sensorTimestampNs);
             ex.add(new SatPredict.Exposure(r.index, jd0, span));
             jdA = Math.min(jdA, jd0);
@@ -1390,14 +1395,208 @@ public final class PostProcessor {
                 int sx = (int) Math.floor(p[0] / c), sy = (int) Math.floor(p[1] / c);
                 if (sx < 0 || sy < 0 || sx >= cw || sy >= ch) continue;
                 seen = true;
-                float v = sensorSky[sy * cw + sx], L = sensorSkyLevel, clear = 6 * sensorSkyNoise;
-                odd = (v < OBSTRUCTION_DARK * L && L - v > clear) || (v > OBSTRUCTION_BRIGHT * L && v - L > clear);
+                odd = obstruction(sensorSky[sy * cw + sx]);
             }
             if (!seen) continue;
             samples++;
             if (odd) beside++;
         }
         return samples > 0 ? beside / (double) samples : 0;
+    }
+
+    /** Whether a streak stays in the picture: a named satellite's with {@link #keepSatellites}, a meteor's with it or {@link #keepMeteors}. */
+    private boolean kept(SatMatch.Streak s) {
+        return keepSatellites && s.sat != null || (keepSatellites || keepMeteors) && "meteor".equals(s.kind);
+    }
+
+    /** The session's list of meteors, beside its log. */
+    public static final String METEORS_CSV = "meteors.csv";
+
+    /**
+     * The meteors among the streaks ({@link MeteorLog}): measured, in time order, a line each in the log, and the
+     * list in {@link #METEORS_CSV} (made again whenever the stack is).
+     */
+    private List<MeteorLog.Meteor> meteors(Output out, SatMatch.Result r, StreakFrames frames, List<Unit> stacked,
+                                           List<UnitRecord> recs, double degPerPx) {
+        List<MeteorLog.Meteor> list = new ArrayList<MeteorLog.Meteor>();
+        double refExposure = Double.NaN;
+        for (Unit u : stacked) if (u.rec.index == out.referenceUnit) refExposure = u.rec.exposure;
+        for (SatMatch.Streak s : r.streaks) {
+            if (!"meteor".equals(s.kind) || s.plan < 0 || s.plan >= stacked.size()) continue;
+            MeteorLog.Meteor m = MeteorLog.measure(s, out.solution, frames.site, frames.jd[s.plan], degPerPx, refExposure);
+            UnitRecord rec = stacked.get(s.plan).rec;
+            if (sky != null && sky.clockValid && rec.sensorTimestampNs != 0) {
+                m.fromMs = sky.utcMs(rec.sensorTimestampNs);
+                m.toMs = m.fromMs + frames.span[s.plan] * 1000;
+            }
+            m.kept = streakCorridors && kept(s);
+            list.add(m);
+        }
+        java.util.Collections.sort(list, new java.util.Comparator<MeteorLog.Meteor>() {
+            @Override
+            public int compare(MeteorLog.Meteor a, MeteorLog.Meteor b) {
+                return a.unit - b.unit;
+            }
+        });
+        for (MeteorLog.Meteor m : list) store.log(MeteorLog.describe(m));
+        try {
+            if (!list.isEmpty() || store.readText(METEORS_CSV) != null) store.writeText(METEORS_CSV, MeteorLog.csv(list));
+        } catch (IOException e) {
+            store.log("meteors: the list couldn't be saved: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /** Whether a cell of {@link #sensorSky} is something that isn't sky: far darker than it, or far brighter. */
+    private boolean obstruction(float v) {
+        float L = sensorSkyLevel, clear = 6 * sensorSkyNoise;
+        return (v < OBSTRUCTION_DARK * L && L - v > clear) || (v > OBSTRUCTION_BRIGHT * L && v - L > clear);
+    }
+
+    /** The lowest satellites fly (km): lower ones last only hours. */
+    static final double SAT_LOW_KM = 150;
+    /** A frame's transparency at a streak's end below which a cloud may have hidden the rest. */
+    static final float CLOUD_TRANSPARENCY = 0.5f;
+    /** How far around a streak's end the sensor's obstructions are looked for (pixels). */
+    static final double OBSTRUCTION_REACH = 64;
+
+    /**
+     * The stacked frames as {@link SatMatch} tells meteors from satellites by: when each was exposed (a unit of
+     * several frames from its first frame's start to its last's end), where its own picture ends (the sensor's
+     * edges, the obstructions of {@link #sensorSky}, a cloud the frame's transparency shows), and where along the
+     * line of sight a satellite passes into or out of the Earth's shadow, and how fast one could cross the sky
+     * there (no faster than the escape speed, seen square on). Without the place or the time, nowhere: a streak
+     * that ends in open sky then counts as a meteor rather than as a satellite going into the shadow.
+     */
+    private final class StreakFrames implements SatMatch.Frames {
+        final List<SharpStacker.Plan> plans;
+        final CameraModel model;
+        final double[] start, span, jd;
+        final SatSky.Site site;
+        final SkySolver.Solution solution;
+        /** The sensor's cells that aren't sky (see {@link #obstructions}), or null. */
+        final boolean[] obstructed;
+        final double[] b = new double[3], q = new double[3], p = new double[2];
+
+        StreakFrames(Output out, List<Unit> stacked, List<SharpStacker.Plan> plans, List<UnitRecord> recs, CameraModel model) {
+            this.plans = plans;
+            this.model = model;
+            int n = plans.size();
+            start = new double[n];
+            span = new double[n];
+            jd = new double[n];
+            long t0Ns = recs.isEmpty() ? 0 : recs.get(0).sensorTimestampNs;
+            boolean timed = sky != null && sky.clockValid;
+            for (int i = 0; i < n; i++) {
+                UnitRecord r = stacked.get(i).rec;
+                span[i] = unitSpan(r, t0Ns);
+                start[i] = r.sensorTimestampNs != 0 && t0Ns != 0 ? (r.sensorTimestampNs - t0Ns) * 1e-9 : r.t - r.exposure / 2;
+                jd[i] = timed && r.sensorTimestampNs != 0 ? sky.jdUtc(r.sensorTimestampNs) + span[i] / 2 / 86400 : Double.NaN;
+            }
+            solution = out.solution;
+            obstructed = obstructions();
+            site = sky != null && sky.located() ? new SatSky.Site(Math.toRadians(sky.latDeg), Math.toRadians(sky.lonDeg),
+                    Double.isNaN(sky.altM) ? 0 : sky.altM / 1000) : null;
+        }
+
+        @Override
+        public int count() {
+            return plans.size();
+        }
+
+        @Override
+        public double start(int f) {
+            return start[f];
+        }
+
+        @Override
+        public double exposure(int f) {
+            return span[f];
+        }
+
+        @Override
+        public double inside(int f, double x, double y) {
+            SharpStacker.Plan plan = plans.get(f);
+            if (plan.transparency != null && plan.transparency.at(x, y) < CLOUD_TRANSPARENCY) return 0;
+            model.unproject(x, y, b);
+            if (plan.R != null) Rot.apply(plan.R, b[0], b[1], b[2], q);
+            else System.arraycopy(b, 0, q, 0, 3);
+            if (!model.project(q[0], q[1], q[2], p)) return 0;
+            double d = Math.min(Math.min(p[0], W - p[0]), Math.min(p[1], H - p[1]));
+            if (obstructed == null || d <= 0) return d;
+            // the nearest obstruction on the sensor
+            int c = StreakEvidence.CELL, cw = skyCellsX, ch = sensorSky.length / cw, k = (int) Math.ceil(OBSTRUCTION_REACH / c);
+            int cx = (int) Math.floor(p[0] / c), cy = (int) Math.floor(p[1] / c);
+            for (int yy = Math.max(0, cy - k); yy <= Math.min(ch - 1, cy + k); yy++) {
+                for (int xx = Math.max(0, cx - k); xx <= Math.min(cw - 1, cx + k); xx++) {
+                    if (obstructed[yy * cw + xx]) {
+                        d = Math.min(d, Math.max(0, Math.hypot((xx + 0.5) * c - p[0], (yy + 0.5) * c - p[1]) - 0.5 * c));
+                    }
+                }
+            }
+            return d;
+        }
+
+        @Override
+        public double shadowSpeed(int f, double x, double y) {
+            if (site == null || solution == null || Double.isNaN(jd[f])) return 0;
+            double[] e = SatSky.shadowExit(site.moment(jd[f]), solution.direction(x, y));
+            // where the shadow begins lower than any satellite flies, they're all in sunlight
+            if (!(e[1] >= SAT_LOW_KM) || Double.isInfinite(e[0])) return 0;
+            return Math.toDegrees(SatSky.fastest(e[1]) / e[0]);
+        }
+
+        @Override
+        public double degrees(double x0, double y0, double x1, double y1) {
+            double[] a = new double[3];
+            model.unproject(x0, y0, a);
+            model.unproject(x1, y1, b);
+            double dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+                    / Math.sqrt((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]) * (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]));
+            return Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, dot))));
+        }
+    }
+
+    /**
+     * The cells of {@link #sensorSky} that aren't sky, for where a streak may end behind something: far darker than
+     * the sky (a branch, a roof), or far brighter across most of the 5 x 5 cells around (a lit wall), which a bright
+     * star's trail through the session's average, a cell or two wide, isn't. Null without the map.
+     */
+    private boolean[] obstructions() {
+        if (sensorSky == null) return null;
+        int cw = skyCellsX, ch = sensorSky.length / cw;
+        float L = sensorSkyLevel, clear = 6 * sensorSkyNoise;
+        boolean[] m = new boolean[sensorSky.length], bright = new boolean[sensorSky.length];
+        for (int i = 0; i < m.length; i++) {
+            float v = sensorSky[i];
+            m[i] = v < OBSTRUCTION_DARK * L && L - v > clear;
+            bright[i] = v > OBSTRUCTION_BRIGHT * L && v - L > clear;
+        }
+        for (int cy = 0; cy < ch; cy++) {
+            for (int cx = 0; cx < cw; cx++) {
+                if (!bright[cy * cw + cx]) continue;
+                int n = 0, all = 0;
+                for (int y = Math.max(0, cy - 2); y <= Math.min(ch - 1, cy + 2); y++) {
+                    for (int x = Math.max(0, cx - 2); x <= Math.min(cw - 1, cx + 2); x++) {
+                        all++;
+                        if (bright[y * cw + x]) n++;
+                    }
+                }
+                if (2 * n > all) m[cy * cw + cx] = true;
+            }
+        }
+        return m;
+    }
+
+    /**
+     * How long a unit's exposure spanned (seconds): a unit of several frames, from its first frame's start to its
+     * last's end, which the gaps between them make longer than its exposure ({@code t0Ns}: the session's first
+     * frame's timestamp; 0 if unknown).
+     */
+    static double unitSpan(UnitRecord r, long t0Ns) {
+        if (r.frames <= 1 || t0Ns == 0 || r.sensorTimestampNs == 0) return r.exposure;
+        double toMid = (t0Ns + r.t * 1e9 - r.sensorTimestampNs) * 1e-9;
+        return Math.max(r.exposure, Math.min(2 * toMid, r.exposure * 1.5 + 2));
     }
 
     /** A clear frame near the middle of the session: most star light, with a mild preference for the middle. */

@@ -117,6 +117,8 @@ final class SessionController {
         boolean fromViewer;
         /** Keep satellite streaks (and meteors) in the picture, and count bright passes down aloud. */
         boolean keepSatellites;
+        /** Keep meteors in the picture while satellites and planes are taken out. */
+        boolean keepMeteors;
         /** Start no earlier than this (Unix ms; 0 for as soon as it's ready): the quietest stretch, chosen on the home screen. */
         long startAtMs;
         /** Why it starts at {@link #startAtMs}, for the screen and the log; empty for the quietest stretch for satellites. */
@@ -571,6 +573,7 @@ final class SessionController {
         s.preflight = false;
         s.rejection = p.getProperty("rejection", "AUTO");
         s.keepSatellites = "true".equals(p.getProperty("keepSatellites"));
+        s.keepMeteors = "true".equals(p.getProperty("keepMeteors"));
         s.quick = "true".equals(p.getProperty("quick"));
         s.siteId = p.getProperty("site.id", "");
         s.siteName = p.getProperty("site.name", "");
@@ -3456,6 +3459,7 @@ final class SessionController {
         p.setProperty("plan", plan.describe());
         p.setProperty("rejection", Rejection.Method.parse(settings.rejection).name());
         p.setProperty("keepSatellites", Boolean.toString(settings.keepSatellites));
+        p.setProperty("keepMeteors", Boolean.toString(settings.keepMeteors));
         p.setProperty("blend", Boolean.toString(settings.blend));
         p.setProperty("quick", Boolean.toString(settings.quick));
         if (!settings.presetId.isEmpty()) {
@@ -3536,7 +3540,8 @@ final class SessionController {
         }
         if (!settings.trails) {
             for (String l : satDataLog.split("\n")) if (!l.isEmpty()) store.log(l);
-            store.log(settings.keepSatellites ? "satellites: kept in the picture (as set), bright passes counted down"
+            store.log(settings.keepSatellites ? "satellites: kept in the picture with the meteors (as set), bright passes counted down"
+                    : settings.keepMeteors ? "satellites: their streaks are taken out of the stack; meteors are kept (as set)"
                     : "satellites: their streaks are taken out of the stack");
         }
         if (!waitLog.isEmpty()) store.log(waitLog);
@@ -4372,6 +4377,7 @@ final class SessionController {
         SessionSky sk = skyFor(pp, props, st, trails);
         // the satellites: named where they crossed, and taken out (or kept, as set when it started)
         pp.keepSatellites = "true".equals(props.getProperty("keepSatellites"));
+        pp.keepMeteors = "true".equals(props.getProperty("keepMeteors"));
         // the cloud-blur version (C7), and quick developing (Quick look), as set when it started
         pp.blend = "true".equals(props.getProperty("blend"));
         boolean quick = "true".equals(props.getProperty("quick"));
@@ -5020,6 +5026,7 @@ final class SessionController {
         Recipe r = Recipe.single(st.id(), trails);
         r.rejection = Rejection.Method.parse(props.getProperty("rejection")).name();
         r.keepSatellites = "true".equals(props.getProperty("keepSatellites"));
+        r.keepMeteors = "true".equals(props.getProperty("keepMeteors"));
         r.quick = "true".equals(props.getProperty("quick"));
         r.brightness = brightness;
         r.app = BuildInfo.VERSION;

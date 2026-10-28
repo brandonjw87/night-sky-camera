@@ -27,6 +27,8 @@ public final class Preset {
     /** Outlier rejection (a Rejection.Method name; AUTO chooses from the session). */
     public String rejection = "AUTO";
     public boolean keepSatellites;
+    /** Keep meteors in the picture while satellites and planes are taken out ({@link #keepSatellites} keeps both). */
+    public boolean keepMeteors;
     /** Keep capturing until the session's length of clear sky is in, for at most three times as long (A3). */
     public boolean collectClear;
     /** Also save the long-exposure blend: the plain average, where drifting clouds turn into soft streaks (C7). */
@@ -47,6 +49,7 @@ public final class Preset {
         p.saveDng = saveDng;
         p.rejection = rejection;
         p.keepSatellites = keepSatellites;
+        p.keepMeteors = keepMeteors;
         p.collectClear = collectClear;
         p.blend = blend;
         p.quick = quick;
@@ -94,11 +97,16 @@ public final class Preset {
         return null;
     }
 
+    /** Whether meteors stay in the picture (on their own, or with the satellites). */
+    public boolean keptMeteors() {
+        return keepMeteors || keepSatellites;
+    }
+
     /** Whether the two hold the same settings (names aside). */
     public boolean sameSettings(Preset o) {
         return o != null && trails == o.trails && durationMin == o.durationMin && Math.abs(brightness - o.brightness) < 0.005f
                 && saveDng == o.saveDng && rejection.equalsIgnoreCase(o.rejection) && keepSatellites == o.keepSatellites
-                && collectClear == o.collectClear && blend == o.blend && quick == o.quick;
+                && keptMeteors() == o.keptMeteors() && collectClear == o.collectClear && blend == o.blend && quick == o.quick;
     }
 
     /** "Deep sky, 10 min, brightness 55%, RAW too" and what's special, for the screen. */
@@ -111,7 +119,8 @@ public final class Preset {
                 .append(3 * durationMin).append(")");
         if (blend) sb.append(", also a cloud-blur version");
         if (quick) sb.append(", quick developing and a half-size photo");
-        if (keepSatellites) sb.append(", satellites kept");
+        if (keepSatellites) sb.append(", satellites and meteors kept");
+        else if (keepMeteors) sb.append(", meteors kept");
         if (!"AUTO".equalsIgnoreCase(rejection)) sb.append(", rejection ").append(rejection.toLowerCase(Locale.US).replace('_', ' '));
         return sb.toString();
     }
@@ -121,6 +130,7 @@ public final class Preset {
         j.put("id", id).put("name", name);
         j.put("trails", trails).put("durationMin", durationMin).put("brightness", (double) brightness, 3);
         j.put("saveDng", saveDng).put("rejection", rejection).put("keepSatellites", keepSatellites);
+        if (keepMeteors) j.put("keepMeteors", true);
         j.put("collectClear", collectClear).put("blend", blend).put("quick", quick);
         j.end();
     }
@@ -135,6 +145,7 @@ public final class Preset {
         p.saveDng = o.bool("saveDng", true);
         p.rejection = o.str("rejection", "AUTO");
         p.keepSatellites = o.bool("keepSatellites", false);
+        p.keepMeteors = o.bool("keepMeteors", false);
         p.collectClear = o.bool("collectClear", false);
         p.blend = o.bool("blend", false);
         p.quick = o.bool("quick", false);

@@ -111,6 +111,7 @@ final class Presets {
         s.saveDng = p.saveDng;
         s.rejection = p.rejection;
         s.keepSatellites = p.keepSatellites;
+        s.keepMeteors = p.keepMeteors;
         s.blend = p.blend;
         s.quick = p.quick;
         // collect N clear minutes (A3): the session's length of clear sky, for at most three times as long

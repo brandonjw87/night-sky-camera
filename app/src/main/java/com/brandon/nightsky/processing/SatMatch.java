@@ -40,8 +40,19 @@ public final class SatMatch {
         public float mag = Float.NaN;
         /** The predicted track (named streaks; for drawing), else null. */
         public SatPredict.Track track;
-        /** A guess for an unidentified streak: "plane" (blinking), "meteor" (short, one frame) or "" (unknown). */
+        /**
+         * What it is: for an unidentified streak "plane" (blinking), "meteor" (in one frame, where no satellite could
+         * have left it) or "" (unknown); for a named one "glint" when only its flash of sunlight was seen, else "".
+         */
         public String kind = "";
+        /** Where the evidence of an unidentified streak begins and ends (stack pixels; its corridor reaches beyond). */
+        public float sx0 = Float.NaN, sy0 = Float.NaN, sx1 = Float.NaN, sy1 = Float.NaN;
+        /**
+         * Its light along it (unidentified streaks): the excess over the stack of its frame's green samples rejected
+         * there, summed across it, per cell's length ({@link StreakEvidence#CELL} px) from (sx0, sy0) to (sx1, sy1);
+         * only the samples bright enough to be rejected count. Null if not measured.
+         */
+        public float[] light;
 
         public String name() {
             return sat != null ? sat.displayName() : "unidentified streak";
@@ -50,6 +61,48 @@ public final class SatMatch {
         public double lengthPx() {
             return Math.hypot(x1 - x0, y1 - y0);
         }
+
+        /** Length of the part the evidence shows (the corridor's for a named streak). */
+        public double seenLengthPx() {
+            return Float.isNaN(sx0) ? lengthPx() : Math.hypot(sx1 - sx0, sy1 - sy0);
+        }
+
+        /** Its light summed along it (NaN if not measured). */
+        public double totalLight() {
+            if (light == null) return Double.NaN;
+            double t = 0;
+            for (float v : light) t += v;
+            return t;
+        }
+    }
+
+    /**
+     * What the kinds of unidentified streaks are judged by: when each stacked frame was taken, where its own
+     * picture ends, and where a satellite could have passed into or out of the Earth's shadow.
+     */
+    public interface Frames {
+        /** Frames (plans) in the stack. */
+        int count();
+
+        /** When plan f's exposure began (seconds from a fixed moment), and how long it was. */
+        double start(int f);
+
+        double exposure(int f);
+
+        /**
+         * How far stack pixel (x, y) lies inside plan f's own picture (pixels): from the nearest of its edges and of
+         * anything in it that isn't clear sky (a roof, a branch, a cloud); 0 or less on or outside them.
+         */
+        double inside(int f, double x, double y);
+
+        /**
+         * The fastest (degrees a second) a satellite could have crossed the sky where it passed into or out of the
+         * Earth's shadow at stack pixel (x, y) during plan f; 0 where none could have.
+         */
+        double shadowSpeed(int f, double x, double y);
+
+        /** The angle (degrees) on the sky between two stack pixels. */
+        double degrees(double x0, double y0, double x1, double y1);
     }
 
     /** What was found in a session. */
@@ -91,8 +144,10 @@ public final class SatMatch {
      * @param ev        the first stack's evidence (not changed)
      * @param degPerPx  the picture's scale at its centre
      * @param width     the picture's width (pixels)
+     * @param frames    the frames' times and pictures, for telling meteors from satellites; null for a simpler guess
      */
-    public static Result match(List<SatPredict.Track> tracks, int[] planOf, StreakEvidence ev, double degPerPx, int width) {
+    public static Result match(List<SatPredict.Track> tracks, int[] planOf, StreakEvidence ev, double degPerPx, int width,
+                               Frames frames) {
         Result r = new Result();
         StreakEvidence left = ev.copy();
         List<SatPredict.Track> order = new ArrayList<SatPredict.Track>(tracks);
@@ -134,7 +189,7 @@ public final class SatMatch {
                 r.streaks.add(s);
             }
         }
-        guessKinds(r.streaks, width);
+        guessKinds(r.streaks, width, degPerPx, frames, tracks, planOf);
         return r;
     }
 
@@ -486,6 +541,21 @@ public final class SatMatch {
             }
             s.halfWidth = (float) ((spread + 1.5) * c + 2);
             s.kind = blinks(on, bestA, bestB) ? "plane" : "";
+            // where the evidence ends, and the light along it: the corridor's cells, cell by cell along the line
+            s.sx0 = (float) ((ox + ux * t0) * c);
+            s.sy0 = (float) ((oy + uy * t0) * c);
+            s.sx1 = (float) ((ox + ux * t1) * c);
+            s.sy1 = (float) ((oy + uy * t1) * c);
+            int bins = (int) Math.floor(t1 - t0) + 1;
+            s.light = new float[bins];
+            for (int i = 0; i < n; i++) {
+                if (gone[i]) continue;
+                double d = (px[i] + 0.5) * cs[a] + (py[i] + 0.5) * sn[a] - rho;
+                double t = (px[i] + 0.5) * -sn[a] + (py[i] + 0.5) * cs[a];
+                if (Math.abs(d) > spread + 1.5 || t < t0 - 0.5 || t > t1 + 0.5) continue;
+                int bin = Math.max(0, Math.min(bins - 1, (int) Math.floor(t - t0 + 0.5)));
+                s.light[bin] += ev.excess(f, px[i], py[i]);
+            }
             out.add(s);
             // the whole corridor's cells go (a thick trail's edge cells would otherwise come back as a second line)
             for (int i = 0; i < n; i++) {
@@ -537,20 +607,127 @@ public final class SatMatch {
         }
     }
 
+    /** Fastest a satellite crosses the sky (degrees a second): a low one overhead. */
+    static final double SAT_MAX_DEG_S = 2.5;
+    /** Frames further apart than this (seconds) don't show what crossed between them. */
+    static final double MAX_GAP_S = 3;
+    /** An end this close to the edge of its frame's picture (pixels, beyond the streak's half width) may run out of it. */
+    static final double EDGE_PX = 3 * StreakEvidence.CELL;
+
     /**
-     * Unidentified streaks: one that continues into the next or the last frame along the same line is a plane
-     * or a satellite missing from the data; a short one in a single frame, a meteor.
+     * Unidentified streaks (a blinking plane is found with the line). One that continues into the next or the last
+     * frame along the same line is a satellite missing from the data, or a plane. One along a satellite's predicted
+     * path is that satellite flashing in the sunlight (a glint) and is named after it. What is left of a single frame
+     * is a meteor where no satellite could have left it: longer than the fastest satellite goes in the exposure, or
+     * with ends no satellite's could have: a satellite's light begins and ends at an edge of the picture (or at
+     * something in it that isn't clear sky: a roof, a branch, a cloud), where it passes into or out of the Earth's
+     * shadow (at most once in an exposure), or as the exposure begins or ends, which only a session's first or last
+     * frame (or one beside a gap) leaves unseen: otherwise the frame next to it would show the satellite too.
+     * Without the frames: short ones are meteors.
      */
-    static void guessKinds(List<Streak> all, int width) {
+    static void guessKinds(List<Streak> all, int width, double degPerPx, Frames frames, List<SatPredict.Track> tracks,
+                           int[] planOf) {
         for (Streak s : all) {
             if (s.sat != null || !s.kind.isEmpty()) continue;
             boolean continues = false;
             for (Streak o : all) {
-                if (o == s || o.sat != null || Math.abs(o.plan - s.plan) != 1) continue;
+                if (o == s || Math.abs(o.plan - s.plan) != 1) continue;
                 if (collinear(s, o)) continues = true;
             }
-            if (!continues && s.lengthPx() < 0.15 * width) s.kind = "meteor";
+            if (continues) continue;
+            SatPredict.Track g = glint(s, tracks, planOf, degPerPx);
+            if (g != null) {
+                s.sat = g.sat;
+                s.track = g;
+                s.kind = "glint";
+                s.mag = g.brightest();
+                continue;
+            }
+            if (frames == null) {
+                if (s.lengthPx() < 0.15 * width) s.kind = "meteor";
+                continue;
+            }
+            if (!satellitePossible(s, frames)) s.kind = "meteor";
         }
+    }
+
+    /** Whether a satellite could have left streak s in its frame alone (see {@link #guessKinds}). */
+    public static boolean satellitePossible(Streak s, Frames fr) {
+        int f = s.plan;
+        double ax = Float.isNaN(s.sx0) ? s.x0 : s.sx0, ay = Float.isNaN(s.sx0) ? s.y0 : s.sy0;
+        double bx = Float.isNaN(s.sx0) ? s.x1 : s.sx1, by = Float.isNaN(s.sx0) ? s.y1 : s.sy1;
+        double deg = fr.degrees(ax, ay, bx, by), t = fr.exposure(f);
+        if (deg > SAT_MAX_DEG_S * t) return false;
+        // a stacked frame just before it, or just after it, would show the satellite as this one's exposure began or ended
+        double s0 = fr.start(f), s1 = s0 + fr.exposure(f);
+        boolean before = false, after = false;
+        for (int g = 0; g < fr.count(); g++) {
+            if (g == f) continue;
+            double g0 = fr.start(g), g1 = g0 + fr.exposure(g);
+            before |= g0 < s0 && g1 >= s0 - MAX_GAP_S;
+            after |= g1 > s1 && g0 <= s1 + MAX_GAP_S;
+        }
+        double near = EDGE_PX + s.halfWidth;
+        // how each end could be a satellite's: 0 an edge, 1 the shadow, 2 the exposure's start, 3 its end
+        // (in the shadow's case, a satellite as high as the shadow begins there, fast enough to have left the streak)
+        boolean[] a = {fr.inside(f, ax, ay) <= near, deg <= fr.shadowSpeed(f, ax, ay) * t, !before, !after};
+        boolean[] b = {fr.inside(f, bx, by) <= near, deg <= fr.shadowSpeed(f, bx, by) * t, !before, !after};
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                // both ends at edges, yes; but one shadow, one start and one end at most
+                if (a[i] && b[j] && (i != j || i == 0)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The predicted track, in the streak's frame, whose path it lies along (within the track's uncertainty across,
+     * in direction, and between where the satellite was as the exposure began and ended, give or take its timing
+     * uncertainty): a satellite flashing in the sunlight, which the fit to the whole path couldn't name. Null if none.
+     */
+    static SatPredict.Track glint(Streak s, List<SatPredict.Track> tracks, int[] planOf, double degPerPx) {
+        if (tracks == null) return null;
+        double ax = Float.isNaN(s.sx0) ? s.x0 : s.sx0, ay = Float.isNaN(s.sx0) ? s.y0 : s.sy0;
+        double bx = Float.isNaN(s.sx0) ? s.x1 : s.sx1, by = Float.isNaN(s.sx0) ? s.y1 : s.sy1;
+        double len = Math.hypot(bx - ax, by - ay);
+        if (len < 1) return null;
+        double ux = (bx - ax) / len, uy = (by - ay) / len, mx = (ax + bx) / 2, my = (ay + by) / 2;
+        SatPredict.Track best = null;
+        double bestD = Double.MAX_VALUE;
+        for (SatPredict.Track t : tracks) {
+            if (t.unit != s.unit || t.unit < 0 || t.unit >= planOf.length || planOf[t.unit] != s.plan) continue;
+            int shifts = (int) Math.ceil(Math.min(t.alongTol(), t.margin) / SatPredict.FINE_S);
+            int i0 = Math.max(0, t.in0 - shifts), i1 = Math.min(t.jd.length - 1, t.in1 + shifts);
+            double tol = t.acrossTolDeg() / degPerPx + s.halfWidth + 2 * StreakEvidence.CELL;
+            // the nearest point of the path to the streak's middle, and the path's direction there
+            double d = Double.MAX_VALUE, cosA = 0;
+            boolean aOn = false, bOn = false;
+            for (int i = i0; i < i1; i++) {
+                float x0 = t.x[i], y0 = t.y[i], x1 = t.x[i + 1], y1 = t.y[i + 1];
+                if (Float.isNaN(x0) || Float.isNaN(x1)) continue;
+                double dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
+                if (l2 < 1e-9) continue;
+                double e = distance(mx, my, x0, y0, dx, dy, l2);
+                if (e < d) {
+                    d = e;
+                    cosA = Math.abs(ux * dx + uy * dy) / Math.sqrt(l2);
+                }
+                aOn |= distance(ax, ay, x0, y0, dx, dy, l2) <= tol;
+                bOn |= distance(bx, by, x0, y0, dx, dy, l2) <= tol;
+            }
+            if (d <= tol && aOn && bOn && cosA >= Math.cos(Math.toRadians(5)) && d < bestD) {
+                bestD = d;
+                best = t;
+            }
+        }
+        return best;
+    }
+
+    /** Distance from (px, py) to the segment from (x0, y0) along (dx, dy), of squared length l2. */
+    private static double distance(double px, double py, double x0, double y0, double dx, double dy, double l2) {
+        double u = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / l2));
+        return Math.hypot(px - x0 - u * dx, py - y0 - u * dy);
     }
 
     private static boolean collinear(Streak a, Streak b) {

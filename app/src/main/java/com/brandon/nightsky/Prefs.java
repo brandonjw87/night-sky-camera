@@ -225,6 +225,7 @@ final class Prefs {
         p.saveDng = saveDng();
         p.rejection = rejection();
         p.keepSatellites = keepSatellites();
+        p.keepMeteors = keepMeteors();
         p.collectClear = collectClear();
         p.blend = blend();
         p.quick = quick();
@@ -235,7 +236,7 @@ final class Prefs {
     void applyPreset(Preset p) {
         sp.edit().putBoolean("trails", p.trails).putInt("durationMin", p.durationMin).putFloat("brightness", p.brightness)
                 .putBoolean("saveDng", p.saveDng).putString("rejection", p.rejection).putBoolean("keepSatellites", p.keepSatellites)
-                .putBoolean("collectClear", p.collectClear).putBoolean("blend", p.blend).putBoolean("quick", p.quick)
+                .putBoolean("keepMeteors", p.keepMeteors).putBoolean("collectClear", p.collectClear).putBoolean("blend", p.blend).putBoolean("quick", p.quick)
                 .putString("preset", p.id).apply();
     }
 
@@ -376,6 +377,15 @@ final class Prefs {
 
     void setKeepSatellites(boolean v) {
         sp.edit().putBoolean("keepSatellites", v).apply();
+    }
+
+    /** Keep meteors in the picture (satellites and planes still taken out); {@link #keepSatellites} keeps them too. */
+    boolean keepMeteors() {
+        return sp.getBoolean("keepMeteors", false);
+    }
+
+    void setKeepMeteors(boolean v) {
+        sp.edit().putBoolean("keepMeteors", v).apply();
     }
 
     /** Choices for {@link #keepFramesGb} (0: off). */

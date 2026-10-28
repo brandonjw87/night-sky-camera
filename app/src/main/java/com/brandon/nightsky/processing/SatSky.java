@@ -171,6 +171,42 @@ public final class SatSky {
         return true;
     }
 
+    /**
+     * Where the line of sight in J2000 direction {@code j2000} leaves the Earth's shadow: {distance along it (km),
+     * height there (km above the Earth's equatorial radius)}. A satellite seen along it below that height is in the
+     * shadow, above it in sunlight, and one at it passes into or out of the shadow. {0, 0} if the observer is in
+     * sunlight; infinite if the line never leaves.
+     */
+    public static double[] shadowExit(Moment m, double[] j2000) {
+        double[] e = m.ecefToJ2000, o = m.site.obs, s = m.sun;
+        // J2000 to Earth-fixed: the transpose
+        double dx = e[0] * j2000[0] + e[3] * j2000[1] + e[6] * j2000[2];
+        double dy = e[1] * j2000[0] + e[4] * j2000[1] + e[7] * j2000[2];
+        double dz = e[2] * j2000[0] + e[5] * j2000[1] + e[8] * j2000[2];
+        double os = o[0] * s[0] + o[1] * s[1] + o[2] * s[2], ds = dx * s[0] + dy * s[1] + dz * s[2];
+        // the parts across the Sun's direction, where the cylinder's radius applies
+        double ox = o[0] - os * s[0], oy = o[1] - os * s[1], oz = o[2] - os * s[2];
+        double px = dx - ds * s[0], py = dy - ds * s[1], pz = dz - ds * s[2];
+        double rr = Astro.EARTH_RADIUS_KM * Astro.EARTH_RADIUS_KM, oo = ox * ox + oy * oy + oz * oz;
+        if (os > 0 || oo > rr) return new double[]{0, 0};
+        double pp = px * px + py * py + pz * pz, op = ox * px + oy * py + oz * pz;
+        double r = Double.POSITIVE_INFINITY;
+        // out through the cylinder's side (the observer is inside it, so one root is ahead), or its sunward end
+        if (pp > 1e-12) r = (-op + Math.sqrt(op * op - pp * (oo - rr))) / pp;
+        if (ds > 0) r = Math.min(r, -os / ds);
+        if (Double.isInfinite(r)) return new double[]{r, r};
+        double x = o[0] + r * dx, y = o[1] + r * dy, z = o[2] + r * dz;
+        return new double[]{r, Math.sqrt(x * x + y * y + z * z) - Astro.EARTH_RADIUS_KM};
+    }
+
+    /** Gravitational parameter of the Earth (km^3/s^2). */
+    static final double MU_KM3_S2 = 398600.4418;
+
+    /** The fastest anything in orbit goes at height {@code hKm} (km/s): the escape speed there. */
+    public static double fastest(double hKm) {
+        return Math.sqrt(2 * MU_KM3_S2 / (Astro.EARTH_RADIUS_KM + hKm));
+    }
+
     /** Magnitude at {@code rangeKm} and phase angle {@code ph} (radians) of a satellite of standard magnitude {@code stdMag}. */
     public static double magnitude(double stdMag, double rangeKm, double ph) {
         double f = ((Math.PI - ph) * Math.cos(ph) + Math.sin(ph)) / Math.PI;

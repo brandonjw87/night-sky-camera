@@ -98,6 +98,35 @@ public final class ReportCard {
     /** The streaks found: the satellites named (and when), planes, meteors, and what was done with them; "" if none. */
     public String streaks = "";
     public final List<Streak> streakList = new ArrayList<Streak>();
+    /** The meteors caught: how many, from which showers, the brightest, and what was done with them; "" if none. */
+    public String meteors = "";
+    public final List<Meteor> meteorList = new ArrayList<Meteor>();
+
+    /** A meteor caught. */
+    public static final class Meteor {
+        /** Its frame's local time ("9:43 PM"), what it was ("a Geminid"), where it was ("from high in the east to the south"). */
+        public String time = "", what = "", where = "";
+        /** Its estimated magnitude at its brightest and its length (degrees); NaN where unknown. */
+        public double mag = Double.NaN, lengthDeg = Double.NaN;
+        public boolean kept;
+
+        /** "9:43 PM: a Geminid, about magnitude -2, 12 degrees long, from high in the east to the south". */
+        public String line() {
+            StringBuilder sb = new StringBuilder();
+            if (!time.isEmpty()) sb.append(time).append(": ");
+            sb.append(what);
+            if (!Double.isNaN(mag)) sb.append(String.format(Locale.US, ", about magnitude %s", signed(Math.round(mag))));
+            if (!Double.isNaN(lengthDeg)) sb.append(String.format(Locale.US, ", %d degree%s long", Math.round(lengthDeg),
+                    Math.round(lengthDeg) == 1 ? "" : "s"));
+            if (!where.isEmpty()) sb.append(", ").append(where);
+            return sb.toString();
+        }
+    }
+
+    /** A whole number with a real minus sign ("-2" as "\u22122"). */
+    static String signed(long v) {
+        return v < 0 ? "\u2212" + (-v) : Long.toString(v);
+    }
 
     /** A satellite named in the picture, or a kind of unnamed streak (name "plane", "meteor" or "unknown"). */
     public static final class Streak {
@@ -172,6 +201,7 @@ public final class ReportCard {
         }
         r.skyGuide();
         r.streaks();
+        r.meteors();
         r.tipAndSpeech();
         return r;
     }
@@ -1277,7 +1307,7 @@ public final class ReportCard {
             Streak k = new Streak();
             k.name = kinds[i];
             k.frames = counts[i];
-            k.kept = o.satellitesKept && "meteor".equals(kinds[i]);
+            k.kept = o.meteorsKept && "meteor".equals(kinds[i]);
             streakList.add(k);
         }
         if (r.streaks.isEmpty()) {
@@ -1309,10 +1339,69 @@ public final class ReportCard {
             else anyOut = true;
         }
         sb.append(anyKept && !anyOut ? " Kept in the picture at full brightness, as asked."
-                : anyKept ? " The satellites and meteors were kept, as asked; the rest were taken out."
+                : anyKept ? (o.satellitesKept ? " The satellites and meteors were kept, as asked; the rest were taken out."
+                : " The meteors were kept, as asked; the rest were taken out.")
                 : " All were taken out of the stack, faint edges included.");
         if (list.isEmpty() && !note.isEmpty()) sb.append(" (Satellites weren't named: ").append(note).append(".)");
         streaks = sb.toString();
+    }
+
+    /**
+     * The meteors ({@link MeteorLog}): how many, by shower, the brightest, and whether they stayed in the picture;
+     * then each one, in time order.
+     */
+    private void meteors() {
+        PostProcessor.Output o = in.out;
+        List<MeteorLog.Meteor> list = o.meteors;
+        if (list == null || list.isEmpty()) return;
+        Map<String, Integer> byShower = new LinkedHashMap<String, Integer>();
+        Map<String, String[]> words = new HashMap<String, String[]>();
+        int kept = 0;
+        MeteorLog.Meteor brightest = null;
+        boolean attributed = false;
+        for (MeteorLog.Meteor m : list) {
+            String key = m.shower != null ? m.shower.code : "";
+            Integer c = byShower.get(key);
+            byShower.put(key, c == null ? 1 : c + 1);
+            if (m.shower != null) words.put(key, new String[]{m.shower.member, m.shower.name});
+            attributed |= m.attributed;
+            if (m.kept) kept++;
+            if (!Double.isNaN(m.mag) && (brightest == null || m.mag < brightest.mag)) brightest = m;
+            Meteor k = new Meteor();
+            k.time = whenOf(m.unit);
+            k.what = m.what();
+            k.where = m.where();
+            k.mag = m.mag;
+            k.lengthDeg = m.lengthDeg;
+            k.kept = m.kept;
+            meteorList.add(k);
+        }
+        int n = list.size();
+        StringBuilder sb = new StringBuilder();
+        if (!attributed) {
+            sb.append(n == 1 ? "One meteor." : n + " meteors.");
+        } else {
+            List<String> parts = new ArrayList<String>();
+            for (Map.Entry<String, Integer> e : byShower.entrySet()) {
+                if (e.getKey().isEmpty()) continue;
+                String[] w = words.get(e.getKey());
+                parts.add(e.getValue() == 1 ? "1 " + w[0] : e.getValue() + " " + w[1]);
+            }
+            Integer spo = byShower.get("");
+            if (spo != null) parts.add(spo + " sporadic");
+            sb.append(n == 1 ? "One meteor: " : n + " meteors: ").append(n == 1 ? list.get(0).what() : SkyGuide.list(parts)).append('.');
+        }
+        if (brightest != null) {
+            String t = whenOf(brightest.unit);
+            sb.append(n == 1 ? " About magnitude " : " The brightest" + (t.isEmpty() ? "" : ", at " + t + ",") + " was about magnitude ")
+                    .append(signed(Math.round(brightest.mag))).append('.');
+        }
+        sb.append(kept == n ? (n == 1 ? " Kept in the picture at full brightness, as asked." : " All kept in the picture at full brightness, as asked.")
+                : kept > 0 ? " " + kept + " kept in the picture, as asked."
+                : o.meteorsKept ? " Quick developing couldn't keep " + (n == 1 ? "it" : "them") + "; developing again in full (Edit) keeps "
+                + (n == 1 ? "it." : "them.")
+                : " Taken out with the other streaks; Keep meteors, in the settings, leaves them in.");
+        meteors = sb.toString();
     }
 
     /**
@@ -1434,6 +1523,20 @@ public final class ReportCard {
         sb.append('.');
         if (top != null && top.impact >= 0.05) sb.append(' ').append(top.spoken);
         else if (top == null && n > 1 && !starTrails) sb.append(" A clear, steady session.");
+        List<MeteorLog.Meteor> ms = in.out.meteors;
+        if (ms != null && !ms.isEmpty()) {
+            MeteorShowers.Shower main = null;
+            int members = 0;
+            for (MeteorLog.Meteor m : ms) {
+                if (m.shower == null) continue;
+                if (main == null) main = m.shower;
+                if (m.shower == main) members++;
+            }
+            if (ms.size() == 1) sb.append(" Caught ").append(ms.get(0).what()).append('.');
+            else sb.append(" Caught ").append(ms.size()).append(" meteors").append(main == null ? "" : members == ms.size()
+                    ? ", all " + main.name : members == 1 ? ", one of them " + MeteorLog.article(main.member) + " " + main.member
+                    : ", " + members + " of them " + main.name).append('.');
+        }
         spoken = sb.toString();
     }
 
@@ -1496,6 +1599,16 @@ public final class ReportCard {
                 if (k.norad != 0) j.put("norad", k.norad);
                 if (!k.time.isEmpty()) j.put("time", k.time);
                 if (!Double.isNaN(k.mag)) j.put("mag", round(k.mag, 1));
+                j.end();
+            }
+            j.end().end();
+        }
+        if (!meteors.isEmpty()) {
+            j.obj("meteors").put("text", meteors).arr("items");
+            for (Meteor k : meteorList) {
+                j.obj().put("time", k.time).put("what", k.what).put("where", k.where).put("kept", k.kept);
+                if (!Double.isNaN(k.mag)) j.put("mag", round(k.mag, 1));
+                if (!Double.isNaN(k.lengthDeg)) j.put("lengthDeg", round(k.lengthDeg, 1));
                 j.end();
             }
             j.end().end();
@@ -1571,6 +1684,20 @@ public final class ReportCard {
                 r.streakList.add(k);
             }
         }
+        JsonTree.Obj me = o.obj("meteors");
+        if (me != null) {
+            r.meteors = me.str("text", "");
+            for (JsonTree.Obj x : me.objs("items")) {
+                Meteor k = new Meteor();
+                k.time = x.str("time", "");
+                k.what = x.str("what", "");
+                k.where = x.str("where", "");
+                k.mag = x.num("mag", Double.NaN);
+                k.lengthDeg = x.num("lengthDeg", Double.NaN);
+                k.kept = x.bool("kept", false);
+                r.meteorList.add(k);
+            }
+        }
         r.conditions = o.str("conditions", "");
         r.tip = o.str("tip", "");
         r.spoken = o.str("spoken", "");
@@ -1596,6 +1723,8 @@ public final class ReportCard {
         if (!conditions.isEmpty()) sb.append(conditions).append('\n');
         if (sky != null) for (String s : sky.lines) sb.append(s).append('\n');
         if (!streaks.isEmpty()) sb.append(streaks).append('\n');
+        if (!meteors.isEmpty()) sb.append("Meteors: ").append(meteors).append('\n');
+        for (Meteor k : meteorList) sb.append("  ").append(k.line()).append('\n');
         sb.append("Frames:");
         for (Frame f : frames) {
             sb.append(String.format(Locale.US, " %d:%d", f.index, f.score));

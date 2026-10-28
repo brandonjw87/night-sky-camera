@@ -874,7 +874,7 @@ public final class SharpStacker {
                                 if (wk.keep[i]) continue;
                                 vals[kv + idx[i] * 3 + c] = Half.REJECTED;
                                 rejF[idx[i]]++;
-                                if (eb != null && wk.v[i] > cm) eb.add(idx[i], x, y);
+                                if (eb != null && wk.v[i] > cm) eb.add(idx[i], x, y, c == 1 ? wk.v[i] - cm : 0f);
                             }
                             centre[k3 + c] = cm;
                         }
@@ -1256,7 +1256,7 @@ public final class SharpStacker {
                                 if (out) {
                                     rej++;
                                     if (dv > 0) {
-                                        if (eb != null) eb.add(f, x, y);
+                                        if (eb != null) eb.add(f, x, y, c == 1 ? dv : 0f);
                                         if (kept && !(trail[k] >= v)) trail[k] = v;
                                     }
                                     // the tail of the noise, not an outlier: the noise gain allows for it

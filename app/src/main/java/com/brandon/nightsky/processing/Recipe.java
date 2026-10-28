@@ -66,6 +66,8 @@ public final class Recipe {
     /** White balance from the catalogue stars (F4) when there are enough of them. */
     public boolean colourFromStars = true;
     public boolean keepSatellites;
+    /** Keep meteors while satellites and planes are taken out ({@link #keepSatellites} keeps both). */
+    public boolean keepMeteors;
     /** Quick developing (Quick look): one stacking pass. */
     public boolean quick;
 
@@ -133,6 +135,7 @@ public final class Recipe {
         r.rejection = rejection;
         r.colourFromStars = colourFromStars;
         r.keepSatellites = keepSatellites;
+        r.keepMeteors = keepMeteors;
         r.quick = quick;
         r.brightness = brightness;
         r.stretch = stretch;
@@ -192,6 +195,7 @@ public final class Recipe {
         pp.rejection = Rejection.Method.parse(rejection);
         pp.colorCalibration = colourFromStars;
         pp.keepSatellites = keepSatellites;
+        pp.keepMeteors = keepMeteors;
         if (quick) {
             pp.patternCleanup = false;
             pp.streakCorridors = false;
@@ -252,7 +256,9 @@ public final class Recipe {
         if (freezeGround != was.freezeGround) c.add(freezeGround ? "the ground kept still" : "the ground lined up with the stars");
         if (!rejection.equals(was.rejection)) c.add("rejection " + rejection.toLowerCase(Locale.US));
         if (colourFromStars != was.colourFromStars) c.add(colourFromStars ? "colour from the stars" : "the camera's colour");
-        if (keepSatellites != was.keepSatellites) c.add(keepSatellites ? "satellites kept" : "satellites taken out");
+        if (keepSatellites != was.keepSatellites || keepMeteors != was.keepMeteors) {
+            c.add(keepSatellites ? "satellites and meteors kept" : keepMeteors ? "meteors kept, satellites taken out" : "satellites and meteors taken out");
+        }
         if (quick != was.quick) c.add(quick ? "quick stacking" : "full stacking");
         if (pipeline != was.pipeline || renderer != was.renderer) c.add("the new processing");
         if (brightness != was.brightness) c.add("brightness " + Math.round(100 * brightness) + "%");
@@ -322,6 +328,8 @@ public final class Recipe {
         }
         j.put("mask", mask).put("freezeGround", freezeGround).put("rejection", rejection).put("colourFromStars", colourFromStars)
                 .put("keepSatellites", keepSatellites).put("quick", quick);
+        // only when set, so the stacks made before it was a choice keep their names
+        if (keepMeteors) j.put("keepMeteors", true);
         return j.end().toString();
     }
 
@@ -416,6 +424,7 @@ public final class Recipe {
         r.rejection = s.str("rejection", "AUTO");
         r.colourFromStars = s.bool("colourFromStars", true);
         r.keepSatellites = s.bool("keepSatellites", false);
+        r.keepMeteors = s.bool("keepMeteors", false);
         r.quick = s.bool("quick", false);
     }
 

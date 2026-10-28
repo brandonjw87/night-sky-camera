@@ -906,12 +906,18 @@ public final class MainActivity extends Activity {
         box.addView(text(Satellites.data(this).status(System.currentTimeMillis()), 12, RED_DIM, false), gap(6));
     }
 
-    private static String keepHelp(boolean keep) {
-        return keep
-                ? "Satellites and meteors stay in the picture at full brightness. A bright pass is counted down aloud "
-                + "so you can watch it go over."
-                : "Their streaks are taken out of the stack, faint edges included, and the session waits for a bright one "
-                + "that's about to cross (the ISS, Tiangong) before starting. The report and a labelled copy name them.";
+    /** What each streaks choice does: 0 take them out, 1 keep meteors, 2 keep them all. */
+    private static String keepHelp(int keep) {
+        return keep == 2
+                ? "Satellites and meteors stay in the picture at full brightness; planes are taken out. A bright pass is "
+                + "counted down aloud so you can watch it go over."
+                : keep == 1
+                ? "Meteors stay in the picture at full brightness; satellites and planes are taken out, and the session "
+                + "waits for a bright satellite that's about to cross before starting. A streak counts as a meteor where "
+                + "no satellite could have left it; the report lists each with its shower."
+                : "Every streak is taken out of the stack, faint edges included, and the session waits for a bright "
+                + "satellite that's about to cross (the ISS, Tiangong) before starting. The report and a labelled copy "
+                + "name them.";
     }
 
     /** Settings most nights don't need, folded away under one line. */
@@ -1037,29 +1043,29 @@ public final class MainActivity extends Activity {
         box.addView(data, gap(6));
         box.addView(status, gap(2));
         box.addView(update, gap(6));
-        box.addView(text("Satellite streaks", 14, RED, true), gap(14));
-        final Button out = chip("Take them out", !prefs.keepSatellites());
-        final Button keep = chip("Keep them", prefs.keepSatellites());
-        out.setTextSize(14);
-        keep.setTextSize(14);
-        final TextView keepHelp = text(keepHelp(prefs.keepSatellites()), 13, RED_DIM, false);
+        box.addView(text("Streaks: satellites, planes and meteors", 14, RED, true), gap(14));
+        // 0 take them all out, 1 keep the meteors, 2 keep the satellites and the meteors
+        final int was = prefs.keepSatellites() ? 2 : prefs.keepMeteors() ? 1 : 0;
+        final Button[] keeps = {chip("Take them out", was == 0), chip("Keep meteors", was == 1), chip("Keep them all", was == 2)};
+        final TextView keepHelp = text(keepHelp(was), 13, RED_DIM, false);
         View.OnClickListener keepClick = new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean k = v == keep;
-                prefs.setKeepSatellites(k);
-                styleChip(out, !k);
-                styleChip(keep, k);
+                int k = v == keeps[2] ? 2 : v == keeps[1] ? 1 : 0;
+                prefs.setKeepSatellites(k == 2);
+                prefs.setKeepMeteors(k >= 1);
+                for (int i = 0; i < keeps.length; i++) styleChip(keeps[i], i == k);
                 keepHelp.setText(keepHelp(k));
                 showSatellites();
                 handChanged();
             }
         };
-        out.setOnClickListener(keepClick);
-        keep.setOnClickListener(keepClick);
         LinearLayout kr = row();
-        kr.addView(out, weight());
-        kr.addView(keep, weight());
+        for (Button b : keeps) {
+            b.setTextSize(14);
+            b.setOnClickListener(keepClick);
+            kr.addView(b, weight());
+        }
         box.addView(kr, gap(6));
         box.addView(keepHelp, gap(6));
 
@@ -3919,6 +3925,11 @@ public final class MainActivity extends Activity {
                         k.frames, k.frames == 1 ? "" : "s", Double.isNaN(k.mag) ? "" : String.format(Locale.US, ", magnitude %.1f", k.mag)));
             }
             if (named.size() > 5) col.addView(text("All of them: " + TextUtils.join("; ", named) + ".", 13, RED_DIM, false), gap(6));
+        }
+        if (!rc.meteors.isEmpty()) {
+            col.addView(label("Meteors"), gap(18));
+            col.addView(text(rc.meteors, 14, RED, false), gap(4));
+            for (ReportCard.Meteor k : rc.meteorList) col.addView(text(k.line() + ".", 13, RED_DIM, false), gap(4));
         }
         if (!rc.conditions.isEmpty()) col.addView(text(rc.conditions, 13, RED_DIM, false), gap(6));
         col.addView(label("Next time"), gap(18));

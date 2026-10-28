@@ -72,6 +72,20 @@ public final class EditTest {
         older.pipeline = PostProcessor.PIPELINE - 1;
         older.renew();
         check("an older stack is made again too", !older.outdated() && older.pipeline == PostProcessor.PIPELINE, "pipeline " + older.pipeline);
+
+        // keeping the meteors (1.5): a stack of its own, read back as written; the stacks made before it was a choice
+        // keep their names (nothing about it is written while it's off)
+        Recipe m0 = Recipe.single("20261022_2315", false);
+        check("a stack that doesn't keep the meteors is named as before", !m0.stackJson().contains("eteor"), m0.stackJson());
+        Recipe m1 = m0.edit();
+        m1.keepMeteors = true;
+        check("keeping the meteors makes a stack of its own", !m1.sameStack(m0) && m1.changes(m0).equals("meteors kept, satellites taken out"),
+                m1.changes(m0));
+        Recipe mb = Recipe.fromJson(m1.toJson());
+        check("and reads back", mb.keepMeteors && !mb.keepSatellites && mb.stackKey().equals(m1.stackKey()), mb.stackJson());
+        Recipe m2 = m1.edit();
+        m2.keepSatellites = true;
+        check("keeping them all", m2.changes(m1).equals("satellites and meteors kept"), m2.changes(m1));
     }
 
     private static void taps() {

@@ -30,7 +30,7 @@ public final class SettingsFile {
     static final String[][] SETTINGS = {
             {"trails", "b"}, {"durationMin", "i"}, {"brightness", "f"}, {"sounds", "b"}, {"saveDng", "b"},
             {"remoteViewer", "b"}, {"rejection", "s"}, {"advancedOpen", "b"}, {"countdownSec", "i"}, {"preflight", "b"},
-            {"satelliteData", "b"}, {"keepSatellites", "b"}, {"showTracks", "b"}, {"showLabels", "b"}, {"forecast", "b"},
+            {"satelliteData", "b"}, {"keepSatellites", "b"}, {"keepMeteors", "b"}, {"showTracks", "b"}, {"showLabels", "b"}, {"forecast", "b"},
             {"planSounds", "b"}, {"planMinBattery", "i"}, {"tileUnlocks", "b"}, {"sqmOffset", "f"}, {"preset", "s"},
             {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"}, {"focusAssist", "b"},
             {"keepFramesGb", "i"}, {"remoteKey", "b"},
@@ -100,6 +100,7 @@ public final class SettingsFile {
         Object r = m.get("rejection");
         p.rejection = r instanceof String ? (String) r : "AUTO";
         p.keepSatellites = bool(m, "keepSatellites", false);
+        p.keepMeteors = bool(m, "keepMeteors", false);
         p.collectClear = bool(m, "collectClear", false);
         p.blend = bool(m, "blend", false);
         p.quick = bool(m, "quick", false);
