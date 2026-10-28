@@ -15,7 +15,8 @@ tapped through again. That found these, now fixed:
 - **In a long session, a focus check that finds the focus has crept now follows it all the way.** It moves at
   most two small steps at a time (in case one reading is off), and then it didn't check again, so the stars stayed
   a little soft for the rest of the session. In a simulated 30-minute session whose focus crept, the stars ended
-  the session 5% wider than at the start; now it checks again straight away until it gets there.
+  the session 5% wider than at the start; now it checks again straight away until it gets there, and they end
+  the session as sharp as they started.
 - **A frame the camera fails no longer restarts the camera.** Only good frames counted as signs of life, so two
   failed frames in a row looked like a stalled camera, and the restart threw away the frames already exposing.
 - **If even the camera's longest exposure keeps failing, the session uses frames half as long** (for that
