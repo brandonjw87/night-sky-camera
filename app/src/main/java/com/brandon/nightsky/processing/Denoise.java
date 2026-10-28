@@ -22,6 +22,8 @@ import java.util.Locale;
  * light and shape, the sky around them loses its grain. Two passes find the stars: the first with a guess of the
  * matched filter's noise, the second with the noise measured on the sky the first one left.
  * <p>
+ * A copy binned smaller (Quick look's half-size photo) is matched with its own, smaller star images.
+ * <p>
  * The correction is a half float per pixel of the crop, and it depends only on the picture: the work is done in tiles,
  * each with the context around it that it needs (mirrored at the picture's edges), so it comes out the same, bit for
  * bit, however many threads share it.
@@ -57,8 +59,12 @@ public final class Denoise {
 
     /** Context around a tile: for the fine layers (2 x (1 + 2 + 4)), the widest star disc, filling in the stars. */
     private static final int R_LAYERS = 14, R_DISC = 8, R_FILL = 14;
-    /** The matched filter: a Gaussian the size of a star image. */
+    /**
+     * The matched filter: a Gaussian the size of a star image (in a full-size picture; a smaller copy's stars are
+     * smaller), and its peak's signal-to-noise against a star's own peak's (sqrt(pi) times its sigma).
+     */
     private static final float MF_SIGMA = 1.2f;
+    private static final double MF_GAIN = 2.13;
     private static final int MF_R = 4;
     private static final float[] MF_K = gauss(MF_R, MF_SIGMA);
     /** Median absolute value to standard deviation, for Gaussian noise. */
@@ -109,6 +115,42 @@ public final class Denoise {
         return run(img, a, noiseScale, TILE);
     }
 
+    /**
+     * {@code r}'s correction binned {@code factor} x {@code factor} as {@link RgbImage#binned} bins its picture's crop,
+     * for a w x h copy (the photo's preview shows the full-size photo's noise reduction exactly so).
+     */
+    public static Result binned(final Result r, final int factor, final int w, final int h) {
+        final Result b = new Result();
+        b.cw = w;
+        b.ch = h;
+        System.arraycopy(r.sigma, 0, b.sigma, 0, LEVELS);
+        System.arraycopy(r.sigmaQ, 0, b.sigmaQ, 0, QLEVELS);
+        b.sigmaMf = r.sigmaMf;
+        b.guessMf = r.guessMf;
+        b.starFraction = r.starFraction;
+        b.mapMin = r.mapMin;
+        b.mapMax = r.mapMax;
+        final short[] dy = new short[w * h];
+        final float inv = 1f / (factor * factor);
+        Parallel.forRange(h, 8, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                for (int j = j0; j < j1; j++) {
+                    for (int i = 0; i < w; i++) {
+                        float s = 0;
+                        for (int d = 0; d < factor; d++) {
+                            int o = (j * factor + d) * r.cw + i * factor;
+                            for (int e = 0; e < factor; e++) s += Half.toFloat(r.dy[o + e]);
+                        }
+                        dy[j * w + i] = Half.fromFloat(s * inv);
+                    }
+                }
+            }
+        });
+        b.dy = dy;
+        return b;
+    }
+
     /** {@link #run} in tiles of another size (a multiple of {@link #CELL}): the same result, for the tests. */
     public static Result run(RgbImage img, Renderer.Analysis a, float noiseScale, int tile) {
         if (a.cw < MIN_SIZE || a.ch < MIN_SIZE) return null;
@@ -121,7 +163,7 @@ public final class Denoise {
         Result res = new Result();
         res.cw = j.cw;
         res.ch = j.ch;
-        res.guessMf = MF_RATIO0 * s1;
+        res.guessMf = j.ratio0 * s1;
         // stars with the guess, filled in; the noise measured on the sky that leaves
         j.footprints(res.guessMf);
         if (!j.measure(res)) return null;
@@ -161,7 +203,36 @@ public final class Denoise {
         /** The coarse layers' correction, every QF-th pixel. */
         float[] dq;
 
+        /**
+         * A star image's sigma in this picture, the matched filter's taps and their reach, its gain ({@link #MF_GAIN})
+         * and the first guess's share ({@link #MF_RATIO0}). A copy binned f x f (noiseScale 1 / f) has stars f times
+         * smaller, blurred by its bigger pixels: matched as they are, fewer of its pixels go to the stars.
+         */
+        final float psf, ratio0;
+        final double gain;
+        final float[] mfK;
+        final int mfR;
+
         Job(RgbImage img, Renderer.Analysis a, float noiseScale, int tile) {
+            if (noiseScale >= 1f) {
+                psf = MF_SIGMA;
+                mfR = MF_R;
+                mfK = MF_K;
+                gain = MF_GAIN;
+                ratio0 = MF_RATIO0;
+            } else {
+                psf = (float) Math.sqrt(MF_SIGMA * noiseScale * MF_SIGMA * noiseScale + (1 - noiseScale * noiseScale) / 12f);
+                mfR = Math.max(2, (int) Math.ceil(3.3f * psf));
+                mfK = gauss(mfR, psf);
+                double g = 0;
+                for (int i = -mfR; i <= mfR; i++) g += Math.exp(-i * i / (double) (psf * psf));
+                gain = g;
+                // the matched filter's noise against the finest layer's goes as the sum of its taps' squares
+                float n0 = 0, n1 = 0;
+                for (float v : MF_K) n0 += v * v;
+                for (float v : mfK) n1 += v * v;
+                ratio0 = MF_RATIO0 * n1 / n0;
+            }
             this.img = img;
             this.a = a;
             cw = a.cw;
@@ -624,7 +695,7 @@ public final class Denoise {
                     float s = (MF[i] - C3[i]) * invNoise;
                     if (!(s > DETECT)) continue;
                     // out to where a star this bright falls to half the noise
-                    float r = Math.min(R_DISC, 1f + 1.2f * (float) Math.sqrt(2 * Math.log(Math.max(1.0, 2 * s / 2.13))));
+                    float r = Math.min(R_DISC, 1f + j.psf * (float) Math.sqrt(2 * Math.log(Math.max(1.0, 2 * s / j.gain))));
                     int ri = (int) r;
                     float r2 = r * r;
                     for (int dy = -ri; dy <= ri; dy++) {
@@ -701,8 +772,8 @@ public final class Denoise {
 
         /** The matched filter of src over the buffer; the edges are clamped. */
         void matched(float[] src, float[] dst) {
-            float[] k = MF_K;
-            int r = MF_R;
+            float[] k = j.mfK;
+            int r = j.mfR;
             for (int y = 0; y < bh; y++) {
                 int o = y * bw;
                 for (int x = 0; x < bw; x++) {

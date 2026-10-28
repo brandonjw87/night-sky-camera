@@ -15,7 +15,10 @@
   measured between the stars, at several sizes and region by region. The corners (which the lens's shading
   correction brightens) and the edges (where fewer frames overlap) are usually noisier, so each part of the sky
   is cleaned as much as it needs. The session log says what it found.
-- **Quick look's half-size photos are cleaned too**, the same way at their size.
+- **Quick look's half-size photos are cleaned too**, matched to their smaller stars: about half the sky's noise
+  goes, and faint stars keep most of their light.
+- **The photo on the screen is the photo you get.** The result screen and the edit screen show the sky cleaned as
+  in the saved photo. Once the full-size photo is saved, the screen shows exactly what it lost, scaled down.
 - **Photos from earlier versions can have it.** Open one from the sessions page and tap **New processing** on its
   result screen, or **Make it again with the new processing** in the edit screen. It's rendered again from the
   stacked picture the app keeps with the session, so it usually takes a few seconds. It's saved as a new render;
@@ -56,8 +59,8 @@ It installs over version 1.3 and keeps your settings and sessions.
 - Tested off the phone only: on simulated skies, and through the app itself with a simulated camera. Your first
   night's photo is the real test.
 - There's no strength setting yet: every photo loses the same share of its noise.
-- What the screen shows while a session stacks, the edit screen's picture and the laptop viewer aren't cleaned:
-  they're small enough that the grain hardly shows. The saved photos are.
+- The live picture while a session stacks, and the laptop viewer, aren't cleaned: they show the stack as it
+  builds.
 - Saving a full-size photo takes a few seconds longer (about 3 seconds for the full 12.5-megapixel photo on a
   4-core computer). Developing still needs at most about 320 MB of the 512 MB of memory Android gives the app.
 - Haze is still only measured once the app has seen a clear night.

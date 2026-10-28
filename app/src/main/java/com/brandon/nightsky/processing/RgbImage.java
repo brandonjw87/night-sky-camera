@@ -14,6 +14,9 @@ public final class RgbImage {
      * not trustworthy there (green clips first).
      */
     public byte[] clip;
+    /** A copy made by {@link #binned}: the picture it was binned from (held weakly), its factor and the crop's corner. */
+    private java.lang.ref.WeakReference<RgbImage> binnedFrom;
+    private int binnedBy, binnedX0, binnedY0;
 
     public RgbImage(int width, int height) {
         this(width, height, new float[width * height], new float[width * height], new float[width * height]);
@@ -79,6 +82,15 @@ public final class RgbImage {
                 }
             }
         });
+        o.binnedFrom = new java.lang.ref.WeakReference<RgbImage>(this);
+        o.binnedBy = factor;
+        o.binnedX0 = x0;
+        o.binnedY0 = y0;
         return o;
+    }
+
+    /** True if this is {@code src} binned {@code factor} x {@code factor} from its crop at (cx0, cy0), by {@link #binned}. */
+    public boolean isBinned(RgbImage src, int factor, int cx0, int cy0) {
+        return binnedFrom != null && binnedFrom.get() == src && binnedBy == factor && binnedX0 == cx0 && binnedY0 == cy0;
     }
 }

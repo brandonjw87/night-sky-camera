@@ -8,6 +8,7 @@ import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.Stats;
 
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
 
@@ -20,8 +21,10 @@ import java.util.Random;
  * <li>how much of the grain and of the wide blotches it takes out, and that the sky's level doesn't move;</li>
  * <li>a faint band (a Milky Way with a dark lane) keeps its light;</li>
  * <li>the same correction, bit for bit, in tiles of other sizes (no seams, nothing left to how the work is split);</li>
- * <li>full-size renders use it (the same photo twice, less noise than without), Quick look's half-size photo too, and
- * pictures too small or without noise are left as they are.</li>
+ * <li>full-size renders use it (the same photo twice, less noise than without), Quick look's half-size photo and the
+ * photo's preview on the screen too (the full-size correction binned once it exists, else found in the copy), and
+ * pictures too small or without noise are left as they are;</li>
+ * <li>a half-size copy, matched with its smaller stars: the noise left on its sky and its test stars' light.</li>
  * </ul>
  * Usage: DenoiseTest
  */
@@ -51,6 +54,7 @@ public final class DenoiseTest {
         kept(s, full, base, rf, rb);
         tiles(full, a, rf);
         renders(s, full, a);
+        half(s, full, a);
         edges(spec);
         System.out.println(failures == 0 ? "ALL PASS" : failures + " FAILED");
         if (failures > 0) System.exit(1);
@@ -185,12 +189,130 @@ public final class DenoiseTest {
         int[] p1 = Master.render(full, a, on), p2 = Master.render(full, a, on), p0 = Master.render(full, a, off);
         check("a full-size render with it comes out the same twice", Master.pixelHash(p1).equals(Master.pixelHash(p2)), "");
         check("its finding is kept for the log", !a.noiseNote().isEmpty(), a.noiseNote());
-        float n1 = skyNoise(p1, W, H, s), n0 = skyNoise(p0, W, H, s);
+        boolean[] sky = skyMask(s, 1);
+        float n1 = skyNoise(p1, W, H, sky), n0 = skyNoise(p0, W, H, sky);
         check("the photo's sky is quieter with it", n1 < 0.6f * n0, String.format(Locale.US, "%.2f vs %.2f levels", n1, n0));
         RgbImage half = full.binned(2);
         int[] q1 = Renderer.renderSmallPhoto(half, a, on, 2), q0 = Renderer.renderSmall(half, a, on, 2);
-        float m1 = skyNoise(q1, half.width, half.height, null), m0 = skyNoise(q0, half.width, half.height, null);
+        boolean[] sky2 = skyMask(s, 2);
+        float m1 = skyNoise(q1, half.width, half.height, sky2), m0 = skyNoise(q0, half.width, half.height, sky2);
         check("Quick look's half-size photo is quieter too", m1 < 0.75f * m0, String.format(Locale.US, "%.2f vs %.2f levels", m1, m0));
+
+        // the photo on the screen: a copy binned 3 times, as the result screen's is. Rendered full size already, so it
+        // shows the full-size correction binned the same way: exactly what the saved photo lost
+        String note = a.noiseNote();
+        RgbImage third = full.binned(3);
+        int[] v1 = Renderer.renderPreview(third, a, on, 3);
+        Denoise.Result found = a.previewNoise();
+        check("after a full-size render, the preview shows its correction, binned as the preview is", found != null
+                && Arrays.equals(found.dy, binned(a.photoNoise(), 3, third.width, third.height)), "");
+        Renderer.Params brighter = new Renderer.Params();
+        brighter.brightness = 0.7f;
+        int[] vb = Renderer.renderPreview(third, a, brighter, 3);
+        int[] v2 = Renderer.renderPreview(third, a, on, 3), v0 = Renderer.renderSmall(third, a, on, 3);
+        boolean[] sky3 = skyMask(s, 3);
+        float s1 = skyNoise(v1, third.width, third.height, sky3), s0 = skyNoise(v0, third.width, third.height, sky3);
+        check("the photo's preview on the screen is quieter", s1 < 0.6f * s0, String.format(Locale.US, "%.2f vs %.2f levels", s1, s0));
+        check("its correction is binned once for the copy, then kept (another brightness, then back)", a.previewNoise() == found
+                && !Arrays.equals(vb, v1) && Arrays.equals(v1, v2), "");
+        check("the preview leaves the log's note to the saved photos", a.noiseNote().equals(note), a.noiseNote());
+        int[] v3 = Renderer.renderPreview(full.binned(3), a, on, 3);
+        check("a new copy is binned afresh, and the same picture comes out the same", a.previewNoise() != found
+                && Arrays.equals(v1, v3), "");
+        // opened again (no full-size render yet): the noise found in the copy itself, until the photo is rendered
+        Renderer.Analysis a2 = Master.analyze(full, new SensorSpec(), false);
+        RgbImage copy = full.binned(3);
+        int[] w1 = Renderer.renderPreview(copy, a2, on, 3);
+        Denoise.Result own = a2.previewNoise();
+        float t1 = skyNoise(w1, copy.width, copy.height, sky3);
+        check("before a full-size render, the preview's noise is found in the copy itself, and it's quieter", own != null
+                && a2.photoNoise() == null && t1 < 0.75f * s0, String.format(Locale.US, "%.2f vs %.2f levels", t1, s0));
+        Master.render(full, a2, on);
+        int[] w2 = Renderer.renderPreview(copy, a2, on, 3);
+        check("once the photo is rendered, the same copy shows the full-size correction", a2.previewNoise() != own
+                && Arrays.equals(w2, v1), "");
+    }
+
+    /**
+     * Quick look's half-size photo (and the preview before a full-size render): the noise found in a copy binned 2 x 2,
+     * whose stars are half the size. Against the truth binned the same way: how much of the sky's noise is left, and
+     * how much of each test star's light is kept (in an aperture).
+     */
+    private static void half(Sky s, RgbImage full, Renderer.Analysis a) {
+        int f = 2;
+        RgbImage half = full.binned(f);
+        int w = half.width, h = half.height;
+        Denoise.Result r = Renderer.smallNoise(half, a, f);
+        check("a half-size copy's noise is measured", r != null, "");
+        if (r == null) return;
+        float[] clean = new float[W * H];
+        for (int i = 0; i < W * H; i++) clean[i] = s.clean[i] + s.band[i] + s.test[i];
+        float[] c = bin(clean, f), st = bin(s.stars, f), bd = bin(s.band, f), te = bin(s.test, f);
+        double e0 = 0, e1 = 0;
+        for (int y = 2; y < h - 2; y++) {
+            for (int x = 2; x < w - 2; x++) {
+                int i = y * w + x;
+                if (st[i] >= 0.05f * NOISE || bd[i] > 0.2f * NOISE || te[i] > 0.01f) continue;
+                double d0 = half.g[i] - c[i], d1 = d0 + Half.toFloat(r.dy[i]);
+                e0 += d0 * d0;
+                e1 += d1 * d1;
+            }
+        }
+        double[] got = new double[SNR.length], want = new double[SNR.length];
+        double ap = 1.8;
+        for (float[] t : s.tests) {
+            float cx = t[0] / f, cy = t[1] / f;
+            int k = (int) t[3];
+            for (int y = (int) (cy - ap); y <= (int) (cy + ap); y++) {
+                for (int x = (int) (cx - ap); x <= (int) (cx + ap); x++) {
+                    double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                    if (dx * dx + dy * dy > ap * ap) continue;
+                    int i = y * w + x;
+                    got[k] += half.g[i] + Half.toFloat(r.dy[i]) - (c[i] - te[i]);
+                    want[k] += te[i];
+                }
+            }
+        }
+        float left = (float) Math.sqrt(e1 / e0);
+        StringBuilder sb = new StringBuilder();
+        boolean kept = true;
+        float[] min = {0.5f, 0.6f, 0.75f, 0.85f, 0.9f};
+        for (int k = 0; k < SNR.length; k++) {
+            float q = (float) (got[k] / want[k]);
+            sb.append(String.format(Locale.US, "%s%.0fx %.0f%%", k > 0 ? ", " : "", SNR[k], 100 * q));
+            if (q < min[k] || q > 1.15f) kept = false;
+        }
+        System.out.println(String.format(Locale.US, "half size: noise left %.0f%%, stars on %.0f%% of the pixels; test stars kept: %s",
+                100 * left, 100 * r.starFraction, sb));
+        check("half size: the sky keeps under 53% of its noise", left < 0.53f, String.format(Locale.US, "%.0f%%", 100 * left));
+        check("half size: the faint stars keep their light (1x 50%, 2x 60%, 3x 75%, 5x 85%, 8x 90% or more)", kept, sb.toString());
+    }
+
+    /** {@code r}'s correction binned f x f over a w x h copy, worked out here. */
+    private static short[] binned(Denoise.Result r, int f, int w, int h) {
+        short[] o = new short[w * h];
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                float t = 0;
+                for (int dy = 0; dy < f; dy++) for (int dx = 0; dx < f; dx++) t += Half.toFloat(r.dy[(j * f + dy) * r.cw + i * f + dx]);
+                o[j * w + i] = Half.fromFloat(t / (f * f));
+            }
+        }
+        return o;
+    }
+
+    /** A W x H array binned f x f, as RgbImage.binned bins a picture. */
+    private static float[] bin(float[] v, int f) {
+        int w = W / f, h = H / f;
+        float[] o = new float[w * h];
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                float t = 0;
+                for (int dy = 0; dy < f; dy++) for (int dx = 0; dx < f; dx++) t += v[(j * f + dy) * W + i * f + dx];
+                o[j * w + i] = t / (f * f);
+            }
+        }
+        return o;
     }
 
     /** Pictures too small, or without any noise: left as they are, without a fuss. */
@@ -223,14 +345,22 @@ public final class DenoiseTest {
         return im;
     }
 
-    /** A rendered photo's grain: the median absolute difference of neighbouring pixels' green, on the sky. */
-    private static float skyNoise(int[] px, int w, int h, Sky s) {
+    /** The sky of a copy binned f x f (1: the picture): no star's light over 5% of the noise, the band under 20% of it. */
+    private static boolean[] skyMask(Sky s, int f) {
+        float[] st = f == 1 ? s.stars : bin(s.stars, f), bd = f == 1 ? s.band : bin(s.band, f), te = f == 1 ? s.test : bin(s.test, f);
+        boolean[] m = new boolean[st.length];
+        for (int i = 0; i < m.length; i++) m[i] = st[i] < 0.05f * NOISE && bd[i] <= 0.2f * NOISE && (f == 1 || te[i] <= 0.01f);
+        return m;
+    }
+
+    /** A rendered photo's grain: the mean absolute difference of neighbouring pixels' green, on the sky. */
+    private static float skyNoise(int[] px, int w, int h, boolean[] sky) {
         float[] d = new float[w * h];
         int n = 0;
         for (int y = 0; y < h; y++) {
             for (int x = 0; x + 1 < w; x++) {
                 int i = y * w + x;
-                if (s != null && (s.stars[i] >= 0.05f * NOISE || s.stars[i + 1] >= 0.05f * NOISE || s.band[i] > 0.2f * NOISE)) continue;
+                if (!sky[i] || !sky[i + 1]) continue;
                 d[n++] = Math.abs(((px[i] >> 8) & 0xFF) - ((px[i + 1] >> 8) & 0xFF));
             }
         }

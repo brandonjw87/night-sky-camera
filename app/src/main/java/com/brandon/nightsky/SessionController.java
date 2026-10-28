@@ -1022,9 +1022,9 @@ final class SessionController {
         return Bitmap.createBitmap(f.apply(px), f.outW, f.outH, Bitmap.Config.ARGB_8888);
     }
 
-    /** The on-screen copy of the small stack rendered as {@code rc} says (before its framing). */
+    /** The on-screen copy of the small stack rendered as {@code rc} says (before its framing), its noise taken out as the photo's. */
     private static Bitmap previewBitmap(RgbImage sm, Renderer.Analysis a, Renderer.Params p, int factor) {
-        int[] px = Renderer.renderSmall(sm, a, p, factor);
+        int[] px = Renderer.renderPreview(sm, a, p, factor);
         return Bitmap.createBitmap(px, sm.cropWidth(), sm.cropHeight(), Bitmap.Config.ARGB_8888);
     }
 

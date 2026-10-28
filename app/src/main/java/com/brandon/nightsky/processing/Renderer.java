@@ -32,7 +32,7 @@ public final class Renderer {
         public float saturation = 1.35f;
         /**
          * How much of the sky's noise {@link Denoise} finds is taken out of the luminance: 0 (none) to 1 (all it takes out).
-         * Full-size renders and photos saved smaller; never the quick previews.
+         * Full-size renders, photos saved smaller and the photo's preview; not the live picture while stacking.
          */
         public float lumaNr = 1f;
         public boolean removeGradient = true;
@@ -93,12 +93,28 @@ public final class Renderer {
         /** The sky's noise, found by the first full-size render of {@link #denoised} and kept for the next ones (1.4). */
         Denoise.Result denoise;
         RgbImage denoised;
+        /**
+         * The same for the binned copy last shown as the photo's preview ({@link #renderPreview}), and the full-size
+         * correction it was binned from (null: found in the copy itself).
+         */
+        Denoise.Result previewDenoise, previewFrom;
+        RgbImage previewDenoised;
         /** What the last noise reduction with this analysis found (a full-size render's or a smaller photo's). */
         private String noiseNote = "";
 
         /** What the noise reduction found and took out, for the log; "" until a photo has been rendered. */
         public synchronized String noiseNote() {
             return noiseNote;
+        }
+
+        /** What the noise reduction took out of the preview's copy ({@link #renderPreview}); null before one is shown. */
+        public synchronized Denoise.Result previewNoise() {
+            return previewDenoise;
+        }
+
+        /** What it found in the full-size picture ({@link #render}); null before a full-size render. */
+        public synchronized Denoise.Result photoNoise() {
+            return denoise;
         }
 
         synchronized void noted(Denoise.Result r, String size) {
@@ -643,12 +659,15 @@ public final class Renderer {
         }
     }
 
+    /** What a small render does about the sky's noise: nothing, as a smaller photo, or as the photo's preview. */
+    private static final int AS_IS = 0, PHOTO = 1, PREVIEW = 2;
+
     /**
-     * Quick render of a binned copy (from {@link RgbImage#binned}) with the same tone curve, for the
-     * brightness preview. {@code factor} is the binning factor (noise is that many times lower).
+     * Quick render of a binned copy (from {@link RgbImage#binned}) with the same tone curve, for the live
+     * picture while stacking. {@code factor} is the binning factor (noise is that many times lower).
      */
     public static int[] renderSmall(RgbImage small, Analysis a, Params p, int factor) {
-        return renderSmall(small, a, p, factor, false);
+        return renderSmall(small, a, p, factor, AS_IS);
     }
 
     /**
@@ -656,11 +675,59 @@ public final class Renderer {
      * taken out as a full-size render does.
      */
     public static int[] renderSmallPhoto(RgbImage small, Analysis a, Params p, int factor) {
-        return renderSmall(small, a, p, factor, true);
+        return renderSmall(small, a, p, factor, PHOTO);
     }
 
-    private static int[] renderSmall(RgbImage small, Analysis a, Params p, int factor, boolean photo) {
+    /**
+     * {@link #renderSmall} for the developed photo on the screen (the result and the edit screen): with the sky's
+     * noise taken out as in the saved photo. Once the photo has been rendered full size, that render's correction,
+     * binned as the copy is, shows exactly what the saved photo lost; before, the noise is found in the copy itself.
+     * Either is kept with the analysis for the next renders of the same copy (another brightness, an edit's
+     * settings), which take no longer than before.
+     */
+    public static int[] renderPreview(RgbImage small, Analysis a, Params p, int factor) {
+        return renderSmall(small, a, p, factor, PREVIEW);
+    }
+
+    /** The sky's noise in a copy binned {@code factor} x {@code factor} ({@link RgbImage#binned}), found in the copy itself. */
+    public static Denoise.Result smallNoise(RgbImage small, Analysis a, int factor) {
+        return Denoise.run(small, smallAnalysis(small, a, factor), 1f / factor);
+    }
+
+    private static int[] renderSmall(RgbImage small, Analysis a, Params p, int factor, int nr) {
         Curve curve = Curve.make(a, p);
+        Analysis sa = smallAnalysis(small, a, factor);
+        Denoise.Result dn = null;
+        if (p.lumaNr > 0 && nr == PHOTO) {
+            dn = Denoise.run(small, sa, 1f / factor);
+            if (dn != null) a.noted(dn, factor + "x smaller: ");
+        } else if (p.lumaNr > 0 && nr == PREVIEW) {
+            synchronized (a) {
+                Denoise.Result full = a.denoise != null && small.isBinned(a.denoised, factor, a.cx0, a.cy0)
+                        && small.width == a.cw / factor && small.height == a.ch / factor ? a.denoise : null;
+                if (a.previewDenoised != small || a.previewFrom != full) {
+                    a.previewDenoise = full != null ? Denoise.binned(full, factor, small.width, small.height)
+                            : Denoise.run(small, sa, 1f / factor);
+                    a.previewDenoised = small;
+                    a.previewFrom = full;
+                }
+                dn = a.previewDenoise;
+            }
+        }
+        int[] out = new int[small.width * small.height];
+        int bandRows = 32;
+        Band band = new Band(small.width, bandRows, sa.colorSigma);
+        int[] argb = new int[small.width * bandRows];
+        for (int y0 = 0; y0 < small.height; y0 += bandRows) {
+            int y1 = Math.min(small.height, y0 + bandRows);
+            band.process(small, sa, p, curve, y0, y1, 1f / factor, dn, argb);
+            System.arraycopy(argb, 0, out, y0 * small.width, (y1 - y0) * small.width);
+        }
+        return out;
+    }
+
+    /** The analysis of {@code a}'s picture, for a copy of it binned {@code factor} x {@code factor}. */
+    private static Analysis smallAnalysis(RgbImage small, Analysis a, int factor) {
         Analysis sa = new Analysis();
         sa.m = a.m;
         sa.poly = a.poly;
@@ -680,18 +747,7 @@ public final class Renderer {
         sa.cy0 = 0;
         sa.cw = small.width;
         sa.ch = small.height;
-        Denoise.Result dn = photo && p.lumaNr > 0 ? Denoise.run(small, sa, 1f / factor) : null;
-        if (dn != null) a.noted(dn, factor + "x smaller: ");
-        int[] out = new int[small.width * small.height];
-        int bandRows = 32;
-        Band band = new Band(small.width, bandRows, sa.colorSigma);
-        int[] argb = new int[small.width * bandRows];
-        for (int y0 = 0; y0 < small.height; y0 += bandRows) {
-            int y1 = Math.min(small.height, y0 + bandRows);
-            band.process(small, sa, p, curve, y0, y1, 1f / factor, dn, argb);
-            System.arraycopy(argb, 0, out, y0 * small.width, (y1 - y0) * small.width);
-        }
-        return out;
+        return sa;
     }
 
     /** Working buffers for one band of rows plus margins. */
