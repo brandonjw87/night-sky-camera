@@ -133,7 +133,8 @@ public final class SimCamera {
     /**
      * A meteor across the picture: lighting up {@code t} seconds into the sky at (fx W, fy H), flying at {@code paDeg}
      * in the picture (clockwise from its right edge), {@code degS} degrees a second for {@code dur} seconds, at
-     * magnitude {@code mag} at its brightest.
+     * magnitude {@code mag} at its brightest. Frames are drawn when the app asks for them, up to two exposures before
+     * they end, so a meteor added sooner than that misses the picture.
      */
     void meteor(double t, double fx, double fy, double paDeg, double degS, double dur, double mag) {
         double x = fx * W, y = fy * H, pa = Math.toRadians(paDeg);

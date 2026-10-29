@@ -461,8 +461,10 @@ public class Night {
         untilFrames(2);
         SimCamera cam = SimCamera.get();
         double now = (SystemClock.elapsedRealtimeNanos() - cam.t0Ns) / 1e9;
-        cam.meteor(now + 20, 0.45, 0.40, 25, 9, 0.6, -1.5);
-        cam.meteor(now + 55, 0.30, 0.65, 200, 12, 0.5, -1.0);
+        // beyond the frames already drawn: the app keeps one capture waiting behind the one exposing, and a frame is
+        // drawn when it's asked for, so a meteor sooner than two frames ahead (32 s) can miss the picture
+        cam.meteor(now + 40, 0.45, 0.40, 25, 9, 0.6, -1.5);
+        cam.meteor(now + 75, 0.30, 0.65, 200, 12, 0.5, -1.0);
         follow(20 * 60_000L);
         report();
         File[] ss = Monkey.root.listFiles();
