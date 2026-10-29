@@ -108,9 +108,13 @@ public final class ReportCard {
         public String time = "", what = "", where = "";
         /** Its estimated magnitude at its brightest and its length (degrees); NaN where unknown. */
         public double mag = Double.NaN, lengthDeg = Double.NaN;
-        public boolean kept;
+        /** Whether it was kept in the picture; whether only the deep search saw it (too faint to keep). */
+        public boolean kept, faint;
 
-        /** "9:43 PM: a Geminid, about magnitude -2, 12 degrees long, from high in the east to the south". */
+        /**
+         * "9:43 PM: a Geminid, about magnitude -2, 12 degrees long, from high in the east to the south" (and ", too
+         * faint to show in the picture" for a faint one).
+         */
         public String line() {
             StringBuilder sb = new StringBuilder();
             if (!time.isEmpty()) sb.append(time).append(": ");
@@ -119,6 +123,7 @@ public final class ReportCard {
             if (!Double.isNaN(lengthDeg)) sb.append(String.format(Locale.US, ", %d degree%s long", Math.round(lengthDeg),
                     Math.round(lengthDeg) == 1 ? "" : "s"));
             if (!where.isEmpty()) sb.append(", ").append(where);
+            if (faint) sb.append(", too faint to show in the picture");
             return sb.toString();
         }
     }
@@ -1356,7 +1361,7 @@ public final class ReportCard {
         if (list == null || list.isEmpty()) return;
         Map<String, Integer> byShower = new LinkedHashMap<String, Integer>();
         Map<String, String[]> words = new HashMap<String, String[]>();
-        int kept = 0;
+        int kept = 0, faint = 0;
         MeteorLog.Meteor brightest = null;
         boolean attributed = false;
         for (MeteorLog.Meteor m : list) {
@@ -1366,6 +1371,7 @@ public final class ReportCard {
             if (m.shower != null) words.put(key, new String[]{m.shower.member, m.shower.name});
             attributed |= m.attributed;
             if (m.kept) kept++;
+            if (m.faint) faint++;
             if (!Double.isNaN(m.mag) && (brightest == null || m.mag < brightest.mag)) brightest = m;
             Meteor k = new Meteor();
             k.time = whenOf(m.unit);
@@ -1374,6 +1380,7 @@ public final class ReportCard {
             k.mag = m.mag;
             k.lengthDeg = m.lengthDeg;
             k.kept = m.kept;
+            k.faint = m.faint;
             meteorList.add(k);
         }
         int n = list.size();
@@ -1396,10 +1403,15 @@ public final class ReportCard {
             sb.append(n == 1 ? " About magnitude " : " The brightest" + (t.isEmpty() ? "" : ", at " + t + ",") + " was about magnitude ")
                     .append(signed(Math.round(brightest.mag))).append('.');
         }
-        sb.append(kept == n ? (n == 1 ? " Kept in the picture at full brightness, as asked." : " All kept in the picture at full brightness, as asked.")
+        // the faint ones (only the deep search saw them) are never kept: their frame there is mostly noise
+        int bright = n - faint;
+        sb.append(faint == n ? (n == 1 ? " Too faint to show in the picture." : " All too faint to show in the picture.")
+                : kept == bright && kept > 0 ? (faint > 0 ? " " + kept + " kept in the picture at full brightness, as asked; "
+                + (faint == 1 ? "the other was" : "the other " + faint + " were") + " too faint to show in it."
+                : n == 1 ? " Kept in the picture at full brightness, as asked." : " All kept in the picture at full brightness, as asked.")
                 : kept > 0 ? " " + kept + " kept in the picture, as asked."
-                : o.meteorsKept ? " Quick developing couldn't keep " + (n == 1 ? "it" : "them") + "; developing again in full (Edit) keeps "
-                + (n == 1 ? "it." : "them.")
+                : o.meteorsKept ? " Quick developing couldn't keep " + (bright == 1 ? "it" : "them") + "; developing again in full (Edit) keeps "
+                + (bright == 1 ? "it." : "them.")
                 : " Taken out with the other streaks; Keep meteors, in the settings, leaves them in.");
         meteors = sb.toString();
     }
@@ -1612,6 +1624,7 @@ public final class ReportCard {
             j.obj("meteors").put("text", meteors).arr("items");
             for (Meteor k : meteorList) {
                 j.obj().put("time", k.time).put("what", k.what).put("where", k.where).put("kept", k.kept);
+                if (k.faint) j.put("faint", true);
                 if (!Double.isNaN(k.mag)) j.put("mag", round(k.mag, 1));
                 if (!Double.isNaN(k.lengthDeg)) j.put("lengthDeg", round(k.lengthDeg, 1));
                 j.end();
@@ -1700,6 +1713,7 @@ public final class ReportCard {
                 k.mag = x.num("mag", Double.NaN);
                 k.lengthDeg = x.num("lengthDeg", Double.NaN);
                 k.kept = x.bool("kept", false);
+                k.faint = x.bool("faint", false);
                 r.meteorList.add(k);
             }
         }

@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.5.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.6.
 
 ## What it does
 
@@ -28,7 +28,8 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.5.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
   (one no satellite could have left). Meteors are taken out with the rest, or kept in the photo with **Keep
   meteors**. Each one caught is listed with its time, its shower, how bright it was and where it crossed, and the
-  **Tonight** card says when a shower is worth going out for.
+  **Tonight** card says when a shower is worth going out for. Each frame is also searched for lines too faint to
+  see in it, so fainter meteors are listed too.
 - **Session report.** What the photo shows (constellations, planets, the Milky Way, galaxies to look for), a
   score for every frame, and what went wrong with the fix.
 - **Edit any photo again.** Look, crop, north up, which frames go in, the reference frame, stars lined up by
@@ -136,9 +137,15 @@ Under the photo:
   satellite crosses the whole picture, unless it passes into or out of the Earth's shadow, which the app works out
   for each end), it doesn't carry on in the next frame, or it crossed faster than any satellite can. Its shower
   comes from where its line points back to (the shower's radiant) and how fast it crossed.
+- **Fainter meteors.** Each frame is also searched for straight lines too faint to see in it: how far each pixel
+  of the frame sits from the rest of the session, all three colours together, is added up in patches of 8 by 8
+  pixels and then along every line, and a line of patches that stands out together is a streak. A meteor found
+  only this way is listed like the others, marked "too faint to show in the picture": in its frame it's mostly
+  noise, so it's never kept in the photo. The search needs a session of 12 frames or more, and is skipped (the log
+  says so) when its maps would take more than 32 MB, about 35 minutes of full-size frames.
 - Each meteor caught is in the **Session report** (its time, its shower or "sporadic", about how bright it was,
   how long and where in the sky), in the session log, and in a table that opens in Excel or Sheets:
-  `NightSky_..._meteors.csv` in `Documents/NightSky`.
+  `NightSky_..._meteors.csv` in `Documents/NightSky` (its `faint` column is 1 for the faint ones).
 
 ## Editing a photo
 
@@ -356,8 +363,8 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 (`deep` or `trails`), events such as satellites and clouds (true/false).
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
-`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`, `MeteorTest`
-and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
+`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`, `MeteorTest`,
+`DeepLinesTest` and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
 `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder, for example
 `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `MeteorLimit` (an output folder, then
 the scale) measures how faint a meteor the camera catches.

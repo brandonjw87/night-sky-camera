@@ -50,9 +50,18 @@ public final class SatMatch {
         /**
          * Its light along it (unidentified streaks): the excess over the stack of its frame's green samples rejected
          * there, summed across it, per cell's length ({@link StreakEvidence#CELL} px) from (sx0, sy0) to (sx1, sy1);
-         * only the samples bright enough to be rejected count. Null if not measured.
+         * only the samples bright enough to be rejected count (a deep streak's: from its cells, as a white trail's
+         * green). Null if not measured.
          */
         public float[] light;
+        /**
+         * Found in its frame's deep map ({@link StreakEvidence#deep}): too faint for the rejections to show; how
+         * strong its line was there (sigma), and whether the same line shows in the frame before or after (a
+         * satellite or a plane going on).
+         */
+        public boolean deep;
+        public float score;
+        boolean onward;
 
         public String name() {
             return sat != null ? sat.displayName() : "unidentified streak";
@@ -195,8 +204,279 @@ public final class SatMatch {
                 r.streaks.add(s);
             }
         }
+        if (ev.deep()) deep(r, ev, planOf);
         guessKinds(r.streaks, width, degPerPx, frames, tracks, planOf);
         return r;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Fainter streaks
+
+    /**
+     * How strong (sigma) a line in a frame's deep map must be: the strongest line pure noise makes in a map of
+     * {@link #DEEP_REF_CELLS} cells (half size) is about {@link #DEEP_MODE}, and the chance of a stronger one falls
+     * e-fold every {@link #DEEP_TAIL} (the simulator's DeepLinesTest, with some room for real skies); the bar is set
+     * where a session's frames, however many and however big, make a false line about once in
+     * 1 / {@link #DEEP_FALSE} sessions, and never below {@link #DEEP_SIGMA_MIN}.
+     */
+    public static final double DEEP_MODE = 5.6, DEEP_TAIL = 0.25, DEEP_REF_CELLS = 255 * 192, DEEP_FALSE = 0.01;
+    static final double DEEP_SIGMA_MIN = 7.5;
+    /** Blocks (deep cells a side) whose slow changes are taken out of each deep map ({@link DeepLines#flatten}). */
+    static final int DEEP_FLAT = 16;
+    /** Fewest deep cells such a line has, and most looked for in a frame. */
+    static final int DEEP_MIN_CELLS = 8, DEEP_MAX_LINES = 4;
+    /** How strong the same line in the frame before or after must be for the streak to go on there. */
+    static final double DEEP_ONWARD_SIGMA = 5;
+    /** Deep cells either side of a found line taken out before the next is looked for. */
+    static final double DEEP_CLAIM = 2;
+    /** How much further from an edge a deep streak's end may lie and still have run out of the picture (pixels). */
+    static final double DEEP_END_SLACK = 2 * StreakEvidence.DEEP;
+
+    /**
+     * The streaks too faint for the rejections: lines in each frame's deep map (its own mean taken out, its spread
+     * taken as the unit, and the sensor's banding in that frame taken out) away from the streaks already found there,
+     * each an unidentified streak marked {@link Streak#deep}, its light measured from the map, and whether the same
+     * line goes on in the frame before or after. One along a streak of its own frame (the fainter start or end of a
+     * meteor or a satellite, past where the rejections showed it) becomes part of that streak.
+     */
+    static void deep(Result r, final StreakEvidence ev, int[] planOf) {
+        final int w = ev.deepX, h = ev.deepY, nf = ev.frames;
+        final List<List<Streak>> found = new ArrayList<List<Streak>>();
+        for (int f = 0; f < nf; f++) found.add(new ArrayList<Streak>());
+        for (Streak s : r.streaks) if (s.plan >= 0 && s.plan < nf) found.get(s.plan).add(s);
+        final List<List<DeepLines.Line>> lines = new ArrayList<List<DeepLines.Line>>();
+        for (int f = 0; f < nf; f++) lines.add(null);
+        final float[] unit = new float[nf], offset = new float[nf];
+        final double[][] rho = new double[nf][];
+        final double sigma = deepSigma(nf, w * h);
+        Parallel.forRange(nf, 1, new Parallel.Range() {
+            @Override
+            public void run(int a, int b) {
+                DeepLines dl = new DeepLines(w, h);
+                float[] z = null, col = new float[w * h], row = new float[w * h];
+                for (int f = a; f < b; f++) {
+                    double sd = ev.deepSpread(f);
+                    if (!(sd > 0)) continue;
+                    z = ev.deepMap(f, z);
+                    for (Streak s : found.get(f)) mask(z, w, h, s);
+                    float mean = deepMean(z, w * h);
+                    prepare(z, w, h, mean, (float) sd, ev, f, col, row);
+                    double[] nb = DeepLines.neighbours(z, w, h);
+                    dl.setNeighbours(nb);
+                    List<DeepLines.Line> got = dl.find(z, sigma, DEEP_MIN_CELLS, DEEP_MAX_LINES, DEEP_CLAIM);
+                    synchronized (lines) {
+                        lines.set(f, got);
+                        unit[f] = (float) sd;
+                        offset[f] = mean;
+                        rho[f] = nb;
+                    }
+                }
+            }
+        });
+        float[] za = null, zb = null, zf = null, col = new float[w * h], row = new float[w * h];
+        for (int f = 0; f < nf; f++) {
+            List<DeepLines.Line> got = lines.get(f);
+            if (got == null || got.isEmpty()) continue;
+            // the frames either side as they are (a satellite bright enough there to be found is still the same line)
+            za = f > 0 && unit[f - 1] > 0 ? prepare(ev.deepMap(f - 1, za), w, h, offset[f - 1], unit[f - 1], ev, f - 1, col, row) : null;
+            zb = f + 1 < nf && unit[f + 1] > 0 ? prepare(ev.deepMap(f + 1, zb), w, h, offset[f + 1], unit[f + 1], ev, f + 1, col, row) : null;
+            // and the frame's own map as it was searched, for the light along its lines
+            zf = ev.deepMap(f, zf);
+            for (Streak s : found.get(f)) mask(zf, w, h, s);
+            prepare(zf, w, h, offset[f], unit[f], ev, f, col, row);
+            List<Streak> here = new ArrayList<Streak>(found.get(f));
+            for (DeepLines.Line l : got) {
+                Streak s = deepStreak(ev, f, l, zf, unit[f]);
+                for (int u = 0; u < planOf.length; u++) if (planOf[u] == f) s.unit = u;
+                for (int side = -1; side <= 1; side += 2) {
+                    float[] zz = side < 0 ? za : zb;
+                    if (zz == null) continue;
+                    DeepLines.Line on = DeepLines.bestStretch(zz, w, h, l.x0, l.y0, l.x1, l.y1, DEEP_MIN_CELLS);
+                    if (on == null) continue;
+                    if (on.score * DeepLines.neighbourFactor(rho[f + side], on.x0, on.y0, on.x1, on.y1) >= DEEP_ONWARD_SIGMA) s.onward = true;
+                }
+                Streak part = null;
+                for (Streak o : here) if (o.sat == null && liesAlong(s, o)) part = o;
+                if (part != null) {
+                    absorb(part, s);
+                    continue;
+                }
+                here.add(s);
+                r.streaks.add(s);
+            }
+        }
+    }
+
+    /** Whether deep streak d's evidence lies along streak o's line, both its ends within a deep cell of it. */
+    static boolean liesAlong(Streak d, Streak o) {
+        boolean ev = !Float.isNaN(o.sx0);
+        double ax = ev ? o.sx0 : o.x0, ay = ev ? o.sy0 : o.y0, bx = ev ? o.sx1 : o.x1, by = ev ? o.sy1 : o.y1;
+        double len = Math.hypot(bx - ax, by - ay);
+        if (len < 1) return false;
+        double nx = -(by - ay) / len, ny = (bx - ax) / len, tol = StreakEvidence.DEEP + o.halfWidth;
+        return Math.abs((d.sx0 - ax) * nx + (d.sy0 - ay) * ny) <= tol && Math.abs((d.sx1 - ax) * nx + (d.sy1 - ay) * ny) <= tol;
+    }
+
+    /**
+     * Streak o taken on over deep streak d along its line: its evidence and its corridor reach over d's too, its
+     * light runs on with d's (none where neither shows), and d's cells count as its own.
+     */
+    static void absorb(Streak o, Streak d) {
+        boolean ev = !Float.isNaN(o.sx0);
+        double ax = ev ? o.sx0 : o.x0, ay = ev ? o.sy0 : o.y0, bx = ev ? o.sx1 : o.x1, by = ev ? o.sy1 : o.y1;
+        double len = Math.hypot(bx - ax, by - ay);
+        if (len < 1) return;
+        double ux = (bx - ax) / len, uy = (by - ay) / len;
+        // along o's line from its evidence's start: d's evidence, and both corridors
+        double d0 = (d.sx0 - ax) * ux + (d.sy0 - ay) * uy, d1 = (d.sx1 - ax) * ux + (d.sy1 - ay) * uy;
+        double lo = Math.min(0, Math.min(d0, d1)), hi = Math.max(len, Math.max(d0, d1));
+        double c0 = Math.min(along(o.x0, o.y0, ax, ay, ux, uy), along(o.x1, o.y1, ax, ay, ux, uy));
+        double c1 = Math.max(along(o.x0, o.y0, ax, ay, ux, uy), along(o.x1, o.y1, ax, ay, ux, uy));
+        c0 = Math.min(c0, Math.min(along(d.x0, d.y0, ax, ay, ux, uy), along(d.x1, d.y1, ax, ay, ux, uy)));
+        c1 = Math.max(c1, Math.max(along(d.x0, d.y0, ax, ay, ux, uy), along(d.x1, d.y1, ax, ay, ux, uy)));
+        // the light, per cell's length from the new start
+        double c = StreakEvidence.CELL;
+        int bins = Math.max(1, (int) Math.round((hi - lo) / c));
+        float[] light = new float[bins];
+        boolean dUp = d1 >= d0;
+        for (int i = 0; i < bins; i++) {
+            double t = lo + (i + 0.5) * c;
+            if (t >= 0 && t < len && o.light != null) {
+                int j = (int) (t / c);
+                if (j < o.light.length) light[i] = o.light[j];
+            } else if (t >= Math.min(d0, d1) && t <= Math.max(d0, d1) && d.light != null) {
+                int j = (int) ((dUp ? t - d0 : d0 - t) / c);
+                if (j >= 0 && j < d.light.length) light[i] = d.light[j];
+            }
+        }
+        o.light = light;
+        if (ev) {
+            o.sx0 = (float) (ax + ux * lo);
+            o.sy0 = (float) (ay + uy * lo);
+            o.sx1 = (float) (ax + ux * hi);
+            o.sy1 = (float) (ay + uy * hi);
+        }
+        // the corridor along its own line, so it keeps its place across
+        boolean up = along(o.x1, o.y1, ax, ay, ux, uy) >= along(o.x0, o.y0, ax, ay, ux, uy);
+        double ox = o.x0 - ux * along(o.x0, o.y0, ax, ay, ux, uy), oy = o.y0 - uy * along(o.x0, o.y0, ax, ay, ux, uy);
+        o.x0 = (float) (ox + ux * (up ? c0 : c1));
+        o.y0 = (float) (oy + uy * (up ? c0 : c1));
+        o.x1 = (float) (ox + ux * (up ? c1 : c0));
+        o.y1 = (float) (oy + uy * (up ? c1 : c0));
+        o.cells += d.cells;
+        if (o.deep) o.score = Math.max(o.score, d.score);
+        o.onward |= d.onward;
+    }
+
+    /** How far along the line from (ax, ay) in direction (ux, uy) the point (x, y) lies. */
+    private static double along(double x, double y, double ax, double ay, double ux, double uy) {
+        return (x - ax) * ux + (y - ay) * uy;
+    }
+
+    /**
+     * A deep map's mean where there's only sky (cells beyond -2.5 and 3.5 taken as those): the frame's samples sit a
+     * little off the stack's centre on the whole (the centre is a median, and the noise isn't quite symmetric).
+     */
+    static float deepMean(float[] z, int n) {
+        double sum = 0;
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            float v = z[i];
+            if (!(v == v)) continue;
+            sum += v < -2.5f ? -2.5f : v > 3.5f ? 3.5f : v;
+            k++;
+        }
+        return k > 0 ? (float) (sum / k) : 0f;
+    }
+
+    /**
+     * Plan f's deep map as it's searched (in place): less its mean, in units of its spread, its slow changes taken out
+     * ({@link DeepLines#flatten}), and the sensor's banding in that frame ({@link DeepLines#unband}, with where its
+     * cells lay on the sensor: worked out into {@code col} and {@code row}).
+     */
+    static float[] prepare(float[] z, int w, int h, float mean, float unit, StreakEvidence ev, int f, float[] col, float[] row) {
+        float k = 1 / unit;
+        for (int i = 0; i < w * h; i++) z[i] = (z[i] - mean) * k;
+        DeepLines.flatten(z, w, h, DEEP_FLAT);
+        ev.sensorCells(f, col, row);
+        DeepLines.unband(z, w, h, col, row);
+        return z;
+    }
+
+    /** The bar a deep line must reach in a session of so many frames of so many deep cells each ({@link #DEEP_MODE}). */
+    public static double deepSigma(int frames, int cells) {
+        double trials = Math.max(1, frames) * (double) cells / DEEP_REF_CELLS / DEEP_FALSE;
+        return Math.max(DEEP_SIGMA_MIN, DEEP_MODE + DEEP_TAIL * Math.log(trials));
+    }
+
+    /** Takes a streak's corridor (a deep cell beyond it) out of a deep map. */
+    static void mask(float[] z, int w, int h, Streak s) {
+        if (Float.isNaN(s.x0)) return;
+        double c = StreakEvidence.DEEP;
+        DeepLines.clear(z, w, h, s.x0 / c - 0.5, s.y0 / c - 0.5, s.x1 / c - 0.5, s.y1 / c - 0.5, s.halfWidth / c + 1);
+    }
+
+    /**
+     * A deep line as a streak in stack pixels: where its evidence begins and ends, a corridor a cell longer at both
+     * ends and a cell and a half either side, and its light along it: a white trail's green excess over the stack in
+     * the line's cell and the cells either side of it (the map as searched, {@code z}, back in the units of the
+     * frame's spread {@code unit}, times what a cell's 1 stands for there, {@link StreakEvidence#deepLight}), per
+     * {@link StreakEvidence#CELL} of its length.
+     */
+    static Streak deepStreak(StreakEvidence ev, int f, DeepLines.Line l, float[] z, float unit) {
+        double c = StreakEvidence.DEEP;
+        Streak s = new Streak();
+        s.plan = f;
+        s.deep = true;
+        s.score = l.score;
+        s.cells = l.cells;
+        s.sx0 = (float) ((l.x0 + 0.5) * c);
+        s.sy0 = (float) ((l.y0 + 0.5) * c);
+        s.sx1 = (float) ((l.x1 + 0.5) * c);
+        s.sy1 = (float) ((l.y1 + 0.5) * c);
+        double dx = s.sx1 - s.sx0, dy = s.sy1 - s.sy0, len = Math.max(1e-6, Math.hypot(dx, dy));
+        s.x0 = (float) (s.sx0 - dx / len * c);
+        s.y0 = (float) (s.sy0 - dy / len * c);
+        s.x1 = (float) (s.sx1 + dx / len * c);
+        s.y1 = (float) (s.sy1 + dy / len * c);
+        s.halfWidth = (float) (1.5 * c);
+        // the light: a step of a cell along the line's main direction is that much longer along the line
+        int w = ev.deepX, h = ev.deepY;
+        boolean steep = Math.abs(l.y1 - l.y0) > Math.abs(l.x1 - l.x0);
+        double a0 = steep ? l.y0 : l.x0, a1 = steep ? l.y1 : l.x1;
+        double slope = Math.abs(a1 - a0) < 1e-6 ? 0 : (steep ? (l.x1 - l.x0) / (l.y1 - l.y0) : (l.y1 - l.y0) / (l.x1 - l.x0));
+        double stepPx = c * Math.sqrt(1 + slope * slope);
+        int t0 = (int) Math.round(Math.min(a0, a1)), t1 = (int) Math.round(Math.max(a0, a1));
+        int bins = Math.max(1, (int) Math.round((t1 - t0 + 1) * stepPx / StreakEvidence.CELL));
+        float[] light = new float[bins];
+        for (int t = t0; t <= t1; t++) {
+            double o = (steep ? l.x0 : l.y0) + slope * (t - a0);
+            int q = (int) Math.floor(o + 0.5);
+            double sum = 0;
+            for (int k = -1; k <= 1; k++) {
+                int x = steep ? q + k : t, y = steep ? t : q + k;
+                if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                float v = z[y * w + x];
+                double per = ev.deepLight(f, (x + 0.5) * c, (y + 0.5) * c);
+                if (v == v && per == per) sum += v * unit * per;
+            }
+            // the light of this step, spread over the cells' lengths it covers (from the line's start)
+            double from = (t - t0) * stepPx / StreakEvidence.CELL, to = (t - t0 + 1) * stepPx / StreakEvidence.CELL;
+            for (int b = (int) Math.floor(from); b < Math.min(bins, (int) Math.ceil(to)); b++) {
+                double share = Math.min(to, b + 1) - Math.max(from, b);
+                if (share > 0) light[b] += (float) (sum * share / (to - from));
+            }
+        }
+        // the line runs from (x0, y0): if that's its far end along the main direction, the light runs the other way
+        if (a0 > a1) {
+            for (int i = 0, j = bins - 1; i < j; i++, j--) {
+                float t = light[i];
+                light[i] = light[j];
+                light[j] = t;
+            }
+        }
+        s.light = light;
+        return s;
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -677,7 +957,7 @@ public final class SatMatch {
                 continue;
             }
             if (s.sat != null || !s.kind.isEmpty()) continue;
-            boolean continues = false;
+            boolean continues = s.onward;
             for (Streak o : all) {
                 if (o == s || Math.abs(o.plan - s.plan) != 1) continue;
                 if (collinear(s, o)) continues = true;
@@ -687,7 +967,8 @@ public final class SatMatch {
             if (g != null) {
                 s.sat = g.sat;
                 s.track = g;
-                s.kind = "glint";
+                // a deep streak along its path is the satellite itself, too faint for the rejections
+                s.kind = s.deep ? "" : "glint";
                 s.mag = g.brightest();
                 continue;
             }
@@ -731,7 +1012,7 @@ public final class SatMatch {
             before |= g0 < s0 && g1 >= s0 - MAX_GAP_S;
             after |= g1 > s1 && g0 <= s1 + MAX_GAP_S;
         }
-        double near = EDGE_PX + s.halfWidth;
+        double near = EDGE_PX + s.halfWidth + (s.deep ? DEEP_END_SLACK : 0);
         // how each end could be a satellite's: 0 an edge, 1 the shadow, 2 the exposure's start, 3 its end. In the
         // shadow's case, a satellite as high as the shadow reaches there, fast enough to have left the streak; and
         // lit all along it, so the shadow reaches no higher at its other end (a satellite keeps its height)

@@ -142,11 +142,13 @@ public final class Tonight {
     /**
      * The faintest meteor the camera catches half the time (V magnitude), for one crossing at 10 degrees a second,
      * under a dark site's sky ({@link #CAMERA_SKY_DARK} magnitudes per square arcsecond) and a suburban one
-     * ({@link #CAMERA_SKY_SUBURB}): measured on simulated full-size sessions (the simulator's MeteorLimit: +1.26
-     * and +0.81, from 58 Geminids in 4 sessions under each sky). The sky's glow is only part of the noise, so a sky
-     * 1.5 magnitudes brighter costs less than half a magnitude.
+     * ({@link #CAMERA_SKY_SUBURB}): measured on simulated full-size sessions (the simulator's MeteorLimit, 58
+     * Geminids in 4 sessions under each sky: +1.57 and +1.55 since 1.6's deep search, +1.26 and +0.81 before). Each
+     * is good to about a fifth of a magnitude, so they're taken as their mean, split by what the simulator's noise
+     * says the brighter sky costs (a third of a magnitude): the sky's glow is only part of the noise, so a sky 1.5
+     * magnitudes brighter costs less than half a magnitude.
      */
-    static final double CAMERA_MAG_DARK = 1.3, CAMERA_MAG_SUBURB = 0.8, CAMERA_SKY_DARK = 21.9, CAMERA_SKY_SUBURB = 20.4;
+    static final double CAMERA_MAG_DARK = 1.75, CAMERA_MAG_SUBURB = 1.4, CAMERA_SKY_DARK = 21.9, CAMERA_SKY_SUBURB = 20.4;
     /**
      * How fast meteors grow in number a magnitude fainter, among the bright ones the camera catches: video networks
      * find about 2.0 for the Perseids and the Geminids, where the eye's counts (fainter meteors, the showers' own

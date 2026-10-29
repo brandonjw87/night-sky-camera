@@ -256,8 +256,9 @@ public final class SharpStacker {
 
         final boolean keep = keepsSamples(nf);
         long rows = keep ? keepRows(nf) : Math.max(32, memoryBudget / ((long) W * STREAM_BYTES));
-        // bands start on a cell of the streak evidence (and on a Bayer row pair)
-        int bandRows = (int) Math.min(Math.min(512, rows), H + 1) & ~(StreakEvidence.CELL - 1);
+        // bands start on a cell of the streak evidence, a deep one if it's kept (and on a Bayer row pair)
+        int cell = evidence != null && evidence.deep() ? StreakEvidence.DEEP : StreakEvidence.CELL;
+        int bandRows = (int) Math.min(Math.min(512, rows), H + 1) & ~(cell - 1);
         res.method = method;
         res.keptSamples = keep;
         res.bandRows = bandRows;
@@ -327,7 +328,7 @@ public final class SharpStacker {
                 Arrays.fill(ccnt, 0, n, (short) 0);
                 if (gcnt != null) Arrays.fill(gcnt, 0, n, (short) 0);
                 if (trail != null) Arrays.fill(trail, 0, n * 3, Float.NaN);
-                if (ev != null) ev.beginBand(y0, y1);
+                if (ev != null) ev.beginBand(y0, y1, !keep);
                 for (int pass = 0; pass < 2; pass++) {
                     Future<Loaded> next = io.submit(loader(plans.get(0), grids[0], y0, y1, bufs[0]));
                     for (int f = 0; f < nf; f++) {
@@ -342,7 +343,10 @@ public final class SharpStacker {
                             if (keep && pass == 0) collect(cur, grids[f], nvf, iyA, f, nf, y0, y1, vals, cnt, gcnt, mb, res);
                             else if (keep) integrateKept(cur, grids[f], p, nvf, iyA, f, nf, y0, y1, vals, acc, icnt, ccnt, kb, trail, res);
                             else if (pass == 0) gather(cur, grids[f], nvf, iyA, f, y0, y1, acc, sq, cnt, icnt, gcnt, mb, res);
-                            else integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, mb, kb, trail, ev, res);
+                            else {
+                                integrateClipped(cur, grids[f], p, nvf, iyA, f, y0, y1, acc, icnt, ccnt, mb, kb, trail, ev, res);
+                                if (ev != null) ev.endFrameBand(f);
+                            }
                         }
                         if (progress.cancelled()) throw new CancelledException();
                         progress.update(label, ((b * 2 + pass) + (f + 1f) / nf) / (bands * 2f));
@@ -793,6 +797,9 @@ public final class SharpStacker {
             public void run(int j0, int j1) {
                 Rejection.Work wk = new Rejection.Work(nf);
                 StreakEvidence.Batch eb = ev != null ? ev.batch() : null;
+                StreakEvidence.DeepBatch db = ev != null && ev.deep() ? ev.deepBatch(y0 + j0, y0 + j1) : null;
+                // a pixel's standardized samples per frame and colour, and the noise each was divided by, for db
+                float[] dzs = db != null ? new float[nf * 3] : null, dss = db != null ? new float[nf * 3] : null;
                 float[][] nr = new float[nf][nx * NK];
                 float[][] rxs = new float[nf][nx], rys = new float[nf][nx];
                 float[] base = new float[nx * 3];
@@ -860,6 +867,15 @@ public final class SharpStacker {
                                 rej.run(method, n, bl, wk);
                                 edge += wk.judged;
                                 edgeRej += wk.judgedRejected;
+                                // every sample, as far from the centre as the noise there makes it
+                                if (db != null) {
+                                    double sp = Rejection.spread(wk);
+                                    for (int i = 0; i < n; i++) {
+                                        int k = idx[i] * 3 + c;
+                                        dzs[k] = sp == sp ? (float) Rejection.standardized(wk.v[i], wk.s[i], wk.t[i], wk) : Float.NaN;
+                                        dss[k] = (float) (wk.s[i] * sp);
+                                    }
+                                }
                             }
                             double sum = 0;
                             int m = 0;
@@ -878,9 +894,18 @@ public final class SharpStacker {
                             }
                             centre[k3 + c] = cm;
                         }
+                        // the pixel's colours together into the deep map (the same frames take part in each)
+                        if (db != null) {
+                            for (int f = 0; f < nf; f++) {
+                                float w = wf[f];
+                                if (w != w || (anyW && !(w > 0))) continue;
+                                db.add(f, x, y, dzs, dss, f * 3);
+                            }
+                        }
                     }
                 }
                 if (eb != null) eb.flush();
+                if (db != null) db.flush();
                 synchronized (res) {
                     for (int f = 0; f < nf; f++) res.rejected[f] += rejF[f];
                     res.edgeSamples += edge;
@@ -1194,12 +1219,13 @@ public final class SharpStacker {
             @Override
             public void run(int j0, int j1) {
                 float[] rx = new float[grid.nx], ry = new float[grid.nx], nr = new float[grid.nx * NK];
-                float[] st = new float[3], rgb = new float[3], dz = new float[6], nz = new float[3];
+                float[] st = new float[3], rgb = new float[3], dz = new float[6], nz = new float[3], pz = new float[3], ps = new float[3];
                 float[] o0 = new float[3], dO = new float[3], n0 = new float[3], dN = new float[3];
                 float[] d = cur.data;
                 int rs = cur.rs;
                 long rej = 0, inc = 0, edge = 0, edgeRej = 0;
                 StreakEvidence.Batch eb = ev != null ? ev.batch() : null;
+                StreakEvidence.DeepBatch db = ev != null && ev.deep() ? ev.deepBatch(y0 + j0, y0 + j1) : null;
                 for (int j = j0; j < j1; j++) {
                     int y = y0 + j;
                     grid.row(y + 0.5, rx, ry);
@@ -1245,6 +1271,12 @@ public final class SharpStacker {
                                 fb[k] += v;
                                 float s = Math.max(1e-3f, (n0[c] + dN[c] * t) * nz[c]);
                                 float sk = sd[k], dv = v - cen[k];
+                                // every sample, as far from the centre as the noise there makes it
+                                if (db != null) {
+                                    float sp = s * Math.max(1f, sk);
+                                    pz[c] = sk >= 0 && sk < Float.MAX_VALUE ? dv / sp : Float.NaN;
+                                    ps[c] = sp;
+                                }
                                 boolean out;
                                 if (sk >= 0) out = dv > kHigh * sk * s || -dv > kLow * sk * s;
                                 else out = dv * dv > kHigh * kHigh * s * s + sk * sk && dv > 0
@@ -1273,6 +1305,7 @@ public final class SharpStacker {
                                 if (c == 1 && probe != null) probe.add(f, bp, w, v, dzv, dz[c + 3]);
                                 any = true;
                             }
+                            if (db != null) db.add(f, x, y, pz, ps, 0);
                             if (any) {
                                 icnt[bp]++;
                                 if (clipped) ccnt[bp]++;
@@ -1282,6 +1315,7 @@ public final class SharpStacker {
                     }
                 }
                 if (eb != null) eb.flush();
+                if (db != null) db.flush();
                 synchronized (res) {
                     res.rejected[f] += rej;
                     res.included[f] += inc;

@@ -182,6 +182,8 @@ public final class PostProcessor {
     public boolean keepMeteors;
     /** Whether streaks get corridors in the next stack (tests switch it off to compare; they're still named). */
     public boolean streakCorridors = true;
+    /** Whether fainter streaks are looked for too, in the deep map (1.6; tests switch it off to compare). */
+    public boolean deepStreaks = true;
     /** Also make the long-exposure blend (C7): the plain average, where drifting clouds turn into soft streaks. */
     public boolean blend;
     /** Take the white balance from the catalogue stars when there are enough (F4; tests switch it off to compare). */
@@ -224,6 +226,12 @@ public final class PostProcessor {
     static final float SAT_PAD = 64;
     /** Frames the stack needs before a sample far above the others says something (a streak) about its frame. */
     static final int MIN_STREAK_FRAMES = 3;
+    /**
+     * Frames the stack needs before the deep map (fainter streaks) says something: each pixel's own spread must be
+     * known; and the most memory the deep map may take.
+     */
+    static final int DEEP_MIN_FRAMES = 12;
+    static final long DEEP_MAX_BYTES = 32L << 20;
     /** The reference frame's stars as detected for photometry (the deepest list of it). */
     private StarList refDetections;
     /**
@@ -590,7 +598,19 @@ public final class PostProcessor {
         //    gain measured as it goes
         st.noise = noiseProbe(plans, stacked, out.referenceUnit);
         if (st.noise != null) st.noise.mask(NoiseProbe.starMask(refDetections != null ? refDetections : ref != null ? ref.stars : null, W, H));
-        StreakEvidence ev = out.aligned && plans.size() >= MIN_STREAK_FRAMES ? new StreakEvidence(plans.size(), W, H) : null;
+        StreakEvidence ev = null;
+        if (out.aligned && plans.size() >= MIN_STREAK_FRAMES) {
+            boolean deep = deepStreaks && plans.size() >= DEEP_MIN_FRAMES;
+            long bytes = StreakEvidence.deepBytes(plans.size(), W, H);
+            if (deep && bytes > DEEP_MAX_BYTES) {
+                deep = false;
+                decide(out, String.format(Locale.US, "streaks: only the brighter ones looked for: %d frames' deep maps would "
+                        + "take %d MB", plans.size(), bytes >> 20));
+            }
+            ev = new StreakEvidence(plans.size(), W, H, deep);
+            ev.setWhite(spec.camNeutral);
+            ev.setSensor(onSensor(plans, model));
+        }
         st.evidence = ev;
         // keeping the ground still: the lined-up stack leaves the ground's samples out, the plain average fills it in
         if (freezeGround && groundMap != null && out.aligned) st.ground = groundMap;
@@ -610,6 +630,8 @@ public final class PostProcessor {
                 out.streaks = null;
                 store.log("streaks: looking for them failed: " + e);
             }
+            // its maps aren't needed again: their memory goes back before the next stack
+            ev = null;
         }
         SharpStacker.Result again = cleanPattern(out, st, sr, plans, target, fixed, model, fs, hot, progress);
         if (corridors && again == sr) again = stackWithoutStreaks(st, sr, plans, progress);
@@ -893,10 +915,11 @@ public final class PostProcessor {
         StreakFrames frames = new StreakFrames(out, stacked, plans, recs, model);
         SatMatch.Result r = SatMatch.match(tracks != null ? tracks : new ArrayList<SatPredict.Track>(), planOf, ev, degPerPx, W, frames);
         int edges = 0;
+        boolean[] notSky = obstructions();
         for (java.util.Iterator<SatMatch.Streak> it = r.streaks.iterator(); it.hasNext(); ) {
             SatMatch.Streak s = it.next();
             if (s.sat != null || s.plan < 0 || s.plan >= plans.size()) continue;
-            if (besideObstruction(s, plans.get(s.plan), model) >= OBSTRUCTION_SHARE) {
+            if (besideObstruction(s, plans.get(s.plan), model, notSky) >= OBSTRUCTION_SHARE) {
                 it.remove();
                 edges++;
             }
@@ -923,8 +946,9 @@ public final class PostProcessor {
             (keep ? keeps : masks).get(s.plan).add(c);
             if (keep) kept++;
             else masked++;
-            store.log(String.format(Locale.US, "streak: unit %d %s%s, (%.0f,%.0f)-(%.0f,%.0f) +-%.0f px, %d cells%s%s",
+            store.log(String.format(Locale.US, "streak: unit %d %s%s, (%.0f,%.0f)-(%.0f,%.0f) +-%.0f px, %d %scells%s%s",
                     s.unit, s.name(), s.kind.isEmpty() ? "" : " (" + s.kind + ")", s.x0, s.y0, s.x1, s.y1, s.halfWidth, s.cells,
+                    s.deep ? String.format(Locale.US, "deep (%.1f sigma, faint%s) ", s.score, s.onward ? ", goes on next door" : "") : "",
                     "glint".equals(s.kind) ? String.format(Locale.US, ", a flash along its predicted path (mag %.1f at its brightest "
                             + "there), elements %.1f days old", s.mag, s.track.ageDays)
                             : s.sat != null ? String.format(Locale.US, " of %d, %.1f px across, %+.1f s along, mag %.1f, elements %.1f days old",
@@ -1372,13 +1396,14 @@ public final class PostProcessor {
 
     /**
      * Share of a streak's length that runs beside something on the sensor that isn't sky: a cell within its
-     * corridor (and two cells more) that the session's average shows far darker than the sky (a branch, a
-     * roof) or far brighter (a lit wall). An obstruction's edge leaves rejections along it in the frames at
+     * corridor (and two cells more) of {@code notSky} ({@link #obstructions}: far darker than the sky, a branch, a
+     * roof, or far brighter all around, a lit wall; not a bright star's trail through the session's average, nor a
+     * warm pixel, which a meteor may well pass). An obstruction's edge leaves rejections along it in the frames at
      * either end of a session, as the sky drifts past it; a satellite crosses open sky. Stack coordinates are
      * taken to the streak's frame's sensor through its rotation.
      */
-    private double besideObstruction(SatMatch.Streak s, SharpStacker.Plan plan, CameraModel model) {
-        if (sensorSky == null || plan.R == null) return 0;
+    private double besideObstruction(SatMatch.Streak s, SharpStacker.Plan plan, CameraModel model, boolean[] notSky) {
+        if (notSky == null || plan.R == null) return 0;
         int c = StreakEvidence.CELL, cw = skyCellsX, ch = sensorSky.length / cw;
         double dx = s.x1 - s.x0, dy = s.y1 - s.y0, len = Math.hypot(dx, dy);
         if (len < c) return 0;
@@ -1395,7 +1420,7 @@ public final class PostProcessor {
                 int sx = (int) Math.floor(p[0] / c), sy = (int) Math.floor(p[1] / c);
                 if (sx < 0 || sy < 0 || sx >= cw || sy >= ch) continue;
                 seen = true;
-                odd = obstruction(sensorSky[sy * cw + sx]);
+                odd = notSky[sy * cw + sx];
             }
             if (!seen) continue;
             samples++;
@@ -1404,8 +1429,32 @@ public final class PostProcessor {
         return samples > 0 ? beside / (double) samples : 0;
     }
 
-    /** Whether a streak stays in the picture: a named satellite's with {@link #keepSatellites}, a meteor's with it or {@link #keepMeteors}. */
+    /** Where each plan's pixels (in the reference frame's) lay on its own sensor. */
+    static StreakEvidence.Sensor onSensor(final List<SharpStacker.Plan> plans, final CameraModel model) {
+        return new StreakEvidence.Sensor() {
+            @Override
+            public boolean at(int f, double x, double y, double[] out) {
+                double[] R = plans.get(f).R;
+                if (R == null) {
+                    out[0] = x;
+                    out[1] = y;
+                    return true;
+                }
+                double[] b = new double[3], r = new double[3];
+                model.unproject(x, y, b);
+                Rot.apply(R, b[0], b[1], b[2], r);
+                return model.project(r[0], r[1], r[2], out);
+            }
+        };
+    }
+
+    /**
+     * Whether a streak stays in the picture: a named satellite's with {@link #keepSatellites}, a meteor's with it or
+     * {@link #keepMeteors}; never one only the deep search found (its frame there is mostly noise: kept, it would be
+     * a stripe of noise).
+     */
     private boolean kept(SatMatch.Streak s) {
+        if (s.deep) return false;
         return keepSatellites && s.sat != null || (keepSatellites || keepMeteors) && "meteor".equals(s.kind);
     }
 
@@ -1430,6 +1479,7 @@ public final class PostProcessor {
                 m.toMs = m.fromMs + frames.span[s.plan] * 1000;
             }
             m.kept = streakCorridors && kept(s);
+            m.faint = s.deep;
             list.add(m);
         }
         java.util.Collections.sort(list, new java.util.Comparator<MeteorLog.Meteor>() {
@@ -1445,12 +1495,6 @@ public final class PostProcessor {
             store.log("meteors: the list couldn't be saved: " + e.getMessage());
         }
         return list;
-    }
-
-    /** Whether a cell of {@link #sensorSky} is something that isn't sky: far darker than it, or far brighter. */
-    private boolean obstruction(float v) {
-        float L = sensorSkyLevel, clear = 6 * sensorSkyNoise;
-        return (v < OBSTRUCTION_DARK * L && L - v > clear) || (v > OBSTRUCTION_BRIGHT * L && v - L > clear);
     }
 
     /** The lowest satellites fly (km): lower ones last only hours. */

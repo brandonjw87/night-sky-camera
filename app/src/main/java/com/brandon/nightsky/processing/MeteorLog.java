@@ -18,7 +18,9 @@ import java.util.TimeZone;
  * at every pixel, as bright as a green photosite's; the detector's pixels are 2 x 2 photosites, the mean of their
  * two greens). Its speed comes from its shower's speed and how far from the radiant it was, or a typical sporadic
  * meteor's (40 km/s, 45 degrees from its radiant), at the height meteors burn. Good to about a magnitude: the
- * trail's faint edges weren't rejected, and the speed is taken, not measured.
+ * trail's faint edges weren't rejected, and the speed is taken, not measured. A faint one's light (seen only in the
+ * deep map) is mostly noise cell by cell, so its brightest part is taken over a quarter of its length, not over
+ * three cells' (the brightest three of a noisy trail are brighter than the trail was).
  */
 public final class MeteorLog {
     private MeteorLog() {}
@@ -52,6 +54,11 @@ public final class MeteorLog {
         /** Its estimated magnitude at its brightest (NaN without a zero point), and the speed across the sky taken for it (degrees a second). */
         public double mag = Double.NaN, speedDegS = Double.NaN;
         public boolean kept;
+        /**
+         * Seen only by the deep search ({@link SatMatch.Streak#deep}): too faint for any of its samples to stand out
+         * alone, so never kept in the picture (its frame there is mostly noise).
+         */
+        public boolean faint;
 
         /** "a Geminid", "a sporadic meteor", "a meteor" (without the time or the sky). */
         public String what() {
@@ -154,10 +161,13 @@ public final class MeteorLog {
         double best = 0;
         float[] l = s.light;
         if (l != null) {
+            int half = s.deep ? Math.max(1, l.length / 8) : 1;
             for (int i = 0; i < l.length; i++) {
+                // a faint one's whole window, or none (fewer of its noisy cells would stand out by chance)
+                if (s.deep && l.length > 2 * half + 1 && (i < half || i >= l.length - half)) continue;
                 double sum = 0;
                 int n = 0;
-                for (int k = Math.max(0, i - 1); k <= Math.min(l.length - 1, i + 1); k++) {
+                for (int k = Math.max(0, i - half); k <= Math.min(l.length - 1, i + half); k++) {
                     sum += l[k];
                     n++;
                 }
@@ -210,12 +220,13 @@ public final class MeteorLog {
                     Double.isNaN(m.alt1) ? "" : String.format(Locale.US, ", alt %.0f az %.0f", m.alt1, m.az1)));
         }
         if (!Double.isNaN(m.mag)) sb.append(String.format(Locale.US, ", about mag %.1f (taking %.0f deg/s)", m.mag, m.speedDegS));
+        if (m.faint) sb.append(", faint");
         sb.append(m.kept ? ", kept" : ", masked");
         return sb.toString();
     }
 
     static final String HEADER = "unit,utc_start,utc_end,shower,direction_known,from_ra,from_dec,to_ra,to_dec,from_alt,from_az,"
-            + "to_alt,to_az,length_deg,from_radiant_deg,mag,speed_deg_s,kept,x0,y0,x1,y1";
+            + "to_alt,to_az,length_deg,from_radiant_deg,mag,speed_deg_s,kept,x0,y0,x1,y1,faint";
 
     /** The meteors as CSV (a header line, one line each; ends are given where each began first when known). */
     public static String csv(List<Meteor> list) {
@@ -228,7 +239,8 @@ public final class MeteorLog {
                     .append(num(m.alt0, 1)).append(num(m.az0, 1)).append(num(m.alt1, 1)).append(num(m.az1, 1))
                     .append(num(m.lengthDeg, 2)).append(num(m.fromRadiant, 1)).append(num(m.mag, 1)).append(num(m.speedDegS, 1))
                     .append(',').append(m.kept ? 1 : 0)
-                    .append(num(m.x0, 1)).append(num(m.y0, 1)).append(num(m.x1, 1)).append(num(m.y1, 1)).append('\n');
+                    .append(num(m.x0, 1)).append(num(m.y0, 1)).append(num(m.x1, 1)).append(num(m.y1, 1))
+                    .append(',').append(m.faint ? 1 : 0).append('\n');
         }
         return sb.toString();
     }

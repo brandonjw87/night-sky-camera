@@ -433,8 +433,8 @@ public final class MeteorSessionTest {
         for (int k = 0; listOk && k < n; k++) {
             MeteorLog.Meteor m = r.out.meteors.get(k);
             String[] c = rows[k + 1].split(",", -1);
-            listOk = c.length == 22 && c[0].equals(Integer.toString(m.unit)) && c[3].equals(m.shower != null ? m.shower.code : "SPO")
-                    && c[17].equals(m.kept ? "1" : "0") && c[1].endsWith("Z");
+            listOk = c.length == 23 && c[0].equals(Integer.toString(m.unit)) && c[3].equals(m.shower != null ? m.shower.code : "SPO")
+                    && c[17].equals(m.kept ? "1" : "0") && c[22].equals(m.faint ? "1" : "0") && c[1].endsWith("Z");
             if (!listOk) System.out.println("  meteors.csv row " + (k + 1) + ": " + rows[k + 1] + "  WRONG");
         }
         if (rows.length != n + 1) System.out.println("  meteors.csv has " + (rows.length - 1) + " rows for " + n + " meteors  WRONG");

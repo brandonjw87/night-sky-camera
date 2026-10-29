@@ -169,6 +169,21 @@ public final class Rejection {
         return rej;
     }
 
+    /**
+     * How far a sample lies from the last {@link #run}'s centre, in units of its noise times the spread the run
+     * found there (never less than its noise alone, so a pixel quieter than its noise says doesn't count double):
+     * NaN where the run found no spread (percentile clipping, or too few samples).
+     */
+    public static double standardized(float v, float s, float t, Work w) {
+        return ((v - (w.lc + w.lb * t)) / s - w.lm) / spread(w);
+    }
+
+    /** The spread the last {@link #run} found, in units of the samples' noise and at least 1; NaN if none. */
+    public static double spread(Work w) {
+        if (w.lp >= 0 || !(w.ls < Double.POSITIVE_INFINITY)) return Double.NaN;
+        return Math.max(1, w.ls);
+    }
+
     /** Whether a sample falls within the limits of the last pass. */
     private boolean admit(float v, float s, float t, Work w) {
         double d = v - (w.lc + w.lb * t);

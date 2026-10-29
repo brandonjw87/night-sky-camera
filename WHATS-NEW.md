@@ -1,5 +1,76 @@
 # Night Sky Camera: what's new
 
+## Version 1.6: fainter meteors
+
+### What's new
+
+- **Fainter meteors.** Each frame is now also searched for straight lines too faint to see in it. How far each of
+  its pixels sits from the rest of the session, all three colours together, is added up in patches of 8 by 8
+  pixels and then along every line, so a trail far too faint to stand out anywhere still adds up to a line that
+  does. On simulated Geminid nights the camera now catches half of the meteors as faint as magnitude +1.6, under a
+  dark sky or a suburban one (version 1.5: +1.3 and +0.8): about a quarter more meteors under a dark sky, and two
+  thirds more under a suburban one.
+- **Listed, not drawn.** A meteor found only this way is in the session report, the log and the meteor table like
+  the others, marked "too faint to show in the picture" (in the table, its `faint` column is 1). It's never kept
+  in the photo, even with **Keep meteors**: in its frame it's mostly noise, so keeping it would only add a faint
+  stripe of noise.
+- **A brighter meteor's faint ends**, found the same way, are joined on to it rather than counted as another
+  meteor.
+- **The sensor's own banding is taken out first.** Rows (and columns) of the sensor that are a little brighter or
+  darker in one frame than the rest would otherwise look like faint lines; the search takes them out of each frame
+  along that frame's own rows and columns.
+- **Fixed:** a meteor that passed close to a bright star could be dropped as "the edge of something that isn't
+  sky" (a roof, a branch). Now only something far darker or far brighter than the sky all around counts.
+- **The Tonight card** counts the fainter meteors too: its camera estimate is about 40% higher than before.
+- **Checked on simulated nights:** 58 Geminids in four full-size sessions under each sky (the numbers above); the
+  5-minute Geminid night of version 1.5, where all 11 meteors are still found, named and placed, with nothing else
+  called a meteor; the satellite nights, unchanged; and sessions on a sensor with strong banding and fixed
+  pattern, where the search first found over 120 false lines and now finds none.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.5 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- The faint search runs by itself on every deep-sky session of 12 frames or more (about a minute and a half);
+  there's no setting. A session so long that its search would need more than 32 MB of memory (about 35 minutes of
+  full-size frames, so the 30-minute Meteors preset is covered) skips it, and its log says so.
+- Faint meteors stay out of the photo, whatever the **Streaks** setting.
+- Everything else is unchanged from version 1.5.
+
+### Try today
+
+- Nothing new to see in daylight: the faint search needs a night sky.
+
+### Try tonight
+
+1. Any clear night: a **Meteors** session (the preset, 30 minutes). The session report lists every meteor caught;
+   the faint ones are marked "too faint to show in the picture". On an ordinary night a session with none is still
+   normal.
+2. The real test is the Geminids, on the night of Sunday December 13: the Tonight card will say when, with the best
+   time.
+3. If the report lists a meteor that can't have been there, or misses one you saw, send the photo and **Session
+   report > Share the log** here. The log names every faint line the search found and how strongly it stood out.
+
+### Not working yet, or not tested
+
+- Tested off the phone only: on simulated skies, and through the app itself with a simulated camera. A real sensor
+  and a real sky can make faint lines the simulator doesn't (a lit cloud's edge, a pattern the sensor has that the
+  simulator lacks), so your first nights are the real test of the faint search.
+- How long the faint search takes on the phone isn't measured: on a desktop it's about a tenth of a second a frame
+  (half a minute for a 30-minute session); the phone is slower, so developing takes a little longer than in 1.5.
+- A faint meteor shorter than about 64 pixels isn't looked for, and one that runs within a degree or so of the
+  sensor's rows or columns is harder to find (that's where the banding is taken out).
+- A faint meteor's brightness is rougher than a bright one's: on simulated nights within about half a magnitude.
+- What version 1.5 says below about meteors' times, speeds and showers still holds.
+
 ## Version 1.5: meteors
 
 ### What's new
