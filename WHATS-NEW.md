@@ -32,9 +32,9 @@
   **Only if the sky is clear** wait; a hazy first night, learned, doesn't make the next hazy night look clear; a
   camera whose specs are 1.5 magnitudes too hopeful shows some haze until three clear nights agree, then reads
   clear; and noise figures that disagree with the sky's own noise aren't trusted. Through the app itself, with a
-  simulated camera: a new phone's first night under 1.3 magnitudes of haze said "Some haze: stars about 1.3
-  magnitudes dimmer than this camera's specs say a clear sky gives" and wasn't learned as the clear night; the clear
-  night after it read clear and was.
+  simulated camera: a new phone's first night under 1.3 magnitudes of haze said "Some haze: stars about 1.2
+  magnitudes dimmer than this camera's specs say a clear sky gives" (1.3 on an earlier run) and wasn't learned as the
+  clear night; the clear night after it read clear and was.
 
 ### Install the update (Windows, USB cable)
 
