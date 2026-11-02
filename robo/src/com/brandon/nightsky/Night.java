@@ -500,8 +500,61 @@ public class Night {
         press("Take them out");
     }
 
+    /**
+     * A new phone's first two nights (1.7): nothing learned yet. The first night is 1.3 magnitudes hazy all session:
+     * the sky check names the haze against what the camera's specs say a clear sky gives, and the hazy night isn't
+     * learned as the clear one. The second night is clear: it reads clear against the specs too, and is learned as the
+     * clear night the next check compares with.
+     */
+    static void haze() throws Exception {
+        begin("a new phone's first night, 1.3 magnitudes of haze all session");
+        // nothing learned about a clear night yet (other scenarios in the run may have taught it one)
+        android.content.SharedPreferences sp = Monkey.app.getSharedPreferences("nightsky", android.content.Context.MODE_PRIVATE);
+        android.content.SharedPreferences.Editor ed = sp.edit();
+        for (String k : sp.getAll().keySet()) if (k.startsWith("zp|")) ed.remove(k);
+        ed.commit();
+        minutes(1);
+        SimCamera.get().transparency = 0.3;
+        try {
+            startAndPutDown();
+            follow(15 * 60_000L);
+        } finally {
+            SimCamera.get().transparency = 1;
+        }
+        report();
+        String log = read(new File(newestSession(), "log.txt"));
+        if (!log.contains("note clouds: Some haze: stars about ") || !log.contains("dimmer than this camera's specs say a clear sky gives")) {
+            Monkey.problem(scenario + ": the first night's sky check didn't name the haze against the camera's specs");
+        }
+        if (!log.contains("clear sky from the camera's specs: zero point ")) Monkey.problem(scenario + ": no clear-sky estimate in the log");
+        if (!log.contains("clear night zero point ") || !log.contains("(the camera's specs: no clear night measured yet)")) {
+            Monkey.problem(scenario + ": the hazy night was learned as the clear one");
+        }
+
+        begin("the second night, clear");
+        minutes(1);
+        startAndPutDown();
+        follow(15 * 60_000L);
+        report();
+        log = read(new File(newestSession(), "log.txt"));
+        if (!log.contains("ok clouds: Clear sky: ") || !log.contains("going by the camera's specs until a clear night is measured")) {
+            Monkey.problem(scenario + ": the second night didn't read clear against the camera's specs");
+        }
+        if (!log.contains("learned for the next check: ") || log.contains("(the camera's specs: no clear night measured yet)")) {
+            Monkey.problem(scenario + ": the clear night wasn't learned as the one to compare with");
+        }
+    }
+
+    /** The newest session's folder (null if none). */
+    static File newestSession() {
+        File[] ss = Monkey.root.listFiles();
+        if (ss == null || ss.length == 0) return null;
+        Arrays.sort(ss);
+        return ss[ss.length - 1];
+    }
+
     static String read(File f) throws Exception {
-        if (!f.exists()) return "";
+        if (f == null || !f.exists()) return "";
         return new String(java.nio.file.Files.readAllBytes(f.toPath()), "UTF-8");
     }
 

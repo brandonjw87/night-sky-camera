@@ -30,6 +30,12 @@ public final class SkySim {
     public double frameExp = 8.0, gap = 0.06;
     public int black = 64, white = 1023;
     public double readNoise = 1.6, darkRate = 0.25;
+    /**
+     * Electrons that make one raw level at ISO 700: the light's shot noise is drawn in electrons and turned into
+     * levels. The rates here are in levels, so this only changes the noise: 1 (the default) gives the simulator's
+     * usual frames; a camera matching its specs ({@code robo}'s) counts more electrons for the same levels.
+     */
+    public double electronsPerDn = 1;
     /** Sky glow per channel in ADU/s at the frame centre (camera raw). */
     public double[] skyRate = {0.55, 0.95, 0.55};
     public double gradient = 0.35;
@@ -632,6 +638,7 @@ public final class SkySim {
             SplittableRandom rb = new SplittableRandom(seed * 7777L + i * 131L + 5);
             for (int y = 0; y < H; y++) rowBand[y] = (float) (rowBandSigma * gauss(rb));
         }
+        final double epd = electronsPerDn;
         Parallel.forRange(H, 16, new Parallel.Range() {
             @Override
             public void run(int y0, int y1) {
@@ -640,7 +647,9 @@ public final class SkySim {
                     for (int x = 0; x < W; x++) {
                         int k = y * W + x;
                         double lam = Math.max(0, img[k]);
-                        double v = (steadyNoise ? poissonOneDraw(r, lam) : poisson(r, lam)) + readNoise * gauss(r) + black + rowBand[y];
+                        double shot = epd == 1 ? (steadyNoise ? poissonOneDraw(r, lam) : poisson(r, lam))
+                                : (steadyNoise ? poissonOneDraw(r, lam * epd) : poisson(r, lam * epd)) / epd;
+                        double v = shot + readNoise * gauss(r) + black + rowBand[y];
                         if (fpn != null) v += fpn[k] + rowFixed[y] + colFixed[x];
                         long q = Math.round(v);
                         if (q < 0) q = 0;

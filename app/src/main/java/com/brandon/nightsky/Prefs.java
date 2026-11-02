@@ -527,6 +527,11 @@ final class Prefs {
         return v[v.length >= 3 ? v.length - 2 : v.length - 1];
     }
 
+    /** Every session's zero point measured with this camera (per second at ISO 100, oldest first), for ClearSky.choose. */
+    double[] zeroPoints(String cameraId) {
+        return list("zp|" + cameraKey(cameraId));
+    }
+
     void learnZeroPoint(String cameraId, double zp) {
         if (Double.isNaN(zp)) return;
         append("zp|" + cameraKey(cameraId), zp, ZP_KEEP);

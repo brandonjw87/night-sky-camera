@@ -60,6 +60,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | `trails` | Star trails for 2 minutes. |
 | `reading` | A sky reading (how dark it is). |
 | `clouds` | Clouds over everything for three frames. |
+| `haze` | A new phone's first two nights (nothing learned): 1.3 magnitudes of haze all session, named against what the camera's specs say a clear sky gives and not learned as the clear night; then a clear night, read clear against the specs and learned. |
 | `storage` | Not enough free storage. |
 | `more` | One minute, then Add 5 minutes from the result. |
 | `plan`, `plancloudy` | Tonight's plan armed and started by its alarm; under clouds it waits to try again, then is cancelled (run `plancloudy` after other sessions: it needs a learned clear-night zero point). |

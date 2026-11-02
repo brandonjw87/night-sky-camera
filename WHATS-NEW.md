@@ -1,5 +1,80 @@
 # Night Sky Camera: what's new
 
+## Version 1.7: haze from the first night
+
+### What's new
+
+- **Haze measured from the very first night.** Until now the sky check could tell haze only once the phone had
+  seen a clear night to compare with; before that it said "haze not measured yet". Now it works out how bright a
+  clear night's stars should be for this camera from the camera's own numbers: how wide its lens opens (6.9 mm at
+  f/1.68, so 4.1 mm across), how many electrons make one step of its RAW values (from the noise figures the camera
+  sends with every frame, checked against the frame's own sky), how much starlight its green pixels catch, how
+  much of each star the lens spreads into a glow (measured on the same frame), and how much a clear sky takes off
+  at the stars' height. So on the first night the sky check can say "Some haze: stars about 1.1 magnitudes dimmer
+  than this camera's specs say a clear sky gives", or warn about thin cloud or thick haze.
+- **It says less than a measured clear night would.** Worked out this way, a clear night's stars are known to
+  about half a magnitude, so haze is named only from half a magnitude more than against a measured clear night:
+  "Some haze" from about 0.9 magnitudes (against a clear night: "A little haze" from 0.4),
+  the thin cloud or thick haze warning from about 1.8 (1.3), and **Only if the sky is clear** waits from about 3
+  (2.5). A clear first night says "at most a little haze, going by the camera's specs until a clear night is
+  measured".
+- **A hazy night isn't learned as a clear one.** Each good session's star brightness is still kept, and the
+  clearest night is what later checks compare with, unless it's more than a magnitude dimmer than the camera's
+  specs say: then that night was likely hazy, and the check keeps using the specs until three nights agree (if
+  three do, it's the specs that are off for this phone, and the nights win). Before, a hazy first night made every
+  night as hazy look clear.
+- **In the log:** the sky check now writes the clear sky it worked out and what went into it (the line starting
+  "clear sky from the camera's specs"), and after a good session, what the next check will compare with and this
+  session's own number. A sky reading says which it measured the haze against, and its table has a new last
+  column, `haze_against`.
+- **Checked on simulated nights:** a clear first night reads clear (within 0.05 magnitudes of what the specs say);
+  1.25 magnitudes of haze reads as "Some haze, about 1.1"; 2 magnitudes brings the warning; 3.5 magnitudes makes
+  **Only if the sky is clear** wait; a hazy first night, learned, doesn't make the next hazy night look clear; a
+  camera whose specs are 1.5 magnitudes too hopeful shows some haze until three clear nights agree, then reads
+  clear; and noise figures that disagree with the sky's own noise aren't trusted. Through the app itself, with a
+  simulated camera: a new phone's first night under 1.3 magnitudes of haze said "Some haze: stars about 1.3
+  magnitudes dimmer than this camera's specs say a clear sky gives" and wasn't learned as the clear night; the clear
+  night after it read clear and was.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.6 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- There's no setting. The sky check uses the camera's specs whenever no clear night has been measured (or the one
+  measured looks hazy), and a measured clear night once there is one.
+- If the camera doesn't send its noise figures, or they disagree with the frame's own sky, the check says "haze
+  not measured yet", as in 1.6.
+- Everything else is unchanged from version 1.6.
+
+### Try today
+
+- Nothing new to see in daylight: the haze check needs stars.
+
+### Try tonight
+
+1. Any night: a normal session. The sky check's line about clouds now says how hazy it is from the start.
+2. On the first properly clear, dark night (no Moon, no haze), open **Session report > Share the log** afterwards
+   and look near the end for the line starting "learned for the next check": its "this session" number against
+   "the camera's specs say a clear sky gives" shows how close the estimate is for your Pixel. Send that line (or the
+   whole log) here and the estimate can be set exactly for your phone.
+
+### Not working yet, or not tested
+
+- Tested off the phone only. How much light the Pixel's green pixels catch isn't published, so it's a typical
+  phone camera's: on your Pixel the estimate could be off by half a magnitude, or more. If it's too hopeful, your
+  first clear nights may say "Some haze"; after three clear nights that agree, the check uses them instead.
+- Before a clear night is measured, haze under about 0.9 magnitudes isn't named.
+- The Moon, twilight and town lights brighten the sky but don't dim the stars, so they aren't counted as haze (the
+  check names them separately, as before).
+
 ## Version 1.6: fainter meteors
 
 ### What's new

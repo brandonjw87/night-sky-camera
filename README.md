@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.6.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.7.
 
 ## What it does
 
@@ -16,7 +16,10 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.6.
 - **Camera check.** Up to three minutes indoors, before your first night: what this phone's camera really does
   with long exposures, frame after frame and in the dark. Sessions plan with what it finds.
 - **Screen-down start.** Tap Start and lay the phone down. Once it's still it focuses on the stars, checks the
-  sky (a smudged lens, trees, clouds, the Moon), counts down and starts. The screen goes dark while it works.
+  sky (a smudged lens, trees, clouds, haze, the Moon), counts down and starts. The screen goes dark while it works.
+- **Haze from the first night.** How much haze dims the stars is measured against how bright they'd be on a clear
+  night, which the app works out from this camera's own numbers (its lens and its sensor) until it has measured a
+  clear night itself. A hazy first night isn't taken for a clear one.
 - **Safe to interrupt.** Lifting the phone pauses the capture; lay it back down to carry on. "Hold to stop and
   develop" finishes early with what it has. If the app is killed or the battery dies, the frames are kept and
   the home screen offers to develop them.
@@ -320,6 +323,7 @@ app/src/main/java/com/brandon/nightsky/
         MeteorShowers   the shower calendar: radiants, their drift, rates, and which shower a meteor came from
         MeteorLog       the meteors caught: when, how bright, where, and the table of them
         Preflight       the pre-flight check
+        ClearSky        how bright a clear night's stars are for this camera (from its lens and sensor), for haze
         CameraFacts, DarkFrames  what the camera check found; dark frames measured
         Focus*          focus on the stars and its temperature model
         ReportCard      the session report
@@ -363,8 +367,8 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 (`deep` or `trails`), events such as satellites and clouds (true/false).
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
-`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`, `MeteorTest`,
-`DeepLinesTest` and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
+`PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `ClearSkyTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`,
+`MeteorTest`, `DeepLinesTest` and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
 `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder, for example
 `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `MeteorLimit` (an output folder, then
 the scale) measures how faint a meteor the camera catches.

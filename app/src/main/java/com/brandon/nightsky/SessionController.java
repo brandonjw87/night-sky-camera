@@ -24,6 +24,7 @@ import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
+import com.brandon.nightsky.processing.ClearSky;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
@@ -2692,6 +2693,7 @@ final class SessionController {
         in.haloBaseline = prefs.haloBaseline(cameraId);
         in.haloSpread = prefs.haloSpread(cameraId);
         in.clearZeroPoint = prefs.clearZeroPoint(cameraId);
+        in.clearZeroPoints = prefs.zeroPoints(cameraId);
         in.freeBytes = freeBytes();
         in.needBytes = needBytes();
         BatteryInfo b = BatteryInfo.read(ctx);
@@ -3498,6 +3500,9 @@ final class SessionController {
             if (!Double.isNaN(pf.haloLimit)) p.setProperty("preflight.haloLimit", Double.toString(pf.haloLimit));
             if (!Double.isNaN(pf.haloClean)) p.setProperty("preflight.haloClean", Double.toString(pf.haloClean));
             if (!Double.isNaN(pf.zeroPointNorm)) p.setProperty("preflight.zeroPointNorm", Double.toString(pf.zeroPointNorm));
+            if (!Double.isNaN(pf.clearSkyZeroPoint)) p.setProperty("preflight.clearSkyZeroPoint", Double.toString(pf.clearSkyZeroPoint));
+            if (!Double.isNaN(pf.hazeMag)) p.setProperty("preflight.hazeMag", Double.toString(pf.hazeMag));
+            p.setProperty("preflight.hazeFromSpecs", Boolean.toString(pf.hazeFromSpecs));
             Preflight.Item lens = pf.item("lens");
             p.setProperty("preflight.lensWarned", Boolean.toString(lens != null && lens.level == Preflight.Level.WARN));
             // for the site's clear-night share of stars, learned if the session goes well
@@ -3527,6 +3532,7 @@ final class SessionController {
         if (pf != null) {
             store.log(String.format(Locale.US, "pre-flight (%d ms): %s", pf.millis, pf.spoken()));
             for (Preflight.Item it : pf.items) store.log("  " + it.level.name().toLowerCase(Locale.US) + " " + it.key + ": " + it.text);
+            if (!pf.clearSkyNote.isEmpty()) store.log("  " + pf.clearSkyNote);
             if (pf.placeSource.startsWith("stars")) {
                 store.log(String.format(Locale.US, "decision: place from the stars and the phone's level: %.1f, %.1f (%s)",
                         pf.latDeg, pf.lonDeg, pf.placeSource));
@@ -4860,9 +4866,20 @@ final class SessionController {
         if (!Double.isNaN(zp)) prefs.learnZeroPoint(sp.cameraId, zp);
         if (!Double.isNaN(halo) || !Double.isNaN(zp)) {
             double spread = prefs.haloSpread(sp.cameraId);
-            st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f (%s), clear night zero point %.2f",
+            // what the next check compares with: the nights measured, against what the camera's specs said a clear sky
+            // gives (a night far below the specs was likely hazy, until three agree)
+            double specs = parseDouble(props.getProperty("preflight.clearSkyZeroPoint"));
+            ClearSky.Estimate prior = new ClearSky.Estimate();
+            prior.zeroPointNorm = specs;
+            ClearSky.Baseline next = ClearSky.choose(prefs.zeroPoints(sp.cameraId), prior);
+            String clear = !next.ok() ? "not known yet"
+                    : String.format(Locale.US, "%.2f%s", next.zeroPoint, next.fromSpecs ? " (the camera's specs: no clear night measured yet)" : "");
+            st.log(String.format(Locale.US, "learned for the next check: clean lens halo %.3f (%s), clear night zero point %s%s%s",
                     prefs.haloBaseline(sp.cameraId), Double.isNaN(spread) ? "how much it wanders is known after 4 good sessions"
-                            : String.format(Locale.US, "readings wander %.3f", spread), prefs.clearZeroPoint(sp.cameraId)));
+                            : String.format(Locale.US, "readings wander %.3f", spread), clear,
+                    Double.isNaN(zp) ? "" : String.format(Locale.US, "; this session %.2f", zp),
+                    Double.isNaN(specs) ? "" : String.format(Locale.US, "; the camera's specs say a clear sky gives %.2f", specs)));
+            if (!next.note.isEmpty()) st.log("  " + next.note);
         }
         // a clear, dark night at a saved site: the share of the stars its check saw is what a clear night there shows
         String siteId = props.getProperty("site.id", "");

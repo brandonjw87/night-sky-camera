@@ -49,6 +49,13 @@ public final class SimCamera {
         current = c;
     }
 
+    /**
+     * Electrons a raw count at ISO 700 (fewer at higher ISOs). The simulator's stars (in counts) are what a 6.9 mm
+     * f/1.68 lens collects through a clear sky (as ClearSky works it out) at about 2.33 electrons a count, so this camera
+     * counts them so and says so in its noise profile: its first clear night then reads clear against its specs (sim's
+     * ClearSkyTest works the number out). It changes only the light's shot noise, not its level.
+     */
+    static final double ELECTRONS_PER_DN = 2.33;
     static final float MIN_FOCUS = 10f;
     /** Blur circle per diopter of defocus (px), as FocusSweep.Lens works it out for this lens and sensor. */
     static final double PX_PER_DIOPTER = 5.9;
@@ -203,6 +210,8 @@ public final class SimCamera {
                 sim.starGain = dark ? 0 : gain;
                 for (int c = 0; c < 3; c++) sim.skyRate[c] = (dark ? 0 : baseSky[c] * gain) + light * gain;
                 sim.darkRate = baseDark * gain;
+                // the shot noise in electrons: fewer of them a count at a higher ISO
+                sim.electronsPerDn = ELECTRONS_PER_DN / gain;
                 sim.psfSigma = psf;
                 if (clouds < 1) {
                     sim.cloudFrom = 1;
@@ -341,11 +350,14 @@ public final class SimCamera {
         sr.set(CaptureResult.LENS_STATE, CaptureResult.LENS_STATE_STATIONARY);
         sr.set(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL, s.black);
         sr.set(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL, sim.white);
-        // shot and read noise, on the [0, 1] scale Camera2 uses: one count per electron, 1.6 counts of read noise
+        // shot and read noise, on the [0, 1] scale Camera2 uses: ELECTRONS_PER_DN electrons a count at ISO 700, 1.6
+        // counts of read noise
         double range = sim.white - sim.black, g = s.iso / 700.0;
         @SuppressWarnings("unchecked")
         Pair<Double, Double>[] np = new Pair[4];
-        for (int c = 0; c < 4; c++) np[c] = new Pair<Double, Double>(g / range, sim.readNoise * sim.readNoise / (range * range));
+        for (int c = 0; c < 4; c++) {
+            np[c] = new Pair<Double, Double>(g / (ELECTRONS_PER_DN * range), sim.readNoise * sim.readNoise / (range * range));
+        }
         sr.set(CaptureResult.SENSOR_NOISE_PROFILE, np);
         sr.set(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP, shading());
         return r;

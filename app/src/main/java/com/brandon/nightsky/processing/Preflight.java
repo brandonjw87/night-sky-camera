@@ -71,6 +71,11 @@ public final class Preflight {
         public double haloSpread = Double.NaN;
         /** Zero point of a clear night, per second at ISO 100 (NaN: not learned yet). */
         public double clearZeroPoint = Double.NaN;
+        /**
+         * Zero points of the sessions measured so far (per second at ISO 100, any order), from which the clear night
+         * is chosen ({@link ClearSky#choose}); null: {@link #clearZeroPoint} alone.
+         */
+        public double[] clearZeroPoints;
         /** Free and needed storage (bytes; negative if unknown). */
         public long freeBytes = -1, needBytes = -1;
         public int batteryPct = -1;
@@ -116,6 +121,15 @@ public final class Preflight {
         public double zeroPointNorm = Double.NaN;
         /** Magnitudes the clearest stars lose against a clear night (haze, thin cloud, dew); NaN if unknown. */
         public double hazeMag = Double.NaN;
+        /**
+         * Whether {@link #hazeMag} is against what the camera's specs say a clear sky gives (no clear night measured
+         * yet, or only hazy ones), which is rougher: see {@link ClearSky#SLACK}.
+         */
+        public boolean hazeFromSpecs;
+        /** The clear sky's zero point per second at ISO 100 worked out from the camera's specs; NaN if it couldn't be. */
+        public double clearSkyZeroPoint = Double.NaN;
+        /** How that was worked out, and which clear night the frame was compared with (for the log). */
+        public String clearSkyNote = "";
         /** Zero point of the test frame itself (2.5 log10 of a star's flux plus its V magnitude); NaN if unknown. */
         public double zeroPointFrame = Double.NaN;
         /**
@@ -226,7 +240,8 @@ public final class Preflight {
             for (float v : clipped) j.val(v);
             j.end();
             j.put("clippedStars", clippedStars);
-            j.put("zeroPointNorm", zeroPointNorm).put("hazeMag", hazeMag);
+            j.put("zeroPointNorm", zeroPointNorm).put("hazeMag", hazeMag).put("hazeFromSpecs", hazeFromSpecs);
+            j.put("clearSkyZeroPoint", clearSkyZeroPoint);
             j.put("skyMag", skyMag).put("skyMagWithStars", skyMagWithStars);
             if (solution != null) {
                 double[] c = solution.direction(solution.model.cx, solution.model.cy);
@@ -278,9 +293,9 @@ public final class Preflight {
         if (rep.expected >= 12 && !Double.isNaN(rep.seenFraction)) {
             String seen = String.format(Locale.US, "%d of %d stars that should show, %d%%", rep.seen, rep.expected,
                     Math.round(100 * rep.seenFraction));
-            if (!Double.isNaN(rep.hazeMag) && rep.hazeMag >= 2.5) {
-                return new Clear(false, seen + "; even the clearest are " + String.format(Locale.US, "%.1f", rep.hazeMag)
-                        + " magnitudes dimmer than on a clear night");
+            if (!Double.isNaN(rep.hazeMag) && rep.hazeMag - slack(rep) >= 2.5) {
+                return new Clear(false, seen + "; even the clearest are " + String.format(Locale.US, "%s%.1f",
+                        rep.hazeFromSpecs ? "about " : "", rep.hazeMag) + " magnitudes dimmer " + dimmerThan(rep));
             }
             return new Clear(rep.seenFraction >= need, seen);
         }
@@ -775,11 +790,37 @@ public final class Preflight {
         }
     }
 
+    /** How much rougher the haze is than against a measured clear night (magnitudes): see {@link ClearSky#SLACK}. */
+    static double slack(Report rep) {
+        return rep.hazeFromSpecs ? ClearSky.SLACK : 0;
+    }
+
+    /** "than on a clear night", or what the haze was measured against when it was the camera's specs. */
+    static String dimmerThan(Report rep) {
+        return rep.hazeFromSpecs ? "than this camera's specs say a clear sky gives" : "than on a clear night";
+    }
+
+    /** The median airmass of the solution's matched stars; NaN without the camera's bearings. */
+    static double starAirmass(SkySolver.Solution s, CameraModel model, double[] camToEnu) {
+        if (s == null || camToEnu == null || s.matched == 0) return Double.NaN;
+        float[] x = new float[s.matched];
+        double[] b = new double[3], e = new double[3];
+        int n = 0;
+        for (int k = 0; k < s.matched; k++) {
+            model.unproject(s.mx[k], s.my[k], b);
+            Rot.apply(camToEnu, b[0], b[1], b[2], e);
+            double alt = Astro.altitude(e) / Astro.DEG;
+            if (alt > 3) x[n++] = (float) ClearSky.airmass(alt);
+        }
+        return n == 0 ? Double.NaN : Stats.median(x, n);
+    }
+
     /**
      * Catalogue stars a clear sky would show bright enough here (four times the faintest detection) count as
      * expected; one counts as seen if a star is detected at its place with at least half the light a clear sky
-     * gives it, so thin haze passes and cloud doesn't. A clear sky's light is this camera's clear-night zero
-     * point if known, else the clearest stars of the frame itself (then only patchy cloud shows).
+     * gives it, so thin haze passes and cloud doesn't. A clear sky's light is the clearest stars of the frame itself
+     * (so only patchy cloud shows there). Haze, cloud all over, is what even those stars lose against a clear night:
+     * the clearest measured one, or before there's one, what the camera's specs say ({@link ClearSky}).
      */
     static void checkClouds(Input in, Report rep, StarList stars, CameraModel model, Obstruction ob, double[] camToEnu) {
         SkySolver.Solution s = rep.solution;
@@ -812,12 +853,27 @@ public final class Preflight {
         double zp80 = zs[0];
         rep.zeroPointFrame = zs[1];
         rep.zeroPointNorm = zs[1] - norm;
-        // haze: how much dimmer than a clear night even the clearest stars here are (needs a clear night to compare)
-        // (a smudged lens dims the stars' cores too: then the dimming isn't put down to haze)
+        // haze: how much dimmer than a clear night even the clearest stars here are, against the clearest night
+        // measured, or what the camera's specs say a clear sky gives it. The lens's glow around the stars counts in
+        // the specs' share of a star in the detector's box: this frame's glow, or the clean lens's as learned when
+        // too few stars measure it
+        double halo = !Double.isNaN(rep.haloRatio) ? rep.haloRatio : in.haloBaseline;
+        double[] sky = ClearSky.greenNoise(in.raw, in.invScale, in.black != null ? in.black : spec.black, spec);
+        ClearSky.Estimate est = ClearSky.estimate(spec, in.exposureS, in.iso, starAirmass(s, model, camToEnu),
+                in.sky != null ? in.sky.altM : Double.NaN, sky[0], sky[1], halo);
+        rep.clearSkyZeroPoint = est.zeroPointNorm;
+        double[] learned = in.clearZeroPoints != null ? in.clearZeroPoints
+                : Double.isNaN(in.clearZeroPoint) ? new double[0] : new double[]{in.clearZeroPoint};
+        ClearSky.Baseline base = ClearSky.choose(learned, est);
+        // a smudged lens dims the stars' cores too: then the dimming isn't put down to haze
         Item lens = rep.item("lens");
-        boolean baseline = !Double.isNaN(in.clearZeroPoint) && (lens == null || lens.level != Level.WARN);
-        double haze = baseline ? in.clearZeroPoint - rep.zeroPointNorm : Double.NaN;
+        boolean baseline = base.ok() && (lens == null || lens.level != Level.WARN);
+        double haze = baseline ? base.zeroPoint - rep.zeroPointNorm : Double.NaN;
         rep.hazeMag = haze;
+        rep.hazeFromSpecs = baseline && base.fromSpecs;
+        rep.clearSkyNote = "clear sky from the camera's specs: " + est.describe() + (base.note.isEmpty() ? "" : "; " + base.note);
+        double slack = slack(rep);
+        String about = rep.hazeFromSpecs ? "about " : "", than = dimmerThan(rep);
         // patches: stars the clearest part of this frame says should show
         double zpRef = zp80;
         DetGrid grid = new DetGrid(stars, spec.width, spec.height);
@@ -876,9 +932,9 @@ public final class Preflight {
             }
         }
         int pct = (int) Math.round(100 * f);
-        String hz = !Double.isNaN(haze) && haze >= 0.4
-                ? String.format(Locale.US, " Even the clearest stars are %.1f magnitudes dimmer than on a clear night.", haze) : "";
-        if (f < 0.1 || (!Double.isNaN(haze) && haze >= 2.5)) {
+        String hz = !Double.isNaN(haze) && haze - slack >= 0.4
+                ? String.format(Locale.US, " Even the clearest stars are %s%.1f magnitudes dimmer %s.", about, haze, than) : "";
+        if (f < 0.1 || (!Double.isNaN(haze) && haze - slack >= 2.5)) {
             rep.items.add(new Item("clouds", Level.WARN, String.format(Locale.US,
                     "Overcast: %d of %d stars that should show do (%d%%).%s Waiting for clearer sky would help.", seen, expected,
                     pct, hz), "it's overcast; waiting for a clearer sky would help"));
@@ -887,20 +943,24 @@ public final class Preflight {
                     "Partly cloudy%s: %d of %d stars that should show do (%d%%).%s The stack keeps the clear patches; "
                             + "a longer session gives it more of them.", where, seen, expected, pct, hz),
                     "it's partly cloudy" + where + ". A longer session will help"));
-        } else if (!Double.isNaN(haze) && haze >= 1.3) {
+        } else if (!Double.isNaN(haze) && haze - slack >= 1.3) {
             rep.items.add(new Item("clouds", Level.WARN, String.format(Locale.US,
-                    "Thin cloud or thick haze all over: stars %.1f magnitudes dimmer than on a clear night (%d%% of the light)",
-                    haze, Math.round(100 * Math.pow(10, -0.4 * haze))), "the sky is hazy, so fewer stars will show"));
+                    "Thin cloud or thick haze all over: stars %s%.1f magnitudes dimmer %s (%d%% of the light)",
+                    about, haze, than, Math.round(100 * Math.pow(10, -0.4 * haze))), "the sky is hazy, so fewer stars will show"));
         } else if (f < 0.85) {
             rep.items.add(new Item("clouds", Level.NOTE, String.format(Locale.US,
                     "Some cloud%s: %d of %d stars that should show do (%d%%).%s", where, seen, expected, pct, hz),
                     "some cloud" + where));
-        } else if (!Double.isNaN(haze) && haze >= 0.4) {
+        } else if (!Double.isNaN(haze) && haze - slack >= 0.4) {
             rep.items.add(new Item("clouds", Level.NOTE, String.format(Locale.US,
-                    "A little haze: stars %.1f magnitudes dimmer than on a clear night", haze), "a little haze"));
+                    "%s: stars %s%.1f magnitudes dimmer %s", rep.hazeFromSpecs ? "Some haze" : "A little haze", about, haze, than),
+                    rep.hazeFromSpecs ? "some haze" : "a little haze"));
         } else {
             rep.items.add(new Item("clouds", Level.OK, String.format(Locale.US, "Clear sky: %d of %d stars that should show do (%d%%)%s",
-                    seen, expected, pct, baseline ? "" : "; haze not measured yet (no clear night to compare)"), "clear sky"));
+                    seen, expected, pct, !baseline ? (base.ok() ? "; haze not measured (a smudged lens dims the stars too)"
+                            : "; haze not measured yet (no clear night to compare)")
+                            : rep.hazeFromSpecs ? "; at most a little haze, going by the camera's specs until a clear night is measured" : ""),
+                    "clear sky"));
         }
     }
 

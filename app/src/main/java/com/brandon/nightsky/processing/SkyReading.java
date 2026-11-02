@@ -45,6 +45,8 @@ public final class SkyReading {
     public String why = "";
     public int stars, expected, seen;
     public double sunAltDeg = Double.NaN, moonAltDeg = Double.NaN, moonIllum = Double.NaN, hazeMag = Double.NaN;
+    /** Whether the haze is against what the camera's specs say a clear sky gives, not a clear night measured. */
+    public boolean hazeFromSpecs;
     /** The saved site it was taken at ("" if none). */
     public String site = "";
     /** "20.41 mag/arcsec²: a suburban sky", for the screen. */
@@ -103,6 +105,7 @@ public final class SkyReading {
             s.expected = info.expected;
             s.seen = info.seen;
             s.hazeMag = info.hazeMag;
+            s.hazeFromSpecs = info.hazeFromSpecs;
             s.exposureS = info.exposureS;
             s.iso = info.iso;
         }
@@ -160,8 +163,10 @@ public final class SkyReading {
         if (s.expected >= 12) {
             s.lines.add(String.format(Locale.US, "%d of the %d catalogue stars that should show do.", s.seen, s.expected));
         }
-        if (!Double.isNaN(s.hazeMag) && s.hazeMag >= 0.4) {
-            s.lines.add(String.format(Locale.US, "The stars are %.1f magnitudes dimmer than on this camera's clearest night.", s.hazeMag));
+        if (!Double.isNaN(s.hazeMag) && s.hazeMag - (s.hazeFromSpecs ? ClearSky.SLACK : 0) >= 0.4) {
+            s.lines.add(String.format(Locale.US, s.hazeFromSpecs
+                    ? "The stars are about %.1f magnitudes dimmer than this camera's specs say a clear sky gives (it hasn't measured a clear night yet)."
+                    : "The stars are %.1f magnitudes dimmer than on this camera's clearest night.", s.hazeMag));
         }
         s.lines.add(s.valid ? "The reading counts: dark, clear and no Moon."
                 : "This reading doesn't count for the sky's darkness: " + s.why + ".");
@@ -196,7 +201,7 @@ public final class SkyReading {
     public static String csvHeader() {
         return "time,latitude,longitude,sky_mag_arcsec2_with_stars,sky_mag_arcsec2_between_stars,naked_eye_limit,valid,why_not,"
                 + "frames,spread,exposure_s,iso,offset,faintest_star_mag,stars_seen,stars_expected,sun_altitude_deg,moon_altitude_deg,"
-                + "moon_lit_percent,haze_mag,site";
+                + "moon_lit_percent,haze_mag,site,haze_against";
     }
 
     public String csvRow(TimeZone zone) {
@@ -206,7 +211,8 @@ public final class SkyReading {
                 + "," + num(nelm, 1) + "," + (valid ? "yes" : "no") + "," + quote(why) + "," + frames + "," + num(spread, 2) + ","
                 + num(exposureS, 1) + "," + (iso > 0 ? Integer.toString(iso) : "") + "," + num(offset, 2) + "," + num(faintestMag, 1) + ","
                 + seen + "," + expected + "," + num(sunAltDeg, 1) + "," + num(moonAltDeg, 1) + ","
-                + (Double.isNaN(moonIllum) ? "" : Long.toString(Math.round(100 * moonIllum))) + "," + num(hazeMag, 2) + "," + quote(site);
+                + (Double.isNaN(moonIllum) ? "" : Long.toString(Math.round(100 * moonIllum))) + "," + num(hazeMag, 2) + "," + quote(site)
+                + "," + (Double.isNaN(hazeMag) ? "" : hazeFromSpecs ? "camera specs" : "clear night");
     }
 
     private static String num(double v, int digits) {
