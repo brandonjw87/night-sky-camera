@@ -210,6 +210,11 @@ public final class ClearSkyTest {
         check(b.fromSpecs, "two nights agreeing 1.5 below the specs: still the specs (two hazy nights in a row happen)");
         b = ClearSky.choose(new double[]{7.0, 7.05, 6.2}, prior(8.5));
         check(b.fromSpecs, "three nights, two agreeing 1.5 below the specs: still the specs");
+        b = ClearSky.choose(new double[]{9.4, 7.1, 6.9}, prior(8.2));
+        System.out.println("    " + b.note);
+        check(b.fromSpecs && near(b.zeroPoint, 8.2, 1e-9) && b.note.contains("1.2 magnitudes above the camera's specs")
+                        && b.note.contains("next clearest (7.10) 1.1 below") && !b.note.contains("likely hazy"),
+                "three nights, the clearest 1.2 above the specs and the next 1.1 below: the specs, and the log says why");
     }
 
     // ---------------------------------------------------------------------------------------------------------

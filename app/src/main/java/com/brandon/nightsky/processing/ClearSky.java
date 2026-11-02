@@ -278,9 +278,15 @@ public final class ClearSky {
                         + "agree, so it's the specs that are off for this camera", pick, prior.zeroPointNorm - pick, prior.zeroPointNorm, agree);
                 return b;
             }
-            b.note = String.format(Locale.US, "the clearest night so far (%.2f) is %.1f magnitudes below the camera's specs (%.2f), "
-                    + "so it was likely hazy: compared with the specs until three nights agree", clearest, prior.zeroPointNorm - clearest,
-                    prior.zeroPointNorm);
+            // (the clearest can be far above the specs only when the second clearest is far below: one odd reading)
+            b.note = clearest > hi
+                    ? String.format(Locale.US, "the clearest night so far (%.2f) is %.1f magnitudes above the camera's specs (%.2f) and "
+                            + "the next clearest (%.2f) %.1f below them, too far apart to trust either: compared with the specs until "
+                            + "three nights agree", clearest, clearest - prior.zeroPointNorm, prior.zeroPointNorm, pick,
+                    prior.zeroPointNorm - pick)
+                    : String.format(Locale.US, "the clearest night so far (%.2f) is %.1f magnitudes below the camera's specs (%.2f), "
+                            + "so it was likely hazy: compared with the specs until three nights agree", clearest,
+                    prior.zeroPointNorm - clearest, prior.zeroPointNorm);
         }
         if (specs) {
             b.zeroPoint = prior.zeroPointNorm;
