@@ -28,11 +28,12 @@
   are (0.08 of a pixel apart); the plane never shows; a kept meteor shows from its frame on (168 levels above the
   sky beside it, none before); and in star trails the lit share of the picture grows at every step, from 3% to 9%.
   The file was read back the way Google's own Motion Photo reader (Media3) reads it, and ffprobe reads the video
-  inside. Through the app itself, with a simulated camera: a 5-minute session and a star-trails one each saved an
-  `.MP.jpg` with a 1440 x 1072 H.264 video of 111 or 129 frames inside, ending on the photo; and with no video
-  encoder, the video turned off, the encoder failing part way, and **Skip the video**, each saved the plain photo
-  and logged why. At the Pixel's full size (4080 x 3072) making the video took the app to 312 MB of the 512 MB
-  it has.
+  inside. Through the app itself, with a simulated camera: a 5-minute session, star trails, a session stopped
+  after 4 frames, one with two kept meteors (both come in with their frames and stay), and an edit stacked again
+  each saved an `.MP.jpg` with its H.264 video inside (111 or 129 frames, up to 1440 pixels across), its last
+  frame within 2.5 to 3.1 levels of the photo on average; and with no video encoder, the video turned off, the
+  encoder failing part way, and **Skip the video**, each saved the plain photo and logged why. At the Pixel's
+  full size (4080 x 3072) making the video took the app to 312 MB of the 512 MB it has.
 
 ### Install the update (Windows, USB cable)
 
