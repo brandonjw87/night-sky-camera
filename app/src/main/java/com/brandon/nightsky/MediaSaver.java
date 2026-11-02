@@ -9,6 +9,8 @@ import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
 
+import com.brandon.nightsky.processing.MotionPhoto;
+
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -40,6 +42,8 @@ final class MediaSaver {
         int width, height;
         /** Set by {@link #saveJpeg} when the block couldn't be written, so the photo was saved without it: why. */
         String failed;
+        /** Set by {@link #saveJpeg} when its video couldn't go in, so the photo was saved without it: why. */
+        String videoFailed;
     }
 
     interface Writer {
@@ -51,7 +55,17 @@ final class MediaSaver {
      * it and {@code exif.failed} says why: a photo without its date and exposure beats no photo.
      */
     static Uri saveJpeg(Context c, Bitmap bmp, String name, Exif exif) throws IOException {
+        return saveJpeg(c, bmp, name, exif, null, 0);
+    }
+
+    /**
+     * {@link #saveJpeg(Context, Bitmap, String, Exif)} with {@code video} (an MP4, null for none) inside the photo as a
+     * Motion Photo whose frame at {@code stillUs} is the photo: named name.MP.jpg, as the format asks, so Google Photos
+     * plays it. If it can't go in, the photo is saved as name.jpg without it and {@code exif.videoFailed} says why.
+     */
+    static Uri saveJpeg(Context c, Bitmap bmp, String name, Exif exif, File video, long stillUs) throws IOException {
         File tmp = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".jpg");
+        File motion = null;
         try {
             encode(bmp, tmp);
             if (exif != null) {
@@ -63,17 +77,36 @@ final class MediaSaver {
                     encode(bmp, tmp);
                 }
             }
-            final File src = tmp;
-            return insert(c, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name + ".jpg",
+            File src = tmp;
+            String display = name + ".jpg";
+            if (video != null) {
+                motion = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".MP.jpg");
+                try {
+                    OutputStream os = new BufferedOutputStream(new FileOutputStream(motion), 1 << 16);
+                    try {
+                        MotionPhoto.write(tmp, video, stillUs, os);
+                    } finally {
+                        os.close();
+                    }
+                    src = motion;
+                    display = name + ".MP.jpg";
+                } catch (IOException | RuntimeException e) {
+                    if (exif != null) exif.videoFailed = e.getMessage() != null ? e.getMessage() : e.toString();
+                }
+            }
+            final File from = src;
+            return insert(c, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), display,
                     "image/jpeg", PICTURES_DIR, exif != null ? exif.time : new Date(), new Writer() {
                         @Override
                         public void write(OutputStream os) throws IOException {
-                            copy(src, os);
+                            copy(from, os);
                         }
                     });
         } finally {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
+            //noinspection ResultOfMethodCallIgnored
+            if (motion != null) motion.delete();
         }
     }
 

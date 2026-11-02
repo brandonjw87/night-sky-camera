@@ -37,6 +37,7 @@ import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.MeteorLog;
 import com.brandon.nightsky.processing.NightPlan;
+import com.brandon.nightsky.processing.PhotoVideo;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
@@ -229,6 +230,12 @@ final class SessionController {
         volatile Uri labelled;
         /** The cloud-blur version (C7), if one was saved. */
         Uri blend;
+        /**
+         * The photo's video (1.8), kept in the session's folder for playing here (null if it has none), and whether the
+         * photo was saved with it inside, as a Motion Photo (name.MP.jpg).
+         */
+        File video;
+        boolean motion;
         /** Photo pixels per JPEG pixel (2 for Quick look's half-size photo). */
         int jpegFactor = 1;
         /** How the photo shown was made (G3; null if its recipe couldn't be saved), and its stack's master (null if none). */
@@ -794,6 +801,9 @@ final class SessionController {
         r.startedMs = parseLong(props.getProperty("capture.startWallMs"));
         r.durationSec = (int) Math.round(l.meta.integrationSeconds);
         if (rc != null && !rc.uri.isEmpty()) r.jpeg = Uri.parse(rc.uri);
+        File video = videoFile(st.dir, r.name);
+        if (video.isFile()) r.video = video;
+        r.motion = rc != null && rc.motion;
         r.jpegFactor = rc != null && rc.quick ? 2 : 1;
         r.canAdjust = true;
         r.brightness = brightness;
@@ -4637,22 +4647,7 @@ final class SessionController {
         // a render made again that came out as it was isn't saved twice: it's the one already in the gallery (G3)
         final boolean same = m.again != null && !m.again.pixelHash.isEmpty()
                 && m.again.pixelHash.equals(photoHash(o, params, m.recipe, north, factor));
-        Uri jpeg;
-        Recipe recipe;
-        if (same) {
-            jpeg = m.again.uri.isEmpty() ? null : Uri.parse(m.again.uri);
-            recipe = m.again;
-            hash[0] = m.again.pixelHash;
-        } else {
-            jpeg = saveJpeg(home, o, sp, params, m.recipe, north, name, null, factor, hash);
-            recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
-        }
-        logNoise(home, o);
-        if (m.again != null) {
-            home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s%s", m.again.number,
-                    sameAs(m.again, master, hash[0]), same ? ", so it isn't saved twice" : recipe != null
-                            ? String.format(Locale.US, ", so it's saved as render r%03d", recipe.number) : ""));
-        }
+        // the cloud-blur version first: its stack's memory goes before the video's is needed
         Uri blendUri = null;
         if (o.blend != null && !same) {
             post(Phase.DEVELOPING, "Saving", "The cloud-blur version", -1f);
@@ -4662,7 +4657,47 @@ final class SessionController {
                 st.log("cloud blur: not saved: " + e);
             }
         }
-        o.blend = null; // its memory, for the result screen
+        o.blend = null; // its memory, for the video and the result screen
+        Uri jpeg;
+        Recipe recipe;
+        File video = null;
+        boolean motion = false;
+        if (same) {
+            jpeg = m.again.uri.isEmpty() ? null : Uri.parse(m.again.uri);
+            recipe = m.again;
+            hash[0] = m.again.pixelHash;
+            File v = videoFile(home.dir, m.again.name);
+            if (v.isFile()) video = v;
+            motion = m.again.motion;
+        } else {
+            // the photo's video (1.8): the frames adding up, ended on the photo as it's saved
+            Motion mo = buildVideo(home, o, params, m.recipe, north, name, m.merge != null);
+            post(Phase.DEVELOPING, "Saving", m.quick ? "Half-size photo" : "Full-size photo", -1f);
+            try {
+                jpeg = saveJpeg(home, o, sp, params, m.recipe, north, name, null, factor, hash, mo);
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                // the photo failed before its video was ended on it: the encoder let go, the part made deleted
+                if (mo != null && !mo.complete) {
+                    mo.enc.close();
+                    //noinspection ResultOfMethodCallIgnored
+                    mo.mp4.delete();
+                }
+                throw e;
+            }
+            if (mo != null) {
+                if (mo.complete) video = mo.mp4;
+                motion = mo.saved;
+            }
+            m.recipe.motion = motion;
+            recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
+        }
+        o.video = null; // how the frames were read for it: let go
+        logNoise(home, o);
+        if (m.again != null) {
+            home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s%s", m.again.number,
+                    sameAs(m.again, master, hash[0]), same ? ", so it isn't saved twice" : recipe != null
+                            ? String.format(Locale.US, ", so it's saved as render r%03d", recipe.number) : ""));
+        }
         Uri dng = null;
         if (saveDng && !same) {
             post(Phase.DEVELOPING, "Saving", "RAW (DNG) copy", -1f);
@@ -4718,6 +4753,8 @@ final class SessionController {
         r.jpeg = jpeg;
         r.jpegFactor = factor;
         r.blend = blendUri;
+        r.video = video;
+        r.motion = motion;
         r.dng = dng;
         r.log = log;
         r.canAdjust = true;
@@ -4947,8 +4984,14 @@ final class SessionController {
      */
     private Uri saveJpeg(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Recipe rc, double[] north,
                          String name, Decor d, int factor, String[] hash) throws IOException {
+        return saveJpeg(st, o, sp, p, rc, north, name, d, factor, hash, null);
+    }
+
+    /** {@link #saveJpeg} with the photo's video ({@code mo}, null for none) ended on the photo and saved inside it. */
+    private Uri saveJpeg(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Recipe rc, double[] north,
+                         String name, Decor d, int factor, String[] hash, Motion mo) throws IOException {
         Framing f = frameFor(rc, north, o.analysis.cw / factor, o.analysis.ch / factor);
-        if (f != null) return saveFramed(st, o, sp, p, f, name, d, factor, hash);
+        if (f != null) return saveFramed(st, o, sp, p, f, name, d, factor, hash, mo);
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
         final int cw = sm != null ? sm.cropWidth() : o.analysis.cw, ch = sm != null ? sm.cropHeight() : o.analysis.ch;
         final Bitmap bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
@@ -4970,7 +5013,7 @@ final class SessionController {
             }
             if (hash != null) hash[0] = pixelHash(bmp);
             if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
-            return writeJpeg(st, bmp, name, exif(o, sp, cw, ch));
+            return writeJpeg(st, bmp, name, exif(o, sp, cw, ch), mo);
         } finally {
             bmp.recycle();
         }
@@ -4978,7 +5021,7 @@ final class SessionController {
 
     /** {@link #saveJpeg} with a crop or a turn: rendered whole (and drawn on), then framed. */
     private Uri saveFramed(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params p, Framing f, String name, Decor d,
-                           int factor, String[] hash) throws IOException {
+                           int factor, String[] hash, Motion mo) throws IOException {
         RgbImage sm = factor > 1 ? o.image.binned(factor) : null;
         int[] px = sm != null ? Renderer.renderSmallPhoto(sm, o.analysis, p, factor) : Master.render(o.image, o.analysis, p);
         int pw = sm != null ? sm.cropWidth() : o.analysis.cw, ph = sm != null ? sm.cropHeight() : o.analysis.ch;
@@ -5002,22 +5045,168 @@ final class SessionController {
         try {
             bmp.setPixels(out, 0, f.outW, 0, 0, f.outW, f.outH);
             out = null;
-            return writeJpeg(st, bmp, name, exif(o, sp, f.outW, f.outH));
+            return writeJpeg(st, bmp, name, exif(o, sp, f.outW, f.outH), mo);
         } finally {
             bmp.recycle();
         }
     }
 
-    /** {@link MediaSaver#saveJpeg}, with a line in {@code st}'s log when the photo had to be saved without its EXIF block. */
-    private Uri writeJpeg(SessionStore st, Bitmap bmp, String name, MediaSaver.Exif ex) throws IOException {
-        Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex);
+    /**
+     * {@link MediaSaver#saveJpeg}, with a line in {@code st}'s log when the photo had to be saved without its EXIF block;
+     * with {@code mo}, the video ends on {@code bmp} and goes inside the photo (or, if it can't, the log says why).
+     */
+    private Uri writeJpeg(SessionStore st, Bitmap bmp, String name, MediaSaver.Exif ex, Motion mo) throws IOException {
+        boolean withVideo = mo != null && finishVideo(st, mo, bmp);
+        Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex, withVideo ? mo.mp4 : null, withVideo ? mo.pv.stillUs() : 0);
+        String file = name + (withVideo && ex.videoFailed == null ? ".MP.jpg" : ".jpg");
         if (ex.failed != null) {
-            String s = "decision: " + name + ".jpg saved without its EXIF block (the date, camera and exposure the gallery shows), "
+            String s = "decision: " + file + " saved without its EXIF block (the date, camera and exposure the gallery shows), "
                     + "as it couldn't be written: " + ex.failed;
             if (st != null) st.log(s);
             android.util.Log.w("NightSky", s);
         }
+        if (withVideo) {
+            if (ex.videoFailed != null) {
+                if (st != null) st.log("decision: the photo saved without its video inside, as it couldn't be put in: " + ex.videoFailed
+                        + " (the video is kept with the session, for playing in the app)");
+            } else {
+                mo.saved = true;
+                if (st != null) st.log(String.format(Locale.US, "decision: the photo saved as %s, a Motion Photo: Google Photos plays its "
+                        + "%.1f-second video (%s; %s)", file, mo.pv.durationMs() / 1000.0, mo.pv.note(), mo.enc.note()));
+            }
+        }
         return u;
+    }
+
+    /** The photo's video (1.8) on its way into the photo: built, waiting for the photo's pixels to end it. */
+    private static final class Motion {
+        PhotoVideo pv;
+        VideoEncoder enc;
+        File mp4;
+        /** The video's file is whole; it was saved inside the photo. */
+        boolean complete, saved;
+    }
+
+    /** Video sizes tried, the largest the encoder takes and the memory allows (long side, pixels). */
+    private static final int[] VIDEO_SIDES = {PhotoVideo.MAX_SIDE, 1280, 960, 720};
+    /** Memory left over beyond the video's own needs (bytes), for rendering the photo after it and the rest. */
+    private static final long VIDEO_SPARE = 64L << 20;
+
+    /** Where a photo's video is kept: its name's .mp4 in the session's folder. */
+    static File videoFile(File dir, String name) {
+        return new File(dir, name + ".mp4");
+    }
+
+    /**
+     * Makes the first part of the photo's video (1.8): the frames adding up again as the stack added them (or the trails
+     * drawing), rendered as the photo is, into its MP4 in {@code st}'s folder; {@link #finishVideo} ends it on the
+     * photo. Null if there's none to make (off in the settings, sessions stacked together ({@code merged}), too
+     * little memory, no encoder for it, a failure, or cancelled while it was being made: the photo is saved as before,
+     * and the log says why).
+     */
+    private Motion buildVideo(final SessionStore st, PostProcessor.Output o, Renderer.Params p, Recipe rc, double[] north, String name,
+                              boolean merged) {
+        if (o.video == null) {
+            st.log("decision: the photo saved without its video: " + (merged ? "sessions stacked together don't make one yet"
+                    : "developing kept nothing to make it from"));
+            return null;
+        }
+        if (!prefs.photoVideo()) {
+            st.log("decision: the photo saved without its video (off in Advanced settings)");
+            return null;
+        }
+        String crop = rc != null ? rc.crop : Recipe.CROP_FULL;
+        double[] up = rc != null && rc.northUp ? north : null;
+        PhotoVideo pv = null;
+        String why = "the photo is too small for one", largest = null;
+        for (int side : VIDEO_SIDES) {
+            PhotoVideo v = PhotoVideo.of(o.video, o.image, o.analysis, p, crop, up, side);
+            if (v == null) break;
+            String size = v.width() + "x" + v.height();
+            if (largest == null) largest = size;
+            if (!Mp4Writer.factory.supports(v.width(), v.height())) {
+                why = "the phone has no video encoder for " + (size.equals(largest) ? size : largest + " or the sizes down to " + size);
+                continue;
+            }
+            long need = v.heapNeeded() + VIDEO_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                why = String.format(Locale.US, "not enough memory for a %s video (%d MB needed, %d MB free)", size, need >> 20, free >> 20);
+                continue;
+            }
+            pv = v;
+            break;
+        }
+        if (pv == null) {
+            st.log("decision: the photo saved without its video: " + why);
+            return null;
+        }
+        Motion mo = new Motion();
+        mo.pv = pv;
+        mo.mp4 = videoFile(st.dir, name);
+        try {
+            mo.enc = Mp4Writer.factory.open(mo.mp4, pv.width(), pv.height(), PhotoVideo.FPS);
+            pv.build(mo.enc, new Progress() {
+                long last;
+
+                @Override
+                public void update(String stage, float fraction) {
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - last < 300 && fraction < 1f) return;
+                    last = now;
+                    post(Phase.DEVELOPING, "Saving", stage, fraction);
+                }
+
+                @Override
+                public boolean cancelled() {
+                    return cancelDevelop;
+                }
+            });
+            return mo;
+        } catch (CancelledException e) {
+            why = "cancelled while it was being made";
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            why = "making it failed: " + e;
+        }
+        if (mo.enc != null) mo.enc.close();
+        //noinspection ResultOfMethodCallIgnored
+        mo.mp4.delete();
+        st.log("decision: the photo saved without its video, " + why);
+        return null;
+    }
+
+    /** Ends the photo's video on the photo itself, {@code bmp} as it's saved; false (and the log says why) if it can't. */
+    private boolean finishVideo(SessionStore st, Motion mo, Bitmap bmp) {
+        try {
+            int w = bmp.getWidth(), hgt = bmp.getHeight(), rows = 64;
+            PhotoVideo.Still still = mo.pv.still(w, hgt);
+            int[] strip = new int[w * rows];
+            for (int y = 0; y < hgt; y += rows) {
+                int n = Math.min(rows, hgt - y);
+                bmp.getPixels(strip, 0, w, 0, y, w, n);
+                still.rows(strip, 0, w, y, n);
+            }
+            mo.pv.finish(still, mo.enc);
+            mo.enc.finish();
+            mo.complete = true;
+            return true;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            mo.enc.close();
+            //noinspection ResultOfMethodCallIgnored
+            mo.mp4.delete();
+            if (st != null) st.log("decision: the photo saved without its video, as ending it on the photo failed: " + e);
+            return false;
+        }
+    }
+
+    /** Memory the app can still take (bytes); {@code collect}: after a collection, for a figure without garbage. */
+    private static long heapFree(boolean collect) {
+        Runtime rt = Runtime.getRuntime();
+        if (collect) {
+            System.gc();
+            System.runFinalization();
+        }
+        return rt.maxMemory() - (rt.totalMemory() - rt.freeMemory());
     }
 
     private static MediaSaver.Exif exif(PostProcessor.Output o, SensorSpec sp, int w, int h) {

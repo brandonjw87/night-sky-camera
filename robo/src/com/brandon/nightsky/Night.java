@@ -5,6 +5,8 @@ import android.app.AlarmManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 import android.hardware.Sensor;
 import android.hardware.SensorManager;
@@ -12,16 +14,21 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.params.BlackLevelPattern;
 import android.hardware.camera2.params.ColorSpaceTransform;
+import android.media.ExifInterface;
+import android.media.MediaPlayer;
 import android.os.SystemClock;
 import android.util.Range;
 import android.util.Rational;
 import android.util.Size;
 import android.util.SizeF;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.VideoView;
 
 import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CameraModel;
+import com.brandon.nightsky.processing.MotionPhoto;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.Tonight;
 
@@ -42,12 +49,15 @@ import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowSensor;
 import org.robolectric.shadows.ShadowSensorManager;
 import org.robolectric.shadows.ShadowStatFs;
+import org.robolectric.shadows.ShadowToast;
+import org.robolectric.shadows.ShadowVideoView;
 
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.InputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -120,6 +130,7 @@ public class Night {
         follow(20 * 60_000L);
         report();
         Monkey.say("  result screen: " + labels());
+        videoCheck(true, null);
     }
 
     /** Stopped from the phone after a few frames: what there is is developed. */
@@ -430,9 +441,84 @@ public class Night {
         startAndPutDown();
         follow(15 * 60_000L);
         report();
+        videoCheck(true, null);
         Monkey.idle();
         run(500);
         press("Deep sky");
+    }
+
+    /**
+     * The photo's video (1.8) when there's none to put in: a phone without a video encoder for it, the video off in
+     * Advanced settings, the encoder failing part way, and the video skipped from the developing screen. Each time the
+     * photo is saved as before, a plain JPEG, and the session's log says why.
+     */
+    static void video() throws Exception {
+        begin("1 minute on a phone with no video encoder");
+        minutes(1);
+        Mp4Writer.factory = phoneEncoders; // Android's own, and Robolectric lists no encoders
+        try {
+            startAndPutDown();
+            follow(15 * 60_000L);
+        } finally {
+            Mp4Writer.factory = FfmpegVideo.FACTORY;
+        }
+        report();
+        videoCheck(false, "decision: the photo saved without its video: the phone has no video encoder for ");
+
+        begin("1 minute with the photo's video off in Advanced settings");
+        minutes(1);
+        setVideo(false);
+        try {
+            startAndPutDown();
+            follow(15 * 60_000L);
+            report();
+            videoCheck(false, "decision: the photo saved without its video (off in Advanced settings)");
+        } finally {
+            Monkey.idle();
+            run(500);
+            setVideo(true);
+        }
+
+        begin("1 minute, the video's encoder failing part way");
+        minutes(1);
+        int opened = FfmpegVideo.opened;
+        FfmpegVideo.failAfter = 30;
+        try {
+            startAndPutDown();
+            follow(15 * 60_000L);
+        } finally {
+            FfmpegVideo.failAfter = -1;
+        }
+        report();
+        if (FfmpegVideo.opened != opened + 1) {
+            Monkey.problem(scenario + ": the video's encoder was opened " + (FfmpegVideo.opened - opened) + " times, not once");
+        }
+        videoCheck(false, "decision: the photo saved without its video, making it failed: ");
+
+        begin("1 minute, the video skipped from the developing screen");
+        minutes(1);
+        startAndPutDown();
+        until("the photo's video being made", new Cond() {
+            @Override
+            public boolean ok(SessionController.Status st) {
+                return st.phase == SessionController.Phase.DEVELOPING && st.detail.startsWith("Making the photo's video");
+            }
+        }, 15 * 60_000L);
+        // the screen catches up with the status (it looks four times a second)
+        for (int k = 0; k < 40 && findLabel("Skip the video") == null; k++) run(100);
+        Monkey.say("  developing screen: " + labels());
+        press("Skip the video");
+        follow(15 * 60_000L);
+        report();
+        videoCheck(false, "decision: the photo saved without its video, cancelled while it was being made");
+    }
+
+    /** The photo's video setting (Advanced settings) as {@code on}. */
+    static void setVideo(boolean on) throws Exception {
+        if (new Prefs(Monkey.app).photoVideo() == on) return;
+        if (findLabel("Save each photo with a few") == null) press("Advanced");
+        press("Save each photo with a few");
+        if (new Prefs(Monkey.app).photoVideo() != on) Monkey.problem(scenario + ": the photo's video didn't turn " + (on ? "on" : "off"));
     }
 
     /** A sky reading (how dark it is), from the home screen's Advanced section. */
@@ -1100,6 +1186,303 @@ public class Night {
         return null;
     }
 
+    // ---- the photo's video (1.8) ----
+
+    /** The app's own video encoders (the phone's MediaCodec: Robolectric lists none), for the scenario without one. */
+    static VideoEncoder.Factory phoneEncoders;
+
+    /**
+     * The photo's video after a session (1.8). {@code want}: the result has its video, kept in the session's folder; the
+     * photo is in the gallery as name.MP.jpg, a Motion Photo with that video inside right after the photo, where
+     * Google Photos looks for it; the photo still decodes and has its EXIF block; the video is H.264 in the photo's
+     * shape with the frames its timeline gives, ending on the photo; "Play its video" plays it where the photo is; and
+     * opened again from the sessions page, it's there to play. Else: a plain name.jpg, no video kept or offered, and
+     * the log line {@code why}.
+     */
+    static void videoCheck(boolean want, String why) throws Exception {
+        SessionController.Status st = Monkey.svc.controller().status();
+        SessionController.Result r = st.result;
+        if (st.phase != SessionController.Phase.DONE || r == null || r.jpeg == null) {
+            Monkey.problem(scenario + ": no photo to check its video on: " + outcome());
+            return;
+        }
+        File dir = new File(Monkey.root, r.session);
+        String log = read(new File(dir, "log.txt"));
+        String name = FakeMediaStore.name(r.jpeg);
+        File photo = FakeMediaStore.file(r.jpeg);
+        if (photo == null || photo.length() == 0) {
+            Monkey.problem(scenario + ": the photo isn't in the gallery (" + r.jpeg + ")");
+            return;
+        }
+        Bitmap pic = BitmapFactory.decodeFile(photo.getPath());
+        if (pic == null) Monkey.problem(scenario + ": the photo in the gallery, " + name + ", doesn't decode");
+        MotionPhoto.Info info = MotionPhoto.read(photo);
+        File[] mp4s = dir.listFiles(new java.io.FilenameFilter() {
+            @Override
+            public boolean accept(File d, String n) {
+                return n.endsWith(".mp4");
+            }
+        });
+        if (!want) {
+            Monkey.say(String.format(Locale.US, "  the photo's video: none; the photo is %s (%d KB)", name, photo.length() / 1024));
+            if (!(r.name + ".jpg").equals(name)) Monkey.problem(scenario + ": the photo is in the gallery as " + name + ", not " + r.name + ".jpg");
+            if (info != null) Monkey.problem(scenario + ": " + name + " has a video inside");
+            if (r.video != null || r.motion) Monkey.problem(scenario + ": the result has a video (" + r.video + ", inside: " + r.motion + ")");
+            if (mp4s != null && mp4s.length > 0) Monkey.problem(scenario + ": a video was left in the session's folder: " + mp4s[0].getName());
+            if (findLabel("Play its video") != null) Monkey.problem(scenario + ": Play its video is offered without a video");
+            if (!log.contains(why)) Monkey.problem(scenario + ": the log doesn't say why there's no video (\"" + why + "\"): " + lines(log, "video"));
+            return;
+        }
+        if (r.video == null || !r.video.isFile()) {
+            Monkey.problem(scenario + ": no video with the photo: " + lines(log, "video"));
+            return;
+        }
+        byte[] all = java.nio.file.Files.readAllBytes(photo.toPath()), mp4 = java.nio.file.Files.readAllBytes(r.video.toPath());
+        Monkey.say(String.format(Locale.US, "  the photo's video: the photo is %s (%d KB, %d KB of it the video, kept as %s)", name,
+                all.length / 1024, mp4.length / 1024, r.video.getName()));
+        Monkey.say("    " + lines(log, "a Motion Photo"));
+        if (!r.motion) Monkey.problem(scenario + ": the result says the video isn't inside the photo");
+        if (!(r.name + ".MP.jpg").equals(name)) Monkey.problem(scenario + ": the photo is in the gallery as " + name + ", not " + r.name + ".MP.jpg");
+        if (!dir.equals(r.video.getParentFile())) Monkey.problem(scenario + ": the video isn't kept with the session: " + r.video);
+        if (!log.contains("a Motion Photo: Google Photos plays its ")) Monkey.problem(scenario + ": the log doesn't say the photo was saved as a Motion Photo");
+        if (info == null) {
+            Monkey.problem(scenario + ": " + name + " isn't a Motion Photo");
+        } else {
+            Monkey.say(String.format(Locale.US, "    inside: the photo's %d bytes, then the video at %d (%d bytes); the photo's frame at %d us",
+                    info.imageEnd, info.videoStart, info.videoLength, info.stillUs));
+            if (info.videoLength != mp4.length || info.videoStart != info.imageEnd || info.videoStart + info.videoLength != all.length) {
+                Monkey.problem(scenario + ": the video isn't right after the photo, to the end of the file");
+            } else if (!Arrays.equals(Arrays.copyOfRange(all, (int) info.videoStart, all.length), mp4)) {
+                Monkey.problem(scenario + ": the video inside isn't the one kept with the session");
+            }
+            if (info.stillUs <= 0) Monkey.problem(scenario + ": no frame of the video is named as the photo");
+        }
+        if (!log.contains("saved without its EXIF block")) {
+            ExifInterface x = new ExifInterface(photo.getPath());
+            if (!"Night Sky Camera".equals(x.getAttribute(ExifInterface.TAG_SOFTWARE)) || x.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) == null) {
+                Monkey.problem(scenario + ": the Motion Photo lost its EXIF block");
+            }
+        }
+        if (!FfmpegVideo.haveFfmpeg()) {
+            Monkey.say("    (no ffmpeg here: the video's frames aren't checked)");
+        } else {
+            // the video as a player sees it
+            String[] p = exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                    "stream=codec_name,width,height,nb_read_frames", "-of", "csv=p=0", r.video.getPath()).trim().split(",");
+            int frames = r.trails ? 129 : 111; // 3 s of trails drawing or 2.4 s of the stack adding up, then 0.5 s fading and 0.8 s held, at 30 a second
+            if (p.length < 4) {
+                Monkey.problem(scenario + ": ffprobe can't read the video: " + Arrays.toString(p));
+            } else {
+                Monkey.say("    video: " + p[0] + ", " + p[1] + "x" + p[2] + ", " + p[3] + " frames");
+                int vw = Integer.parseInt(p[1].trim()), vh = Integer.parseInt(p[2].trim()), n = Integer.parseInt(p[3].trim());
+                if (!"h264".equals(p[0].trim())) Monkey.problem(scenario + ": the video is " + p[0] + ", not H.264");
+                if (n != frames) Monkey.problem(scenario + ": the video has " + n + " frames, not " + frames);
+                if (Math.max(vw, vh) > 1440) Monkey.problem(scenario + ": the video is " + vw + "x" + vh + ", over 1440 pixels");
+                if (pic != null) {
+                    // the photo's shape, and it ends on the photo but doesn't start there
+                    double[] last = apart(frame(r.video, n - 1, vw, vh), pic), first = apart(frame(r.video, 0, vw, vh), pic);
+                    if (last == null || first == null) {
+                        Monkey.problem(scenario + ": the video is " + vw + "x" + vh + ", not the size a " + pic.getWidth() + "x" + pic.getHeight()
+                                + " photo makes (or its frames couldn't be read)");
+                    } else {
+                        Monkey.say(String.format(Locale.US, "    against the photo: the last frame %.2f levels apart on average (%.3f%% of pixels by "
+                                + "over 24), the first %.2f (%.3f%%)", last[0], last[1] * 100, first[0], first[1] * 100));
+                        if (last[0] > 4 || last[1] > 0.005) Monkey.problem(scenario + ": the video doesn't end on the photo");
+                        if (!(first[1] > 3 * last[1] && first[1] > 0.01)) Monkey.problem(scenario + ": the video's first frame is already the photo");
+                    }
+                }
+            }
+        }
+        playCheck(r);
+        reopenCheck(r);
+    }
+
+    /** "Play its video" on the result: it plays where the photo is, and the photo comes back when it ends, on a tap, and when it can't be played. */
+    static void playCheck(SessionController.Result r) throws Exception {
+        String[] how = {"it ended", "a tap", "it couldn't be played"};
+        for (int way = 0; way < how.length; way++) {
+            press("Play its video");
+            VideoView vv = find(Monkey.a.getWindow().getDecorView(), VideoView.class);
+            View photo = (View) Monkey.field(Monkey.a, "zoom");
+            if (vv == null) {
+                Monkey.problem(scenario + ": Play its video showed no video");
+                return;
+            }
+            ShadowVideoView sv = Shadow.extract(vv);
+            if (!r.video.getPath().equals(sv.getVideoPath())) Monkey.problem(scenario + ": Play its video played " + sv.getVideoPath() + ", not " + r.video);
+            if (sv.getCurrentVideoState() != ShadowVideoView.START) Monkey.problem(scenario + ": the video wasn't started");
+            if (photo == null || photo.getVisibility() == View.VISIBLE) Monkey.problem(scenario + ": the photo still shows while its video plays");
+            if (way == 0) shot("playing its video");
+            View box = (View) vv.getParent();
+            if (way == 0) sv.getOnCompletionListener().onCompletion(null);
+            else if (way == 1) box.performClick();
+            else sv.getOnErrorListener().onError(null, MediaPlayer.MEDIA_ERROR_UNKNOWN, 0);
+            run(300);
+            if (box.getParent() != null) Monkey.problem(scenario + ": the video is still on the screen after " + how[way]);
+            if (photo != null && photo.getVisibility() != View.VISIBLE) Monkey.problem(scenario + ": the photo didn't come back after " + how[way]);
+            if (way == 2 && !"The video couldn't be played".equals(ShadowToast.getTextOfLatestToast())) {
+                Monkey.problem(scenario + ": no word that the video couldn't be played");
+            }
+        }
+        Monkey.say("  played its video where the photo is: the photo back after it ended, after a tap, and after an error");
+    }
+
+    /** Opened again from the sessions page, the photo still has its video to play. */
+    static void reopenCheck(SessionController.Result r) throws Exception {
+        Monkey.idle();
+        Monkey.svc.controller().openSession(new File(Monkey.root, r.session));
+        long end = System.currentTimeMillis() + 180_000L;
+        SessionController.Status st;
+        do {
+            run(200);
+            st = Monkey.svc.controller().status();
+        } while (!(st.phase == SessionController.Phase.DONE && st.result != null) && st.phase != SessionController.Phase.FAILED
+                && System.currentTimeMillis() < end);
+        run(1500); // the screen catches up
+        st = Monkey.svc.controller().status();
+        SessionController.Result o = st.result;
+        if (st.phase != SessionController.Phase.DONE || o == null) {
+            Monkey.problem(scenario + ": opened again, the session didn't open: " + outcome());
+            return;
+        }
+        if (!r.video.equals(o.video) || !o.motion) Monkey.problem(scenario + ": opened again, the photo has no video (" + o.video + ", inside: " + o.motion + ")");
+        if (findLabel("Play its video") == null) Monkey.problem(scenario + ": opened again, there's no Play its video: " + labels());
+        Monkey.say("  opened again from the sessions page: " + labels());
+    }
+
+    /**
+     * Frame {@code k} of {@code video}, decoded by ffmpeg (BT.709, limited range, as the app writes it) to plain RGB
+     * codes, as the Pixel shows its own Motion Photos' videos: their codes are the photo's codes, BT.709 or not (see
+     * Mp4Writer). Read raw, not through a PNG: ffmpeg tags its PNGs with BT.709's transfer, and Android's decoder then
+     * converts them on reading. The frame is kept as a PNG (without the tag) to look at.
+     */
+    static Bitmap frame(File video, int k, int w, int h) throws Exception {
+        File raw = new File(Monkey.out, scenario + "_video_" + k + ".rgb"), png = new File(Monkey.out, scenario + "_video_" + k + ".png");
+        //noinspection ResultOfMethodCallIgnored
+        raw.delete();
+        exec("ffmpeg", "-v", "error", "-y", "-i", video.getPath(), "-vf", "select=eq(n\\," + k + "),scale=in_color_matrix=bt709:in_range=tv,format=rgb24",
+                "-fps_mode", "passthrough", "-frames:v", "1", "-f", "rawvideo", raw.getPath());
+        byte[] b = raw.isFile() ? java.nio.file.Files.readAllBytes(raw.toPath()) : new byte[0];
+        //noinspection ResultOfMethodCallIgnored
+        raw.delete();
+        if (b.length != 3 * w * h) return null;
+        int[] px = new int[w * h];
+        for (int i = 0; i < px.length; i++) px[i] = 0xff000000 | (b[3 * i] & 255) << 16 | (b[3 * i + 1] & 255) << 8 | (b[3 * i + 2] & 255);
+        Bitmap f = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+        FileOutputStream o = new FileOutputStream(png);
+        try {
+            f.compress(Bitmap.CompressFormat.PNG, 100, o);
+        } finally {
+            o.close();
+        }
+        return f;
+    }
+
+    /**
+     * How far {@code f} (a video frame) is from {@code photo} as the video shows it: the photo averaged down in linear
+     * light to the size the video is cut from (its long side 1440 pixels at most), then cut to the video's size as the
+     * app cuts it (centred, a multiple of 16 each way). The mean difference (levels, all three colours) and the share
+     * of pixels more than 24 levels apart in any colour; null if the frame isn't the size the photo makes.
+     */
+    static double[] apart(Bitmap f, Bitmap photo) {
+        int pw = photo.getWidth(), ph = photo.getHeight();
+        double s = Math.min(1.0, 1440.0 / Math.max(pw, ph));
+        int fw = (int) Math.round(pw * s), fh = (int) Math.round(ph * s), vw = fw & ~15, vh = fh & ~15;
+        if (f == null || f.getWidth() != vw || f.getHeight() != vh) return null;
+        int cx = (fw - vw) / 2, cy = (fh - vh) / 2;
+        int[] a = new int[vw * vh], b = new int[pw * ph];
+        f.getPixels(a, 0, vw, 0, 0, vw, vh);
+        photo.getPixels(b, 0, pw, 0, 0, pw, ph);
+        double[] dec = new double[256];
+        for (int i = 0; i < 256; i++) {
+            double v = i / 255.0;
+            dec[i] = v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        }
+        double[][] wx = spans(fw, pw), wy = spans(fh, ph);
+        double sum = 0;
+        long far = 0;
+        double[] row = new double[3];
+        for (int y = 0; y < vh; y++) {
+            double[] ry = wy[cy + y];
+            for (int x = 0; x < vw; x++) {
+                double[] rx = wx[cx + x];
+                row[0] = row[1] = row[2] = 0;
+                for (int j = 1; j < ry.length; j += 2) {
+                    int yy = (int) ry[j - 1];
+                    for (int i = 1; i < rx.length; i += 2) {
+                        int v = b[yy * pw + (int) rx[i - 1]];
+                        double w = ry[j] * rx[i];
+                        row[0] += w * dec[(v >> 16) & 255];
+                        row[1] += w * dec[(v >> 8) & 255];
+                        row[2] += w * dec[v & 255];
+                    }
+                }
+                int v = a[y * vw + x];
+                int[] got = {(v >> 16) & 255, (v >> 8) & 255, v & 255};
+                double worst = 0;
+                for (int c = 0; c < 3; c++) {
+                    double l = Math.max(0, Math.min(1, row[c]));
+                    double e = 255 * (l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055);
+                    double d = Math.abs(got[c] - e);
+                    sum += d;
+                    worst = Math.max(worst, d);
+                }
+                if (worst > 24) far++;
+            }
+        }
+        return new double[]{sum / (3.0 * vw * vh), far / (double) (vw * vh)};
+    }
+
+    /** Resampling n source pixels to m by area: for each output pixel, its source pixels and their shares (index, weight, ...). */
+    static double[][] spans(int m, int n) {
+        double sc = n / (double) m;
+        double[][] out = new double[m][];
+        for (int o = 0; o < m; o++) {
+            double lo = o * sc, hi = (o + 1) * sc;
+            int i0 = (int) Math.floor(lo), i1 = Math.min(n, (int) Math.ceil(hi));
+            double[] e = new double[2 * (i1 - i0)];
+            for (int i = i0; i < i1; i++) {
+                e[2 * (i - i0)] = i;
+                e[2 * (i - i0) + 1] = (Math.min(hi, i + 1) - Math.max(lo, i)) / sc;
+            }
+            out[o] = e;
+        }
+        return out;
+    }
+
+    static <T extends View> T find(View v, Class<T> c) {
+        if (c.isInstance(v)) return c.cast(v);
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                T t = find(g.getChildAt(i), c);
+                if (t != null) return t;
+            }
+        }
+        return null;
+    }
+
+    /** The lines of {@code log} that have {@code has} in them, joined. */
+    static String lines(String log, String has) {
+        StringBuilder sb = new StringBuilder();
+        for (String l : log.split("\n")) {
+            if (l.contains(has)) sb.append(sb.length() > 0 ? " / " : "").append(l.trim());
+        }
+        return sb.toString();
+    }
+
+    /** Runs {@code cmd}; what it printed. */
+    static String exec(String... cmd) throws Exception {
+        Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+        InputStream in = p.getInputStream();
+        java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+        p.waitFor();
+        return b.toString("UTF-8");
+    }
+
     // ---- driving it ----
 
     static void begin(String what) throws Exception {
@@ -1462,6 +1845,11 @@ public class Night {
         });
         Monkey.root = SessionController.sessionsRoot(Monkey.app);
         Monkey.pristine = new File[0];
+        // the gallery: what the app saves through MediaStore lands in files, to be read back (1.8's Motion Photos)
+        FakeMediaStore.install(new File(Monkey.out, "media"));
+        // the photo's video: Robolectric has no video encoder, so ffmpeg's (the app's own kept for the scenario without one)
+        phoneEncoders = Mp4Writer.factory;
+        Mp4Writer.factory = FfmpegVideo.FACTORY;
         // plenty of storage: 64 GB, 40 GB free
         ShadowStatFs.registerStats("/", 16_000_000, 10_000_000, 10_000_000);
         // the motion sensors

@@ -463,7 +463,8 @@ final class RemoteHost implements RemoteServer.Backend {
         List<RemoteServer.Download> out = new ArrayList<RemoteServer.Download>();
         SessionController.Result r = controller.status().result;
         if (r == null) return out;
-        add(out, "jpeg", r.jpeg, r.name + ".jpg", "image/jpeg");
+        // a Motion Photo keeps its .MP.jpg name, so a gallery it's copied to still plays its video
+        add(out, "jpeg", r.jpeg, r.name + (r.motion ? ".MP.jpg" : ".jpg"), "image/jpeg");
         add(out, "dng", r.dng, r.name + ".dng", "image/x-adobe-dng");
         add(out, "log", r.log, r.name + "_log.txt", "text/plain; charset=utf-8");
         return out;

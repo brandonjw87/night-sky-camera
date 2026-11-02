@@ -95,6 +95,8 @@ public final class Recipe {
     public long createdMs;
     /** The photo's file name (no extension), and where it was saved ("" if not known). */
     public String name = "", uri = "";
+    /** The photo was saved with its video inside, as a Motion Photo (name.MP.jpg, 1.8). */
+    public boolean motion;
     /** Why it was made: "developed", "edited", "merged", "rendered again with the new processing". */
     public String note = "";
     public String stackKey = "", masterHash = "", pixelHash = "";
@@ -347,6 +349,7 @@ public final class Recipe {
         j.put("file", "recipe").put("number", number).put("pipeline", pipeline).put("renderer", renderer).put("app", app)
                 .put("created", createdMs);
         j.put("name", name).put("uri", uri).put("note", note);
+        if (motion) j.put("motion", true);
         j.raw("stack", stackJson());
         j.obj("render").put("brightness", brightness, 9).put("stretch", stretch, 9).put("ev", ev, 9).put("black", black, 9)
                 .put("saturation", saturation, 9).put("look", look).put("crop", crop).put("northUp", northUp).end();
@@ -367,6 +370,7 @@ public final class Recipe {
         r.createdMs = o.lng("created", 0);
         r.name = o.str("name", "");
         r.uri = o.str("uri", "");
+        r.motion = o.bool("motion", false);
         r.note = o.str("note", "");
         JsonTree.Obj s = o.obj("stack");
         if (s == null) throw new IllegalArgumentException("a recipe needs its stack");

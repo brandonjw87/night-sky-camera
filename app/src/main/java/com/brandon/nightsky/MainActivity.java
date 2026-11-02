@@ -20,6 +20,7 @@ import android.graphics.Paint;
 import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -50,6 +51,7 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.VideoView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
@@ -1068,6 +1070,19 @@ public final class MainActivity extends Activity {
         }
         box.addView(kr, gap(6));
         box.addView(keepHelp, gap(6));
+
+        // the photo's video (1.8)
+        box.addView(label("The photo's video"), gap(20));
+        CheckBox video = check("Save each photo with a few seconds of video: the frames adding up until the sky's grain melts "
+                + "away (or the trails drawing themselves), ending on the photo. It's inside the photo: Google Photos plays it "
+                + "(a Motion Photo, named .MP.jpg). Developing takes a little longer.", prefs.photoVideo());
+        video.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setPhotoVideo(on);
+            }
+        });
+        box.addView(video, gap(6));
 
         // what the Partly cloudy and Quick look presets turn on (E6)
         box.addView(label("Clouds and quick looks"), gap(20));
@@ -2549,6 +2564,8 @@ public final class MainActivity extends Activity {
         String hl = s != null ? s.headline : "";
         boolean edit = hl.startsWith("Stacking the edit"), merge = hl.startsWith("Merging"), again = hl.startsWith("Making it again");
         boolean quick = hl.equals("Saving") || hl.equals("Opening");
+        // the photo's video (1.8) takes a while: it can be left out, and the photo is saved without it
+        boolean video = quick && s != null && s.detail.startsWith("Making the photo's video");
         String note = edit ? "The photo you edited stays as it was: the edit is saved as a new render. This takes a minute or two."
                 : again ? "Its stacked picture was deleted to make room, so it's stacked again from the frames as its recipe says. This "
                 + "takes a minute or two."
@@ -2556,8 +2573,9 @@ public final class MainActivity extends Activity {
                 : "You can pick the phone up now. This takes a minute or two.";
         devNote.setText(note);
         devNote.setVisibility(note.isEmpty() ? View.GONE : View.VISIBLE);
-        devCancel.setText(edit ? "Cancel (the photo stays as it was)" : merge || again ? "Cancel" : "Cancel (keeps the frames)");
-        devCancel.setVisibility(quick ? View.GONE : View.VISIBLE);
+        devCancel.setText(video ? "Skip the video (the photo is saved without it)" : edit ? "Cancel (the photo stays as it was)"
+                : merge || again ? "Cancel" : "Cancel (keeps the frames)");
+        devCancel.setVisibility(quick && !video ? View.GONE : View.VISIBLE);
     }
 
     private void showResult(final SessionController.Status s) {
@@ -2723,8 +2741,20 @@ public final class MainActivity extends Activity {
         row2.addView(open, weight());
         row2.addView(again, weight());
         col.addView(row2, gap(6));
-        // the rest, smaller: editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
+        // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
         List<Button> more = new ArrayList<Button>();
+        if (r != null && r.video != null) {
+            // the photo's video (1.8), played where the photo is
+            final File vf = r.video;
+            Button pb = smallButton("Play its video", false);
+            pb.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    playVideo(vf);
+                }
+            });
+            more.add(pb);
+        }
         if (r != null && r.recipe != null) {
             final Button eb = smallButton("Edit", false);
             eb.setOnClickListener(new View.OnClickListener() {
@@ -2783,7 +2813,8 @@ public final class MainActivity extends Activity {
             more.add(bl2);
         }
         addMoreRow(col, r, fromLibrary, more);
-        String where = "Saved in Pictures/NightSky" + (r != null && r.dng != null ? " (JPEG and DNG" : " (JPEG")
+        String where = "Saved in Pictures/NightSky (" + (r != null && r.motion ? "JPEG with its video inside" : "JPEG")
+                + (r != null && r.dng != null ? " and DNG" : "")
                 + (r != null && r.jpegFactor > 1 ? ", half size" : "")
                 + (r != null && r.blend != null ? ", the cloud-blur version" : "")
                 + (r != null && r.labelled != null ? ", and a copy with names)" : ")");
@@ -6023,6 +6054,57 @@ public final class MainActivity extends Activity {
     /** About what a session of this length needs before the camera is known: 25 MB frames of 6 s, and room to develop. */
     private static long roughNeedBytes(int durationSec) {
         return 25_000_000L * (durationSec / 6 + 2) + (400L << 20);
+    }
+
+    /** Plays the photo's video where the photo is, then shows the photo again; a tap stops it. */
+    private void playVideo(File f) {
+        if (zoom == null || !(zoom.getParent() instanceof ViewGroup) || !f.isFile()) {
+            toastish("The video isn't there any more");
+            return;
+        }
+        final ViewGroup parent = (ViewGroup) zoom.getParent();
+        final View photo = zoom;
+        final FrameLayout box = new FrameLayout(this);
+        box.setBackgroundColor(BG);
+        final VideoView vv = new VideoView(this);
+        box.addView(vv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+        parent.addView(box, parent.indexOfChild(photo), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        photo.setVisibility(View.GONE);
+        final Runnable done = new Runnable() {
+            boolean once;
+
+            @Override
+            public void run() {
+                if (once) return;
+                once = true;
+                vv.stopPlayback();
+                parent.removeView(box);
+                photo.setVisibility(View.VISIBLE);
+            }
+        };
+        vv.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+            @Override
+            public void onCompletion(MediaPlayer mp) {
+                done.run();
+            }
+        });
+        vv.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            @Override
+            public boolean onError(MediaPlayer mp, int what, int extra) {
+                done.run();
+                toastish("The video couldn't be played");
+                return true;
+            }
+        });
+        box.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                done.run();
+            }
+        });
+        vv.setVideoPath(f.getPath());
+        vv.start();
     }
 
     private void view(Uri uri) {

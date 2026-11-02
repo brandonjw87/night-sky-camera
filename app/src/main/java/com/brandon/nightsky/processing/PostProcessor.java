@@ -86,6 +86,11 @@ public final class PostProcessor {
         public SensorSpec colourSpec;
         /** Share of the frame taken from the plain average to keep the ground still (G3, A7; 0 if none). */
         public float groundShare;
+        /**
+         * How the photo's video can read the frames again and add them up as the stack did (1.8): the last stack's plans
+         * (deep sky) or the trails' frames; null when there's nothing to make it from.
+         */
+        public PhotoVideo.Source video;
     }
 
     /** What happened to one unit, for the review screen and the log. */
@@ -356,6 +361,7 @@ public final class PostProcessor {
                     moved > 0 ? " Skipped " + moved + " moved." : "");
             out.analysis = Renderer.analyze(img, spec);
             out.analysis.colorSigma = 3f;
+            out.video = PhotoVideo.Source.trails(spec, fs, hot, tu);
             if (colorCalibration) {
                 decide(out, "colour: the fixed " + Math.round(spec.wbCct) + " K white balance, as star trails can't be measured "
                         + "against the catalogue's colours");
@@ -678,6 +684,7 @@ public final class PostProcessor {
         if (nhh > 0) out.medianHfr = Stats.median(hh, nhh);
         out.referenceStars = refDetections != null ? refDetections : ref != null ? ref.stars : null;
         out.image = sr.image;
+        out.video = PhotoVideo.Source.deepSky(spec, model, fs, hot, plans, target, st.minTransparency, st.ground);
         out.analysis = Renderer.analyze(sr.image, spec);
         calibrateColour(out);
         StringBuilder sb = new StringBuilder();

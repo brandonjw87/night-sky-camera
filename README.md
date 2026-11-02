@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.7.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.8.
 
 ## What it does
 
@@ -33,6 +33,9 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.7.
   meteors**. Each one caught is listed with its time, its shower, how bright it was and where it crossed, and the
   **Tonight** card says when a shower is worth going out for. Each frame is also searched for lines too faint to
   see in it, so fainter meteors are listed too.
+- **Photos that play.** Each photo has a few seconds of video inside it that ends on the photo: the frames adding
+  up until the sky's grain melts away, or the trails drawing themselves. Google Photos plays it (it's a Motion
+  Photo, like the Pixel camera's own), and so does **Play its video** in the app.
 - **Session report.** What the photo shows (constellations, planets, the Milky Way, galaxies to look for), a
   score for every frame, and what went wrong with the fix.
 - **Edit any photo again.** Look, crop, north up, which frames go in, the reference frame, stars lined up by
@@ -44,8 +47,8 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.7.
 - **Tile, widget and shortcuts.** Two taps from the lock screen to a session.
 - **Sky reading.** How dark is the sky here, in magnitudes per square arcsecond.
 - **Viewer.** Watch the photo build up from a laptop, tablet or another phone on the same Wi-Fi.
-- **Files.** JPEG (and optionally a RAW DNG) in `Pictures/NightSky`, so they show up in Google Photos. Logs,
-  settings files and sky readings go in `Documents/NightSky`.
+- **Files.** JPEG with its video inside, named `.MP.jpg` (and optionally a RAW DNG) in `Pictures/NightSky`, so
+  they show up in Google Photos. Logs, settings files and sky readings go in `Documents/NightSky`.
 
 ## Install it on your phone
 
@@ -114,6 +117,10 @@ The app's screen is dim red so it doesn't ruin your night vision.
 
 Under the photo:
 
+- **Play its video** plays the photo's few seconds of video where the photo is (tap to stop). Google Photos plays
+  it too: the video is inside the photo's file, a Motion Photo. To save photos without it: **Advanced > The
+  photo's video**. Making it adds about 10 seconds to developing; **Skip the video** on the developing screen
+  saves the photo without it.
 - **Session report** opens what the picture shows, a score for every frame, and what went wrong with the fix.
   **Share the log** at its bottom sends the session's log (every step and choice it made) as a text file.
 - **Satellites** and **Names** draw the satellites' tracks and the stars' names on the photo; **Save this copy**
@@ -304,7 +311,8 @@ app/src/main/java/com/brandon/nightsky/
     FrameStrip          the frame strip on the report and edit screens
     ZoomImageView       pinch-zoom picture with taps, painting and overlays
     TrackPainter        satellite tracks and star names drawn on the photo
-    MediaSaver          MediaStore saving
+    MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo)
+    Mp4Writer           the photo's video: H.264 through the phone's encoder (MediaCodec) into an MP4
     RemoteHost          the remote viewer: what the web page shows and the commands it can send
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
     processing/         the engine, plain Java with no Android dependencies
@@ -333,6 +341,8 @@ app/src/main/java/com/brandon/nightsky/
         EdgeMask, GroundMap  the painted foreground and keeping the ground still
         Denoise         the sky's noise taken out, the stars found and set aside first
         Renderer        colour and tone (asinh stretch, looks, black point, saturation)
+        PhotoVideo      the photo's video: the frames adding up again (or the trails drawing), rendered as the photo
+        MotionPhoto     the video put inside the JPEG as a Motion Photo, and read back
         Framing         crops and north up
         DngWriter       16-bit linear DNG
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies
@@ -368,10 +378,11 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
 `PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `ClearSkyTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`,
-`MeteorTest`, `DeepLinesTest` and `SatTest` (with the SGP4 verification files) run on their own; `ReportTest`, `SatSessionTest`,
-`MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder, for example
-`java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `MeteorLimit` (an output folder, then
-the scale) measures how faint a meteor the camera catches.
+`MeteorTest`, `DeepLinesTest`, `MotionPhotoTest` and `SatTest` (with the SGP4 verification files) run on their own;
+`ReportTest`, `SatSessionTest`, `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder,
+for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `PhotoVideoTest` takes an
+output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the path, also writes its videos as MP4.
+`MeteorLimit` (an output folder, then the scale) measures how faint a meteor the camera catches.
 
 ### The app off the phone
 

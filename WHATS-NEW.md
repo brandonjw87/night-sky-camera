@@ -1,5 +1,83 @@
 # Night Sky Camera: what's new
 
+## Version 1.8: photos that play
+
+### What's new
+
+- **Every photo plays.** Each photo is now saved with a few seconds of video inside it that ends on the photo. In
+  deep sky it's the stack adding up again: the first frame on its own, grainy, then two, four, eight, the grain
+  melting away and the faint stars coming up, until it fades into the photo and holds it. In star trails, the
+  trails draw themselves across the sky as the frames came. It's about 4 seconds long, 30 frames a second, up to
+  1440 pixels across.
+- **Google Photos plays it.** The photo is saved as a Motion Photo, the format the Pixel's own camera uses for its
+  moving photos: one file, named like `NightSky_20261102_2215.MP.jpg`, the photo first and the video after it.
+  Google Photos plays it as it plays the Pixel camera's motion photos; an app that doesn't know Motion Photos just
+  shows the photo.
+- **Play its video** under the photo plays it in the app, where the photo is; tap it to stop. The video is also
+  kept with the session, so it plays again when you open the photo from **Sessions**.
+- **Drawn as the photo is.** Every picture in the video is rendered like the photo: the same colours, brightness,
+  noise reduction and crop (turned north up too, if the photo is), the frames lined up as the stack lined them up,
+  cloudy parts left out, satellites and planes taken out, and with **Keep meteors** each meteor comes in with its
+  frame and stays. An edit that stacks the frames again gets its own video.
+- **It never costs you the photo.** While the video is being made, the developing screen says "Making the photo's
+  video" and offers **Skip the video**. If it can't be made (not enough memory, no video encoder on the phone for
+  its size, the encoder fails) or you skip it, the photo is saved as before, a plain JPEG, and the session log
+  says why. With little memory to spare it makes a smaller video rather than none.
+- **Checked off the phone:** on a simulated night of 24 frames, the sky's grain in the video falls from 21 levels
+  in the first frame's picture to 13, 8 and finally 7 in the photo; the first picture's stars sit where the photo's
+  are (0.08 of a pixel apart); the plane never shows; a kept meteor shows from its frame on (168 levels above the
+  sky beside it, none before); and in star trails the lit share of the picture grows at every step, from 3% to 9%.
+  The file was read back the way Google's own Motion Photo reader (Media3) reads it, and ffprobe reads the video
+  inside. Through the app itself, with a simulated camera: a 5-minute session and a star-trails one each saved an
+  `.MP.jpg` with a 1440 x 1072 H.264 video of 111 or 129 frames inside, ending on the photo; and with no video
+  encoder, the video turned off, the encoder failing part way, and **Skip the video**, each saved the plain photo
+  and logged why. At the Pixel's full size (4080 x 3072) making the video took the app to 312 MB of the 512 MB
+  it has.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.7 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- On. To save photos without their video: **Advanced > The photo's video**.
+- It adds about 10 seconds to developing a 5-minute session (more for longer ones: it reads every frame again),
+  and about 5 MB to the photo, plus a copy of the video kept with the session (deleted with the session).
+- Photos made by **Add 5 minutes** or by merging nights, and edits that only change how a photo looks, are saved
+  without a video for now (the log says so for the first two).
+- Everything else is unchanged from version 1.7.
+
+### Try today
+
+- Nothing new to see in daylight: the video needs a night's frames. Sessions taken before this version have no
+  video.
+
+### Try tonight
+
+1. Any clear night: a normal session. When the photo is ready, tap **Play its video**. Watch its end: it should
+   fade into the photo with no jump in brightness. If the sky jumps lighter or darker as it ends, say so here.
+2. Open the photo in Google Photos: it should play. If Google Photos shows only the photo, open **Session report
+   > Share the log** and send the line starting "decision: the photo saved as" here.
+3. If developing takes too long for you, tap **Skip the video** while it's being made, or turn it off under
+   **Advanced**.
+
+### Not working yet, or not tested
+
+- Tested off the phone only. The phone's own video encoder (Android's MediaCodec) has never run here: off the
+  phone, ffmpeg's H.264 encoder stood in for it. If the Pixel's encoder refuses, the photo is saved without its
+  video and the log says why.
+- No video yet for **Add 5 minutes**, merged nights, or edits that only change the look.
+- Google Photos is the only app checked against (by its own reader's rules); other galleries may show just the
+  photo.
+- The video's colours are coded the way the Pixel's own motion photos code theirs (checked against a Pixel
+  sample), so it should look like the photo; only the phone can show that it does.
+
 ## Version 1.7: haze from the first night
 
 ### What's new

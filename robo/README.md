@@ -38,7 +38,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 
 | Scenario | What happens |
 |---|---|
-| `base` | 5 minutes with the settings as they come, phone put down, left alone. |
+| `base` | 5 minutes with the settings as they come, phone put down, left alone. Then the photo's video (1.8), as `trails` checks it too: the photo is in the gallery as a Motion Photo (name.MP.jpg) with the session's video inside, after the photo, where Google Photos looks; the photo still decodes with its EXIF block; the video is H.264 in the photo's shape with the frames its timeline gives, and ends on the photo (code for code, as the Pixel's own Motion Photos' videos match their photos); Play its video plays it where the photo is, and the photo comes back when it ends, on a tap, and after an error; opened again from the sessions page, it's still there to play. |
 | `stop` | Stopped from the phone after a few frames: what there is is developed. |
 | `pickup` | Picked up for a few seconds mid-session, then put back. |
 | `knock` | Knocked mid-session: the view shifts a quarter of a degree. |
@@ -58,6 +58,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | `remade` | The activity is made again mid-session, as after Android reclaimed it. |
 | `replay` | The widget's quick session, then the screen made again and reopened from the recent apps (which mustn't start it again). |
 | `trails` | Star trails for 2 minutes. |
+| `video` | The photo's video (1.8) when there's none to put in: a phone without a video encoder, the video off in Advanced settings, the encoder failing part way, and the video skipped from the developing screen. Each time the photo is saved as before, a plain JPEG, and the log says why. |
 | `reading` | A sky reading (how dark it is). |
 | `clouds` | Clouds over everything for three frames. |
 | `haze` | A new phone's first two nights (nothing learned): 1.3 magnitudes of haze all session, named against what the camera's specs say a clear sky gives and not learned as the clear night; then a clear night, read clear against the specs and learned. |
@@ -80,6 +81,12 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | `sharelog` | Share the log from a session's report, from the sessions page, and from a failed session's screen. |
 
 ## What it can't see
+
+- The phone's own video encoder (MediaCodec): Robolectric has none, so the photo's video is made by ffmpeg's H.264
+  encoder here (`FfmpegVideo`, BT.709 colours and limited range as the app asks of the phone's). MediaStore keeps
+  nothing in Robolectric either, so `FakeMediaStore` stands in for it: what the app saves in Pictures and Documents
+  lands in `night/media/`, named by its row and display name, to be read back. Without ffmpeg the video is a stand-in
+  and its frames aren't checked.
 
 - `CameraRig` itself is replaced, so its ImageReader, abort and restart code never runs here.
 - The simulated sky has no moonlight.

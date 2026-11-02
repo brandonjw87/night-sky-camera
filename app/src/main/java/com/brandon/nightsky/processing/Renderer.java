@@ -726,8 +726,36 @@ public final class Renderer {
         return out;
     }
 
-    /** The analysis of {@code a}'s picture, for a copy of it binned {@code factor} x {@code factor}. */
-    private static Analysis smallAnalysis(RgbImage small, Analysis a, int factor) {
+    /**
+     * A picture of the crop scaled down {@code factor} times each way (any factor, not only a binning) rendered with the
+     * photo's tone curve and colour, for the photo's video (1.8): {@code noiseScale} is its noise relative to the analysed
+     * full-resolution picture's, which sets how much colour faint light gets. The sky's noise is left in. Bands of rows
+     * run in parallel; the same picture gives the same pixels.
+     */
+    public static int[] renderScaled(final RgbImage img, Analysis a, final Params p, float factor, final float noiseScale) {
+        final Curve curve = Curve.make(a, p);
+        final Analysis sa = smallAnalysis(img, a, factor);
+        final int w = img.width, h = img.height;
+        final int[] out = new int[w * h];
+        final int bandRows = 32;
+        final int bands = (h + bandRows - 1) / bandRows;
+        Parallel.forRange(bands, Math.max(1, bands / Parallel.threads()), new Parallel.Range() {
+            @Override
+            public void run(int b0, int b1) {
+                Band band = new Band(w, bandRows, sa.colorSigma);
+                int[] argb = new int[w * bandRows];
+                for (int b = b0; b < b1; b++) {
+                    int y0 = b * bandRows, y1 = Math.min(h, y0 + bandRows);
+                    band.process(img, sa, p, curve, y0, y1, noiseScale, null, argb);
+                    System.arraycopy(argb, 0, out, y0 * w, (y1 - y0) * w);
+                }
+            }
+        });
+        return out;
+    }
+
+    /** The analysis of {@code a}'s picture, for a copy of it scaled down {@code factor} times (binned, for a whole factor). */
+    private static Analysis smallAnalysis(RgbImage small, Analysis a, float factor) {
         Analysis sa = new Analysis();
         sa.m = a.m;
         sa.poly = a.poly;

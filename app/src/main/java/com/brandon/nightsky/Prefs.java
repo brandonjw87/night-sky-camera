@@ -206,6 +206,18 @@ final class Prefs {
         sp.edit().putBoolean("blend", v).apply();
     }
 
+    /**
+     * Save each photo with its video (1.8): the frames adding up, or the trails drawing, ending on the photo, inside it
+     * as a Motion Photo that Google Photos plays.
+     */
+    boolean photoVideo() {
+        return sp.getBoolean("photoVideo", true);
+    }
+
+    void setPhotoVideo(boolean v) {
+        sp.edit().putBoolean("photoVideo", v).apply();
+    }
+
     /** Quick developing: one stacking pass and a half-size photo (the Quick look preset). */
     boolean quick() {
         return sp.getBoolean("quick", false);
