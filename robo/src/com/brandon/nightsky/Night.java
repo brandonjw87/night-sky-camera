@@ -143,6 +143,7 @@ public class Night {
         longPress("Hold to stop");
         follow(15 * 60_000L);
         report();
+        videoCheck(true, null); // made of the 4 frames there are
     }
 
     /** Picked up for a few seconds mid-session (to look), then put back. */
@@ -553,6 +554,7 @@ public class Night {
         cam.meteor(now + 75, 0.30, 0.65, 200, 12, 0.5, -1.0);
         follow(20 * 60_000L);
         report();
+        videoCheck(true, null); // the kept meteors drawn in from their frames
         File[] ss = Monkey.root.listFiles();
         File d = null;
         if (ss != null && ss.length > 0) {

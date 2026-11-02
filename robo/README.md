@@ -11,7 +11,7 @@ what it does when the camera misbehaves.
 | `Monkey` | Taps every control on every screen it can reach, and reports crashes, errors and stuck screens. | `monkey/monkey.log` |
 | `Shots` | Draws each screen to a PNG. | PNGs |
 | `Launches` | Opens the app every way Android can: the launcher, shortcuts, the widget, the quick settings tile, notifications. | `launches/` |
-| `EditFlow` | Edits a kept session through the session controller, on the session `sim/G3Test` makes: an edit that changes nothing, edits of how it's rendered and ones that stack it again, a kept stack reused, a render whose stack was deleted made again, a re-stack cancelled, and the new processing for older renders (stacked again for an older stack, only rendered again for a render from before 1.4). | `EditFlow.out`: each check, then the session's log |
+| `EditFlow` | Edits a kept session through the session controller, on the session `sim/G3Test` makes: an edit that changes nothing, edits of how it's rendered and ones that stack it again, a kept stack reused, a render whose stack was deleted made again, a re-stack cancelled, and the new processing for older renders (stacked again for an older stack, only rendered again for a render from before 1.4). The photo's video (1.8): an edit stacked again is saved as a Motion Photo with its own video, a render made again keeps it, and an edit of the look only has none. | `EditFlow.out`: each check, then the session's log |
 
 ## Set up (once)
 
@@ -39,7 +39,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | Scenario | What happens |
 |---|---|
 | `base` | 5 minutes with the settings as they come, phone put down, left alone. Then the photo's video (1.8), as `trails` checks it too: the photo is in the gallery as a Motion Photo (name.MP.jpg) with the session's video inside, after the photo, where Google Photos looks; the photo still decodes with its EXIF block; the video is H.264 in the photo's shape with the frames its timeline gives, and ends on the photo (code for code, as the Pixel's own Motion Photos' videos match their photos); Play its video plays it where the photo is, and the photo comes back when it ends, on a tap, and after an error; opened again from the sessions page, it's still there to play. |
-| `stop` | Stopped from the phone after a few frames: what there is is developed. |
+| `stop` | Stopped from the phone after a few frames: what there is is developed, and the photo's video is made of those frames. |
 | `pickup` | Picked up for a few seconds mid-session, then put back. |
 | `knock` | Knocked mid-session: the view shifts a quarter of a degree. |
 | `stall` | The camera stops answering for a while: the watchdog restarts the capture session. |
@@ -58,6 +58,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | `remade` | The activity is made again mid-session, as after Android reclaimed it. |
 | `replay` | The widget's quick session, then the screen made again and reopened from the recent apps (which mustn't start it again). |
 | `trails` | Star trails for 2 minutes. |
+| `meteors` | 3 minutes with Keep meteors; two bright meteors cross the picture: both are reported, kept and listed in the meteor table (saved in Documents), and the photo's video is made with them. |
 | `video` | The photo's video (1.8) when there's none to put in: a phone without a video encoder, the video off in Advanced settings, the encoder failing part way, and the video skipped from the developing screen. Each time the photo is saved as before, a plain JPEG, and the log says why. |
 | `reading` | A sky reading (how dark it is). |
 | `clouds` | Clouds over everything for three frames. |

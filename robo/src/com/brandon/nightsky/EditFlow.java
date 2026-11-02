@@ -4,6 +4,7 @@ import android.app.Application;
 
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.Master;
+import com.brandon.nightsky.processing.MotionPhoto;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Recipe;
 import com.brandon.nightsky.processing.Renderer;
@@ -44,6 +45,11 @@ public class EditFlow {
         org.robolectric.Shadows.shadowOf(app).declareComponentUnbindable(new android.content.ComponentName(app, CaptureService.class));
         final File root = SessionController.sessionsRoot(app);
         Shots.copy(new File(System.getProperty("shots.sessions")), root);
+        // the photo's video (1.8): what's saved lands in files to read back, and ffmpeg stands in for the phone's encoder
+        File out = new File(System.getProperty("shots.out", "build/robo"), "editflow");
+        Monkey.out = out;
+        FakeMediaStore.install(new File(out, "media"));
+        Mp4Writer.factory = FfmpegVideo.FACTORY;
         final File dir = SessionStore.list(root).get(0).dir;
         final SessionController c = new SessionController(app, new Prefs(app), new SessionController.Host() {
             @Override
@@ -108,6 +114,9 @@ public class EditFlow {
                 r5.stackKey + " vs " + in.was.stackKey + ", masters " + Master.list(dir).size());
         check("its note says what changed", r5.note.equals("edited: stretch 6.5, punchy look, 16:9 crop"), r5.note);
         check("its picture is new", !r5.pixelHash.isEmpty() && !r5.pixelHash.equals(in.was.pixelHash), r5.pixelHash);
+        check("a look-only edit has no video (nothing read the frames)", s.result.video == null && !s.result.motion
+                && !r5.motion && String.valueOf(FakeMediaStore.name(s.result.jpeg)).endsWith(".jpg")
+                && !String.valueOf(FakeMediaStore.name(s.result.jpeg)).endsWith(".MP.jpg"), FakeMediaStore.name(s.result.jpeg));
 
         // 5. frames trimmed, one left out, another reference: stacked again
         final SessionController.EditInfo in2 = info(c);
@@ -134,6 +143,15 @@ public class EditFlow {
         check("the stacking showed its progress", sawPhase(SessionController.Phase.DEVELOPING, "Stacking the edit"), "");
         check("its master knows its reference frame", Master.read(dir, r6.stackKey).meta.referenceUnit == 8,
                 "" + Master.read(dir, r6.stackKey).meta.referenceUnit);
+        // the edit stacked again gets its own video, of its own frames, ended on its own photo
+        final File v6 = s.result.video;
+        File g6 = FakeMediaStore.file(s.result.jpeg);
+        MotionPhoto.Info mi6 = g6 != null ? MotionPhoto.read(g6) : null;
+        check("the edit's photo is a Motion Photo with its own video", v6 != null && v6.isFile() && s.result.motion && r6.motion
+                && mi6 != null && mi6.videoLength == v6.length() && (r6.name + ".MP.jpg").equals(FakeMediaStore.name(s.result.jpeg)),
+                v6 + ", " + FakeMediaStore.name(s.result.jpeg) + ", " + (mi6 != null ? mi6.videoLength + " bytes inside" : "no video inside")
+                        + " | " + lastLines(dir, 4));
+        check("the log says the edit's photo plays", lastLines(dir, 12).contains("a Motion Photo: Google Photos plays its "), lastLines(dir, 6));
 
         // 6. back to all the frames: render 4's stack, which is kept, so not stacked again
         final SessionController.EditInfo in3 = info(c);
@@ -170,6 +188,8 @@ public class EditFlow {
         check("the log says so", log(dir).contains("render r006 made again from its recipe: the same stack and the same picture, pixel for pixel, "
                 + "so it isn't saved twice"), lastLines(dir, 3));
         check("making it again showed its own words", sawPhase(SessionController.Phase.DEVELOPING, "Making it again"), "");
+        check("made again, it still has its video", v6 != null && v6.equals(s.result.video) && v6.isFile() && s.result.motion,
+                s.result.video + ", inside: " + s.result.motion);
 
         // 8. a re-stack cancelled: the photo as it was
         final SessionController.EditInfo in4 = info(c);
