@@ -226,7 +226,7 @@ public class EditFlow {
         // 10. a render by an older version's processing: offered again with this one's, saved as a new render
         File r1f = new File(new File(dir, Recipe.DIR), "r001.json");
         String j = read(r1f);
-        write(r1f, j.replace("\"pipeline\":1", "\"pipeline\":0"));
+        write(r1f, j.replace("\"pipeline\":" + PostProcessor.PIPELINE, "\"pipeline\":" + (PostProcessor.PIPELINE - 1)));
         s = await(new Runnable() {
             @Override
             public void run() {
@@ -293,6 +293,44 @@ public class EditFlow {
         Recipe r10 = last(dir);
         check("an edit of a render from before 1.4 is rendered by this version, and says so", s.headline.equals("Saved as render 10")
                 && !r10.outdated() && r10.note.equals("edited: the new processing, stretch 7"), words(s) + ", note " + r10.note);
+
+        // 12. an older stack and rendering whose frames were deleted to make room: rendered anew from the stack it has
+        File[] raws = new SessionStore(dir).framesDir.listFiles();
+        if (raws != null) {
+            for (File raw : raws) if (raw.getName().endsWith(".raw") && !raw.delete()) throw new IllegalStateException("kept " + raw);
+        }
+        write(r1f, read(r1f).replace("\"renderer\":" + Renderer.VERSION + ",", ""));
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.openRender(dir, 1);
+            }
+        }, 120);
+        check("a render older in both, its frames gone, still offers the new rendering", s.result != null && s.result.recipe.number == 1
+                && s.result.recipe.renderOutdated() && s.result.recipe.stackOutdated(), words(s));
+        final Recipe nf = s.result.recipe.edit();
+        nf.renew();
+        mark();
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.saveEdit(nf, null);
+            }
+        }, 300);
+        final Recipe r11 = last(dir);
+        check("it's rendered anew from the stack it has, its stacking as it was", s.headline.equals("Saved as render 11")
+                && r11.number == 11 && r11.stackOutdated() && !r11.renderOutdated() && r11.note.equals("edited: the new processing")
+                && !sawSince(SessionController.Phase.FINISHING, "Stacking the edit"), words(s) + ", note " + r11.note);
+        final Recipe nn = r11.edit();
+        nn.renew();
+        s = await(new Runnable() {
+            @Override
+            public void run() {
+                c.saveEdit(nn, null);
+            }
+        }, 120);
+        check("then there's nothing more to make with the new processing", s.headline.equals("Nothing to save")
+                && last(dir).number == 11, words(s));
 
         // the stacked pictures kept: the develop step's, the newest and two more at most
         check("old stacks of edits are deleted to make room", Master.list(dir).size() <= 4, Master.list(dir).size() + " masters");

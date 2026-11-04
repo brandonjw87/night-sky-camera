@@ -1273,6 +1273,18 @@ final class SessionController {
                     e.renderer = Renderer.VERSION;
                     what = e.changes(cur);
                 }
+                if (!e.sameStack(cur) && onlyNewer(e, cur) && (cur.isMerge() || !framesKept(st))) {
+                    // only the stacking's version is newer, and the stack can't be made again: this version's
+                    // rendering of the stack it has
+                    e.pipeline = cur.pipeline;
+                    what = e.changes(cur);
+                    if (what.isEmpty()) {
+                        previewAs(null, false);
+                        publish("Nothing to save", "Its stack can't be made again (" + (cur.isMerge() ? "it's sessions stacked "
+                                + "together" : "its frames were deleted to make room") + "), and it's rendered as this version renders.", -1);
+                        return;
+                    }
+                }
                 if (e.sameStack(cur)) {
                     e.note = "edited: " + what;
                     st.log("edit: " + what + ", rendered from the same stack");
@@ -4832,6 +4844,14 @@ final class SessionController {
         st.log(String.format(Locale.US, "decision: %d older stacked picture%s of edits deleted (%s), keeping the develop step's and the "
                         + "newest %d; their recipes can make them again while the frames are kept", gone.size(), gone.size() == 1 ? "" : "s",
                 SessionLibrary.gb(before - Master.bytes(st.dir)), EDIT_MASTERS + 1));
+    }
+
+    /** True if {@code e} would stack as {@code cur} does but for being made by this version's stacking. */
+    static boolean onlyNewer(Recipe e, Recipe cur) {
+        if (!cur.stackOutdated() || e.stackOutdated()) return false;
+        Recipe t = e.edit();
+        t.pipeline = cur.pipeline;
+        return t.sameStack(cur);
     }
 
     /** Whether a render made again came out as the first time: its stack (the master's hash) and its pixels. */

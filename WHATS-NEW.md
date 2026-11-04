@@ -1,5 +1,92 @@
 # Night Sky Camera: what's new
 
+## Version 1.9: clearer photos
+
+### What's new
+
+- **No more coloured specks from hot pixels that come in pairs.** Every phone sensor has a few pixels that read
+  too bright in long exposures. Single ones were already taken out, but some sit two or three side by side, and
+  those got through as small red, green or blue specks, because together they looked like a tiny star. Now each
+  pair and three is found and taken out too. On a simulated sensor with 304 such pairs and threes, version 1.8
+  found none of them and 1.9 finds them all, taking nothing else for a hot pixel; in the developed photo, the
+  worst coloured speck where they are went from 123 levels of colour to 50, no more than the sky's own grain.
+- **The Milky Way's dark lanes and star clouds brought out.** While the photo's grain is taken out, the app now
+  also finds the sky's real detail, from about 16 to 256 pixels wide (the dark lanes of dust along the Milky
+  Way, its brighter star clouds), wherever it stands clear of the grain, and makes it stronger: the lanes darker,
+  the clouds brighter. As developed, their contrast goes up by about a third. The plain sky, the stars, the glow
+  around bright stars and the Moon, and the ground are left as they were.
+- **Sky detail, in Edit > Look:** from 0% (none brought out) through 100% (as developed) to 200%. Even at 200%,
+  no part of the sky is made darker than the plain sky beside the Milky Way, so a lane never turns into a black
+  hole and the sky along the Milky Way isn't shadowed.
+- **An even sky over trees, roofs and hills.** The app takes the sky's glow out of the photo (light pollution,
+  the brighter sky low down) by fitting a smooth surface to the sky. Until now that fit took in the ground too,
+  which bent it down towards the ground: the sky came out lighter near the trees and darker away from them. Now
+  the ground (anything much darker than the sky around the stars) is left out of the fit. On a simulated sky with
+  the ground along its bottom tenth, the plain sky's grey went from 14 at the top to 112 just over the ground in
+  1.8; in 1.9 it's 30 and 29.
+- **New processing for older photos.** A photo made by 1.8 or before shows **New processing** under it: tap it to
+  make the photo again with 1.9's rendering (the sky detail, the even sky) and, while its frames are kept, stacked
+  again with the hot pixel pairs taken out. It's saved as a new version; the old one stays.
+- **In the log:** the hot pixels line says how many came in pairs or threes; the noise reduction's line ends with
+  how much of the sky had its detail brought out and how many bright stars' glows were kept out of it; and the
+  line describing the picture says how much of it was left out of the sky's fit as the ground (`ground=12.0%`,
+  for example).
+- **Checked off the phone:** on a made-up sky with a Milky Way band, a bright star with a glow, the Moon and the
+  ground along its bottom, the detail found follows the band's own (a correlation of 0.95); the plain sky gets
+  none; the star's and the Moon's glows aren't brought out and get no dark ring; the ground gets nothing and the
+  skyline no rim; even at 200% the sky beside the band stays at the plain sky's level on average; and the
+  preview's detail is the full-size photo's. On four simulated nights under the real sky's Milky Way, one through
+  a dewy lens, it brought out detail on a third to a half of the sky; on a night with a dewy lens and no Milky
+  Way, on 2% of it. Through the app itself, with a simulated camera: a 5-minute session developed and saved with no
+  problems, and the edit flow passed, including a session whose frames were deleted, which **New processing**
+  renders again from the stack it has. At the Pixel's full size (4080 x 3072) the app needs no more memory than 1.8
+  did: 312 MB at the most, of the 512 MB it has.
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.8 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- Sky detail is 100% (as developed) on every photo; change it for one photo under **Edit > Look**. There's no
+  setting for all photos.
+- Hot pixel pairs and threes are always taken out, and the ground is always left out of the sky's fit when the
+  picture has enough stars to tell the sky from the ground (otherwise the fit is as it was in 1.8).
+- Developing takes a few seconds longer than in 1.8: on the test computer, a full-size session of 19 frames
+  developed in 101 seconds instead of 97, and its photo took 4.7 seconds to render instead of 3.8.
+- Everything else is unchanged from version 1.8.
+
+### Try today
+
+- Nothing new to see in daylight: all three changes need a night's frames. To see the edit slider, open any photo,
+  tap **Edit**, then **Look**: **Sky detail** is under **Colour**.
+
+### Try tonight
+
+1. A clear night with the Milky Way overhead: in November it crosses the sky high in the west in the first hours
+   after dark. Take a normal session, then tap **Edit > Look** and slide **Sky detail** to 0%, 100% and 200%, holding
+   **Compare** to see the photo as developed. Say which looks best to you, and if any bright star gets a dark ring
+   or the sky a dark patch.
+2. If trees or a roof are in the picture, check that the sky is as dark next to them as in the middle. If it isn't,
+   open **Session report > Share the log** and send the line with `ground=` in it.
+3. If you see a coloured speck that stays in the same place on the photo from night to night, say so: that's a hot
+   pixel the app missed.
+
+### Not working yet, or not tested
+
+- Tested off the phone only, on simulated skies. How much detail a real Milky Way shows depends on the night: a
+  short session, a bright sky or haze leaves less of it clear of the grain, and less is brought out.
+- The ground is found only where it's much darker than the sky and has no stars. Lit ground (snow under the Moon,
+  lit buildings) is still fitted as sky, as in 1.8.
+- Sky detail works on star trails photos as well; it was checked on a simulated trails night (the detail brought out
+  on 23% of its sky, the trails themselves as before).
+
 ## Version 1.8: photos that play
 
 ### What's new

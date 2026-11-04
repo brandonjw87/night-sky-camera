@@ -75,6 +75,8 @@ public final class SimRunner {
         SkySim sim = new SkySim(W, H, truth, 42, catalog, startMs, lonDeg);
         // SIM_BV=1: real stars coloured by their B-V, as the colour calibration (F4) expects
         if (System.getenv("SIM_BV") != null) sim.colourByBv();
+        // SIM_MILKYWAY=0.5: a Milky Way (needs SIM_REALSKY), half the sky glow's green where the band is middling bright
+        if (System.getenv("SIM_MILKYWAY") != null) sim.milkyWay = Double.parseDouble(System.getenv("SIM_MILKYWAY"));
         if (events) {
             sim.satelliteFrame = frames / 4;
             sim.planeFrame = frames / 2;
@@ -352,6 +354,23 @@ public final class SimRunner {
         System.out.printf(Locale.US, "render: %d ms%n", t3 - t2);
         System.out.println("noise reduction: " + o.analysis.noiseNote());
         writePng(pix, cw, ch, new File(outDir, trails ? "trails.png" : "stack.png"));
+        // SIM_KEEP=file: the developed picture and its analysis kept for RenderBench
+        if (System.getenv("SIM_KEEP") != null) RenderBench.save(o.image, o.analysis, new File(System.getenv("SIM_KEEP")));
+        // SIM_DETAIL=0,0.7,1.4: the photo again with that much of the sky's detail brought out (1.9), detail_0.7.png etc.
+        if (System.getenv("SIM_DETAIL") != null) {
+            for (String v : System.getenv("SIM_DETAIL").split(",")) {
+                Renderer.Params dp = new Renderer.Params();
+                dp.detail = Float.parseFloat(v.trim());
+                final int[] dpx = new int[cw * ch];
+                Renderer.render(o.image, o.analysis, dp, new Renderer.RowSink() {
+                    @Override
+                    public void rows(int y, int count, int[] argb, int width) {
+                        System.arraycopy(argb, 0, dpx, y * width, count * width);
+                    }
+                }, null);
+                writePng(dpx, cw, ch, new File(outDir, "detail_" + v.trim() + ".png"));
+            }
+        }
         if (System.getenv("SIM_DEBUG") != null) debugStars(o, pix, cw, ch, spec);
         // crops at native resolution: centre and a corner
         writeCrop(pix, cw, ch, cw / 2 - 300, ch / 2 - 200, 600, 400, new File(outDir, "crop_center.png"));

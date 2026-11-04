@@ -50,6 +50,39 @@ public final class Denoise {
     static final float BRIGHT_LO = 4f, BRIGHT_HI = 16f, BRIGHT_KEEP = 0.5f;
     /** The coarse layers' Wiener gain: their energy around a point against KW times the noise's. */
     static final float KW = 1f;
+    /**
+     * The sky's detail brought out (1.9): the coarse layers of the starless sky added again where they stand clear of
+     * the noise, by how wide they are ({@link #detailWeight}). A layer comes in where its energy around a point is
+     * DETAIL_SNR0 to DETAIL_SNR1 times its noise's (twice to four times the noise, in light).
+     */
+    static final float DETAIL_SNR0 = 4f, DETAIL_SNR1 = 16f;
+    /**
+     * The foreground (the trees, the ground; {@link Job#foreground}): starless and darker than DARK of the sky's own
+     * level around it, or darker than DEEP of it, the level found where STARRY0 to STARRY1 of the points around are
+     * stars and the sky isn't DARK_LO to DARK_HI of the starry sky's median or darker. It's filled in from the sky
+     * around it before the detail is found, and gets none itself where it takes NEAR0 to NEAR1 of a few grid points
+     * around. Never more than DETAIL_CAP of the background either way.
+     */
+    static final float DARK = 0.575f, DEEP = 0.3f, STARRY0 = 0.02f, STARRY1 = 0.06f, DARK_LO = 0.45f, DARK_HI = 0.7f;
+    static final float NEAR0 = 0.05f, NEAR1 = 0.25f, DETAIL_CAP = 0.3f;
+    /**
+     * The most the edit screen brings the detail out (its 200%): the detail never takes the sky darker than the fitted
+     * background even then. A dark lane takes away the Milky Way's light, not the sky's, and a wide layer's dip beside
+     * a bright band would shadow the sky along it.
+     */
+    static final float DETAIL_MOST = 2f * Renderer.Params.DETAIL;
+    /** The fill spreads past the foreground as far as its share of a 2 grid point smooth times this reaches 1. */
+    static final float FILL_SPREAD = 25f;
+    /**
+     * Glows taken out before the detail is (1.9, Job.haloes): around this many of the brightest lights at most,
+     * none within HALO_APART full-size px of a brighter one, out to HALO_R full-size px; a ring's level from
+     * HALO_MIN_PTS points or more; a glow HALO_SIG times the quietest detail layer's noise or more at its inner edge,
+     * down to HALO_PEAKED of that or less halfway out.
+     */
+    static final int HALO_STARS = 48, HALO_APART = 24, HALO_R = 384, HALO_MIN_PTS = 5;
+    static final float HALO_SIG = 2f, HALO_PEAKED = 0.6f;
+    /** A light that wasn't clipped throws no more than this many times its own light into its glow. */
+    static final float HALO_LIGHT = 1f;
     /** Fine layers; the coarse ones, on every QF-th pixel of the 8 px smooth. */
     public static final int LEVELS = 3, QF = 4, QLEVELS = 5;
     /** Tiles of work, and cells of the noise map (a tile holds 2 x 2 cells, so each cell is one tile's). */
@@ -91,18 +124,58 @@ public final class Denoise {
         public float starFraction;
         /** Noise over the picture relative to the whole picture's: the quietest cell and the noisiest. */
         public float mapMin, mapMax;
+        /**
+         * The sky's detail to bring out (1.9): what to add to the luminance, times {@link Renderer.Params#detail}, on a
+         * grid of dqw x dqh points. Crop pixel (x, y) is at grid point (x * dScale + dOff, y * dScale + dOff), bilinear
+         * between them; null when there's none.
+         */
+        public float[] dd;
+        public int dqw, dqh;
+        public float dScale, dOff;
+        /** Share of the sky where the detail is brought out; bright lights whose glow was kept out of it. */
+        public float detailShare;
+        public int haloes;
         public long ms;
 
         public String describe() {
             return String.format(Locale.US, "noise %.3f / %.3f / %.3f in the 1-2, 2-4 and 4-8 px layers and %.4f to %.4f in the "
                             + "coarse ones, measured between the stars (stars on %.0f%% of the pixels; matched filter's noise %.3f, "
-                            + "first guess %.3f); %.2f to %.2f times the average over the picture (%d ms)", sigma[0], sigma[1],
-                    sigma[2], min(sigmaQ), max(sigmaQ), 100 * starFraction, sigmaMf, guessMf, mapMin, mapMax, ms);
+                            + "first guess %.3f); %.2f to %.2f times the average over the picture; the sky's detail brought out on "
+                            + "%.0f%% of it, %d bright lights' glows kept out of it (%d ms)", sigma[0], sigma[1], sigma[2], min(sigmaQ),
+                    max(sigmaQ), 100 * starFraction, sigmaMf, guessMf, mapMin, mapMax, 100 * detailShare, haloes, ms);
         }
 
         /** What to add to the luminance of crop pixel (x, y). */
         public float at(int x, int y) {
             return Half.toFloat(dy[y * cw + x]);
+        }
+
+        /** The sky's detail at crop pixel (x, y), to add to the luminance times {@link Renderer.Params#detail}. */
+        public float detailAt(int x, int y) {
+            if (dd == null) return 0f;
+            float u = Math.min(dqw - 1f, Math.max(0f, x * dScale + dOff)), v = Math.min(dqh - 1f, Math.max(0f, y * dScale + dOff));
+            int i0 = Math.min(dqw - 2, (int) u), j0 = Math.min(dqh - 2, (int) v);
+            float tu = Math.min(1f, u - i0), tv = Math.min(1f, v - j0);
+            int k = j0 * dqw + i0;
+            float top = dd[k] + tu * (dd[k + 1] - dd[k]);
+            float bot = dd[k + dqw] + tu * (dd[k + dqw + 1] - dd[k + dqw]);
+            return top + tv * (bot - top);
+        }
+
+        /** {@link #detailAt} along crop row y, columns 0 to w - 1, into {@code out}. */
+        public void detailRow(int y, int w, float[] out) {
+            float v = Math.min(dqh - 1f, Math.max(0f, y * dScale + dOff));
+            int j0 = Math.min(dqh - 2, (int) v);
+            float tv = Math.min(1f, v - j0);
+            int r0 = j0 * dqw, r1 = r0 + dqw;
+            for (int x = 0; x < w; x++) {
+                float u = Math.min(dqw - 1f, Math.max(0f, x * dScale + dOff));
+                int i0 = Math.min(dqw - 2, (int) u);
+                float tu = Math.min(1f, u - i0);
+                float top = dd[r0 + i0] + tu * (dd[r0 + i0 + 1] - dd[r0 + i0]);
+                float bot = dd[r1 + i0] + tu * (dd[r1 + i0 + 1] - dd[r1 + i0]);
+                out[x] = top + tv * (bot - top);
+            }
         }
     }
 
@@ -130,6 +203,14 @@ public final class Denoise {
         b.starFraction = r.starFraction;
         b.mapMin = r.mapMin;
         b.mapMax = r.mapMax;
+        // the same detail grid: binned pixel X covers full-size pixels factor X to factor X + factor - 1
+        b.dd = r.dd;
+        b.dqw = r.dqw;
+        b.dqh = r.dqh;
+        b.dScale = r.dScale * factor;
+        b.dOff = r.dOff + r.dScale * (factor - 1) * 0.5f;
+        b.detailShare = r.detailShare;
+        b.haloes = r.haloes;
         final short[] dy = new short[w * h];
         final float inv = 1f / (factor * factor);
         Parallel.forRange(h, 8, new Parallel.Range() {
@@ -168,6 +249,7 @@ public final class Denoise {
         j.footprints(res.guessMf);
         if (!j.measure(res)) return null;
         j.coarse(res);
+        j.bStar = null;
         // stars again with the measured noise; the correction from the sky that leaves
         res.starFraction = j.footprints(res.sigmaMf);
         res.dy = j.correct(res);
@@ -192,6 +274,8 @@ public final class Denoise {
         final int fw, fh;
         final float[] bSum, bCnt;
         float[] fill4;
+        /** The first star pass's star pixels' luminance per 4 x 4 block, for {@link #haloes}; null after. */
+        float[] bStar;
         /** The 8 px smooth of the starless sky every QF-th pixel, and whether that pixel is sky. */
         final int qw, qh;
         final float[] q;
@@ -212,8 +296,11 @@ public final class Denoise {
         final double gain;
         final float[] mfK;
         final int mfR;
+        /** How many full-size pixels each pixel of this picture stands for, each way (1 / noiseScale). */
+        final float bin;
 
         Job(RgbImage img, Renderer.Analysis a, float noiseScale, int tile) {
+            bin = noiseScale >= 1f ? 1f : 1f / noiseScale;
             if (noiseScale >= 1f) {
                 psf = MF_SIGMA;
                 mfR = MF_R;
@@ -253,6 +340,7 @@ public final class Denoise {
             fh = (ch + 3) / 4;
             bSum = new float[fw * fh];
             bCnt = new float[fw * fh];
+            bStar = new float[fw * fh];
             qw = cw / QF;
             qh = ch / QF;
             q = new float[qw * qh];
@@ -407,7 +495,10 @@ public final class Denoise {
             return true;
         }
 
-        /** The coarse layers of the starless sky's 8 px smooth: their noise, and the correction by the local Wiener gain. */
+        /**
+         * The coarse layers of the starless sky's 8 px smooth: their noise and the correction by the local Wiener gain;
+         * then the sky's detail to bring out ({@link #detail}).
+         */
         void coarse(Result res) {
             float[] cur = q.clone(), nxt = new float[q.length], tmp = new float[q.length];
             float[] d = new float[q.length], e = new float[q.length], buf = new float[q.length];
@@ -445,6 +536,410 @@ public final class Denoise {
                 nxt = t;
             }
             dq = out;
+            buf = null;
+            detail(res, nq, cur, nxt, tmp, d, e);
+        }
+
+        /**
+         * The sky's detail to bring out (1.9), from the coarse layers of the starless sky's smooth with the foreground
+         * filled in from the sky around it (so the skyline draws no rim) and the bright lights' glows taken out
+         * ({@link #haloes}): each layer as its Wiener gain leaves it, where it stands clear of the noise
+         * ({@link #DETAIL_SNR0}), by its width ({@link #detailWeight}: layer l holds 8 x 2^l to 16 x 2^l px of this
+         * picture, bin times that in full-size ones), none on the foreground, held within {@link #DETAIL_CAP} of the
+         * fitted background and never taking the sky under it ({@link #DETAIL_MOST}). A layer's noise is measured on
+         * it, but a wide layer full of the Milky Way measures its light: there the noise is taken as no more than the
+         * finer layer's, nor under half what was measured (half the noise at most passes {@link #DETAIL_SNR0} where
+         * there's nothing but noise). a to e: coarse()'s buffers.
+         */
+        void detail(Result res, float[] nq, float[] a, float[] b, float[] tmp, float[] d, float[] e) {
+            float floor = Float.MAX_VALUE;
+            for (int l = 0; l < QLEVELS; l++) {
+                if (detailWeight(8f * (1 << l) * bin) > 0 && res.sigmaQ[l] > 0) floor = Math.min(floor, res.sigmaQ[l]);
+            }
+            if (floor == Float.MAX_VALUE) return;
+            float[] bg = background(), fg = foreground(b, d, e, tmp), det = new float[q.length];
+            boolean ground = false;
+            for (int k = 0; k < q.length && !ground; k++) ground = fg[k] > 0;
+            // filled in: the foreground and the sky its darkness reaches in the smooth (4 grid points out), fading
+            // over the next two
+            float[] fill = fg.clone(), fgNear = fg.clone();
+            if (ground) {
+                b3Grid(fill, fill, tmp, qw, qh, 1);
+                b3Grid(fill, fill, tmp, qw, qh, 2);
+                for (int k = 0; k < q.length; k++) fill[k] = Math.min(1f, FILL_SPREAD * fill[k]);
+                b3Grid(fgNear, fgNear, tmp, qw, qh, 1);
+            }
+            float[] cur = a, nxt = b;
+            System.arraycopy(q, 0, cur, 0, q.length);
+            if (ground) inpaint(cur, fill, d, e, tmp, nxt);
+            res.haloes = haloes(cur, fill, floor);
+            boolean any = false;
+            float sPrev = 0;
+            float[] buf = new float[q.length];
+            for (int l = 0; l < QLEVELS; l++) {
+                int step = 1 << l;
+                b3Grid(cur, nxt, tmp, qw, qh, step);
+                int n = 0;
+                for (int k = 0; k < q.length; k++) {
+                    d[k] = cur[k] - nxt[k];
+                    if (qSky[k] && fill[k] < 0.5f) buf[n++] = Math.abs(d[k]);
+                }
+                float m = n > 16 ? MAD * Stats.median(buf, n) : 0f;
+                float s = l == 0 || !(sPrev > 0) ? m : Math.max(0.5f * m, Math.min(m, sPrev));
+                sPrev = s;
+                float wd = detailWeight(8f * step * bin);
+                if (wd > 0 && s > 0) {
+                    for (int k = 0; k < q.length; k++) e[k] = d[k] * d[k];
+                    b3Grid(e, e, tmp, qw, qh, step);
+                    b3Grid(e, e, tmp, qw, qh, 2 * step);
+                    float nv0 = KW * s * s;
+                    for (int k = 0; k < q.length; k++) {
+                        float nk = nq[k];
+                        float nv = nv0 * nk * nk;
+                        if (!(nv > 0)) continue;
+                        float clear = smooth(e[k] / nv, DETAIL_SNR0, DETAIL_SNR1);
+                        if (clear <= 0) continue;
+                        float away = 1f - smooth(fgNear[k], NEAR0, NEAR1);
+                        if (away <= 0) continue;
+                        // the Wiener gain (clear: e is 4 times nv or more)
+                        float g = (e[k] - nv) / e[k];
+                        det[k] += wd * clear * away * g * d[k];
+                        any = true;
+                    }
+                }
+                float[] t = cur;
+                cur = nxt;
+                nxt = t;
+            }
+            if (!any) return;
+            // the sky's own level, held to its smooth (a star's leftover light lets no darkness in around it, and a
+            // lane keeps its own level)
+            float[] lv = cur;
+            System.arraycopy(q, 0, lv, 0, q.length);
+            b3Grid(lv, lv, tmp, qw, qh, 1);
+            b3Grid(lv, lv, tmp, qw, qh, 2);
+            int sky = 0, shown = 0;
+            for (int k = 0; k < q.length; k++) {
+                float v = det[k], cap = DETAIL_CAP * Math.max(0f, bg[k]);
+                // darker: no further than the sky stands over the fitted background, at the most the edit screen gives
+                if (v < 0) cap = Math.min(cap, Math.max(0f, Math.min(q[k], lv[k]) - bg[k]) / DETAIL_MOST);
+                // a soft limit: cap tanh(det / cap)
+                det[k] = cap > 0 ? (float) (cap * Math.tanh(v / cap)) : 0f;
+                if (qSky[k] && fill[k] < 0.5f) {
+                    sky++;
+                    if (Math.abs(det[k]) > 0.5f * res.sigmaQ[0]) shown++;
+                }
+            }
+            res.dd = det;
+            res.dqw = qw;
+            res.dqh = qh;
+            res.dScale = 1f / QF;
+            res.dOff = -(QF / 2) / (float) QF;
+            res.detailShare = sky > 0 ? shown / (float) sky : 0f;
+        }
+
+        /**
+         * The foreground (1) and the sky (0) on the coarse grid: darker than {@link #DARK} of the sky's own level
+         * around it and starless (under {@link #STARRY0} of the points around are stars: a dark lane of the Milky Way
+         * has its stars), or under {@link #DEEP} of it (the skyline's edge passes for stars). The sky's level: the
+         * smooth where there are stars and it isn't dark against the starry sky's median, spread by the finest B3 level
+         * that reaches. The fitted background won't do: it bends down to meet a wide foreground. sky, v, w, tmp:
+         * scratch.
+         */
+        float[] foreground(float[] sky, float[] v, float[] w, float[] tmp) {
+            float[] D = new float[q.length], fg = new float[q.length];
+            for (int k = 0; k < q.length; k++) D[k] = qSky[k] ? 0f : 1f;
+            b3Grid(D, D, tmp, qw, qh, 1);
+            // the starry sky's median
+            int n = 0;
+            for (int k = 0; k < q.length; k++) if (D[k] >= STARRY1) v[n++] = q[k];
+            if (n < 16) return fg;
+            float G = Stats.median(v, n);
+            if (!(G > 0)) return fg;
+            for (int k = 0; k < q.length; k++) {
+                float wk = smooth(D[k], STARRY0, STARRY1) * smooth(q[k], DARK_LO * G, DARK_HI * G);
+                v[k] = q[k] * wk;
+                w[k] = wk;
+                sky[k] = Float.NaN;
+            }
+            int left = q.length;
+            for (int l = 0; l < FILL4_LEVELS && left > 0; l++) {
+                b3Grid(v, v, tmp, qw, qh, 1 << l);
+                b3Grid(w, w, tmp, qw, qh, 1 << l);
+                for (int k = 0; k < q.length; k++) {
+                    if (sky[k] == sky[k] || w[k] < FILL_WEIGHT) continue;
+                    sky[k] = v[k] / w[k];
+                    left--;
+                }
+            }
+            for (int k = 0; k < q.length; k++) {
+                float ref = sky[k] == sky[k] ? sky[k] : G;
+                fg[k] = q[k] < DARK * ref && (D[k] < STARRY0 || q[k] < DEEP * ref) ? 1f : 0f;
+            }
+            return fg;
+        }
+
+        /**
+         * src under the foreground (fg, 0 to 1) filled in from the sky around it: the sky's values and weights smoothed
+         * a B3 level at a time, each foreground point taking the finest level that reaches it ({@link #FILL_WEIGHT});
+         * what none reaches takes the mean of the sky. v, w, tmp, fill: scratch.
+         */
+        void inpaint(float[] src, float[] fg, float[] v, float[] w, float[] tmp, float[] fill) {
+            int left = 0;
+            double sum = 0, cnt = 0;
+            for (int k = 0; k < q.length; k++) {
+                float wk = 1f - fg[k];
+                v[k] = src[k] * wk;
+                w[k] = wk;
+                sum += v[k];
+                cnt += wk;
+                fill[k] = Float.NaN;
+                if (fg[k] > 0) left++;
+            }
+            if (left == 0) return;
+            for (int l = 0; l < FILL4_LEVELS && left > 0; l++) {
+                b3Grid(v, v, tmp, qw, qh, 1 << l);
+                b3Grid(w, w, tmp, qw, qh, 1 << l);
+                for (int k = 0; k < q.length; k++) {
+                    if (!(fg[k] > 0) || fill[k] == fill[k] || w[k] < FILL_WEIGHT) continue;
+                    fill[k] = v[k] / w[k];
+                    left--;
+                }
+            }
+            float mean = cnt > 0 ? (float) (sum / cnt) : 0f;
+            for (int k = 0; k < q.length; k++) {
+                if (!(fg[k] > 0)) continue;
+                float f = fill[k] == fill[k] ? fill[k] : mean;
+                src[k] += fg[k] * (f - src[k]);
+            }
+        }
+
+        /**
+         * Takes the brightest lights' glows (a dewy or smudged lens's, the Moon's, a planet's, a lamp's) out of
+         * {@code src}, the starless sky's smooth on the coarse grid, so they aren't brought out as detail with a dark
+         * ring around them. Around each of the {@link #HALO_STARS} brightest lights (the stars' light per block, 3 x 3
+         * blocks summed): the sky's level ring by ring (its median) over the level just outside the glow, kept falling
+         * outward, taken out where it stands over {@code floor} (the quietest detail layer's noise) and is peaked on the
+         * light ({@link #HALO_PEAKED}). A light that wasn't clipped can't throw more than {@link #HALO_LIGHT} times its
+         * own light into a glow, which keeps a patch of Milky Way a star sits in from passing for its glow. Each glow is
+         * measured with the brighter ones' already out. Returns how many glows it took out.
+         */
+        int haloes(float[] src, float[] fg, float floor) {
+            float[] L = bStar;
+            if (L == null) return 0;
+            int n4 = fw * fh;
+            // the stars' light per block: their pixels less the sky the fill puts under them
+            for (int by = 0; by < fh; by++) {
+                int ph = Math.min(4, ch - by * 4);
+                for (int bx = 0; bx < fw; bx++) {
+                    int k = by * fw + bx;
+                    float px = ph * Math.min(4, cw - bx * 4);
+                    L[k] -= (px - bCnt[k]) * fill4[k];
+                }
+            }
+            // the brightest lights: local peaks of the 3 x 3 sums, brightest first
+            float[] S = new float[n4];
+            for (int by = 0; by < fh; by++) {
+                for (int bx = 0; bx < fw; bx++) {
+                    float v = 0;
+                    for (int dy = -1; dy <= 1; dy++) {
+                        int yy = by + dy;
+                        if (yy < 0 || yy >= fh) continue;
+                        for (int dx = -1; dx <= 1; dx++) {
+                            int xx = bx + dx;
+                            if (xx >= 0 && xx < fw) v += L[yy * fw + xx];
+                        }
+                    }
+                    S[by * fw + bx] = v;
+                }
+            }
+            int np = 0;
+            long[] peaks = new long[256];
+            for (int by = 1; by < fh - 1; by++) {
+                for (int bx = 1; bx < fw - 1; bx++) {
+                    int k = by * fw + bx;
+                    float v = S[k];
+                    if (!(v > 0) || v <= S[k - fw - 1] || v <= S[k - fw] || v <= S[k - fw + 1] || v <= S[k - 1] || v < S[k + 1]
+                            || v < S[k + fw - 1] || v < S[k + fw] || v < S[k + fw + 1]) continue;
+                    if (np == peaks.length) peaks = java.util.Arrays.copyOf(peaks, 2 * np);
+                    // positive floats order as their bits do
+                    peaks[np++] = ((long) Float.floatToIntBits(v) << 32) | k;
+                }
+            }
+            java.util.Arrays.sort(peaks, 0, np);
+            float R = HALO_R / (QF * bin);
+            int ri = (int) R, nr = ri + 2;
+            if (ri < 4) return 0;
+            int[] cnt = new int[nr], off = new int[nr + 1], at = new int[nr];
+            float[] vals = new float[(2 * ri + 3) * (2 * ri + 3)];
+            float[] m = new float[nr], ms = new float[nr], P = new float[nr];
+            float[] su = new float[HALO_STARS], sv = new float[HALO_STARS];
+            byte[] clip = img.clip;
+            float apart = HALO_APART / (QF * bin);
+            int taken = 0, tried = 0;
+            for (int p = np - 1; p >= 0 && tried < HALO_STARS; p--) {
+                int k = (int) peaks[p];
+                int bx = k % fw, by = k / fw;
+                // the light's centre (its blocks' light weighted), on the coarse grid: block centre 4 bx + 1.5 is grid
+                // point (4 bx + 1.5 - QF / 2) / QF
+                float sw = 0, sx = 0, sy = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        float w = Math.max(0f, L[(by + dy) * fw + bx + dx]);
+                        sw += w;
+                        sx += w * dx;
+                        sy += w * dy;
+                    }
+                }
+                float cx = 4 * (bx + sx / sw) + 1.5f, cy = 4 * (by + sy / sw) + 1.5f;
+                // clipped in the frames: its light is more than its pixels hold, and the clipped pixels' middle is
+                // its centre (a wide light's, the Moon's, more truly than its brightest blocks')
+                boolean clipped = false;
+                if (clip != null) {
+                    double cs = 0, cxs = 0, cys = 0;
+                    int ya = Math.max(0, 4 * by - 18), yb = Math.min(ch, 4 * by + 22), xa = Math.max(0, 4 * bx - 18),
+                            xb = Math.min(cw, 4 * bx + 22);
+                    for (int y = ya; y < yb; y++) {
+                        int o = (a.cy0 + y) * img.width + a.cx0;
+                        for (int x = xa; x < xb; x++) {
+                            int c = clip[o + x] & 0xFF;
+                            if (c == 0) continue;
+                            cs += c;
+                            cxs += c * (x + 0.5);
+                            cys += c * (y + 0.5);
+                        }
+                    }
+                    if (cs > 0) {
+                        clipped = true;
+                        cx = (float) (cxs / cs) - 0.5f;
+                        cy = (float) (cys / cs) - 0.5f;
+                    }
+                }
+                float u = (cx - QF / 2) / QF, v = (cy - QF / 2) / QF;
+                boolean near = false;
+                for (int t = 0; t < tried && !near; t++) {
+                    float du = su[t] - u, dv = sv[t] - v;
+                    near = du * du + dv * dv < apart * apart;
+                }
+                if (near) continue;
+                su[tried] = u;
+                sv[tried] = v;
+                tried++;
+                // the sky's values ring by ring (ring r: r - 0.5 to r + 0.5 grid points out), the foreground left out
+                int i0 = Math.max(0, (int) Math.floor(u - R)), i1 = Math.min(qw - 1, (int) Math.ceil(u + R));
+                int j0 = Math.max(0, (int) Math.floor(v - R)), j1 = Math.min(qh - 1, (int) Math.ceil(v + R));
+                java.util.Arrays.fill(cnt, 0);
+                for (int jj = j0; jj <= j1; jj++) {
+                    for (int ii = i0; ii <= i1; ii++) {
+                        int kk = jj * qw + ii;
+                        if (!qSky[kk] || fg[kk] > 0.5f) continue;
+                        float du = ii - u, dv = jj - v;
+                        float r = (float) Math.sqrt(du * du + dv * dv);
+                        if (r <= R) cnt[(int) (r + 0.5f)]++;
+                    }
+                }
+                off[0] = 0;
+                for (int r = 0; r < nr; r++) {
+                    off[r + 1] = off[r] + cnt[r];
+                    at[r] = off[r];
+                }
+                for (int jj = j0; jj <= j1; jj++) {
+                    for (int ii = i0; ii <= i1; ii++) {
+                        int kk = jj * qw + ii;
+                        if (!qSky[kk] || fg[kk] > 0.5f) continue;
+                        float du = ii - u, dv = jj - v;
+                        float r = (float) Math.sqrt(du * du + dv * dv);
+                        if (r <= R) vals[at[(int) (r + 0.5f)]++] = src[kk];
+                    }
+                }
+                for (int r = 0; r < nr; r++) {
+                    int c = cnt[r];
+                    m[r] = c >= HALO_MIN_PTS ? Stats.select(vals, off[r], off[r] + c - 1, off[r] + (c - 1) / 2) : Float.NaN;
+                }
+                // three rings' median, against a lone noisy ring
+                int r0 = -1;
+                for (int r = 0; r <= ri; r++) {
+                    ms[r] = median3(r > 0 ? m[r - 1] : Float.NaN, m[r], m[r + 1]);
+                    if (r0 < 0 && ms[r] == ms[r]) r0 = r;
+                }
+                if (r0 < 0 || r0 > ri / 4) continue;
+                // the level outside the glow: first beyond half the reach, then just outside where the glow ends
+                float ref = medianOf(ms, ri / 2, ri, vals);
+                int edge = ri;
+                for (int it = 0; it < 3 && ref == ref; it++) {
+                    edge = edge(ms, r0, ri, ref, floor);
+                    if (edge >= ri / 2 || it == 2) break;
+                    float near2 = medianOf(ms, edge, Math.min(ri, 2 * edge + 2), vals);
+                    if (!(near2 == near2) || near2 == ref) break;
+                    ref = near2;
+                }
+                if (!(ref == ref)) continue;
+                // the glow over that level, falling outward
+                float run = Float.MAX_VALUE;
+                for (int r = 0; r <= ri; r++) {
+                    float x = r < r0 ? ms[r0] : ms[r];
+                    if (x == x) run = Math.min(run, x - ref);
+                    P[r] = Math.max(0f, run == Float.MAX_VALUE ? 0f : run);
+                }
+                P[ri + 1] = 0f;
+                edge = edge(ms, r0, ri, ref, floor);
+                // a glow, not a patch of sky the light happens to sit in: over the floor, and peaked on the light (at
+                // half its reach it's lost a share of its height)
+                if (!(P[r0] > HALO_SIG * floor) || P[Math.max(r0, edge / 2)] > HALO_PEAKED * P[r0]) continue;
+                // a light that wasn't clipped throws no more than HALO_LIGHT times its light into the glow
+                float scale = 1f;
+                if (!clipped) {
+                    double light = 0;
+                    for (int jj = j0; jj <= j1; jj++) {
+                        for (int ii = i0; ii <= i1; ii++) {
+                            float du = ii - u, dv = jj - v;
+                            float r = (float) Math.sqrt(du * du + dv * dv);
+                            if (r < R) light += profile(P, r, ri) * (1f - smooth(r, 0.75f * R, R));
+                        }
+                    }
+                    light *= QF * QF;
+                    float most = HALO_LIGHT * S[k];
+                    if (light > most) scale = (float) (most / light);
+                }
+                // out, tapering off over the last quarter of the reach; the light itself (inside the first ring, and its
+                // star pixels just past it, filled in from the glow around) to the level outside
+                for (int jj = j0; jj <= j1; jj++) {
+                    for (int ii = i0; ii <= i1; ii++) {
+                        float du = ii - u, dv = jj - v;
+                        float r = (float) Math.sqrt(du * du + dv * dv);
+                        if (r >= R) continue;
+                        int kk = jj * qw + ii;
+                        float h = r < r0 - 0.5f || (!qSky[kk] && r < r0 + 2) ? src[kk] - ref
+                                : profile(P, r, ri) * (1f - smooth(r, 0.75f * R, R));
+                        src[kk] -= scale * h;
+                    }
+                }
+                taken++;
+            }
+            bStar = null;
+            return taken;
+        }
+
+        /** The fitted sky background's luminance at each point of the coarse grid. */
+        float[] background() {
+            float[] bg = new float[q.length];
+            double[][] P = a.poly;
+            for (int j = 0; j < qh; j++) {
+                double v = ((j * QF + QF / 2 + 0.5) / ch) * 2 - 1;
+                double p0 = 0, p1 = 0, p2 = 0;
+                for (int c = 0; c < 3; c++) {
+                    double[] k = P[c];
+                    double wt = c == 0 ? 0.2126 : c == 1 ? 0.7152 : 0.0722;
+                    p0 += wt * (k[0] + k[2] * v + k[5] * v * v);
+                    p1 += wt * (k[1] + k[4] * v);
+                    p2 += wt * k[3];
+                }
+                for (int i = 0; i < qw; i++) {
+                    double u = ((i * QF + QF / 2 + 0.5) / cw) * 2 - 1;
+                    bg[j * qw + i] = (float) (p0 + u * (p1 + u * p2));
+                }
+            }
+            return bg;
         }
 
         /** The correction, a half float per crop pixel. */
@@ -725,20 +1220,25 @@ public final class Denoise {
                     foot[y * j.wpr + wd] = bits;
                 }
             }
-            // the blocks' sky (a tile holds whole blocks: tiles are a multiple of 4)
+            // the blocks' sky (a tile holds whole blocks: tiles are a multiple of 4), and their stars' light
+            float[] bStar = j.bStar;
             for (int by = y0 >> 2; by < (y1 + 3) >> 2; by++) {
                 for (int bx = x0 >> 2; bx < (x1 + 3) >> 2; bx++) {
-                    float s = 0, c = 0;
+                    float s = 0, c = 0, st = 0;
                     for (int y = by * 4, ye = Math.min(y1, by * 4 + 4); y < ye; y++) {
                         int o = (y - by0) * bw - bx0, so = (y - y0) * tw - x0;
                         for (int x = bx * 4, xe = Math.min(x1, bx * 4 + 4); x < xe; x++) {
-                            if (star[so + x]) continue;
+                            if (star[so + x]) {
+                                st += Y[o + x];
+                                continue;
+                            }
                             s += Y[o + x];
                             c++;
                         }
                     }
                     j.bSum[by * j.fw + bx] = s;
                     j.bCnt[by * j.fw + bx] = c;
+                    if (bStar != null) bStar[by * j.fw + bx] = st;
                 }
             }
             return n;
@@ -797,10 +1297,60 @@ public final class Denoise {
         }
     }
 
+    /**
+     * How much of a coarse layer is brought out, by the width of what it holds (its narrowest, in full-size pixels):
+     * none of 8-16 px (grain, what's left of the stars), half of 16-32 px, all of 32-128 px (the Milky Way's dark lanes),
+     * 0.7 of 128-256 px (its star clouds), none wider (the sky's gradients); in between by the scale's logarithm.
+     */
+    static float detailWeight(float lo) {
+        if (!(lo > 0)) return 0f;
+        double s = Math.log(lo) / Math.log(2);
+        double[] at = {3, 4, 5, 6, 7, 8}, w = {0, 0.5, 1, 1, 0.7, 0};
+        if (s <= at[0] || s >= at[at.length - 1]) return 0f;
+        for (int i = 1; i < at.length; i++) {
+            if (s <= at[i]) return (float) (w[i - 1] + (w[i] - w[i - 1]) * (s - at[i - 1]) / (at[i] - at[i - 1]));
+        }
+        return 0f;
+    }
+
     /** The non-negative garrote: w (1 - t^2 / w^2) above the threshold t, nothing below it. */
     static float garrote(float w, float t) {
         float w2 = w * w, t2 = t * t;
         return w2 > t2 ? w - t2 / w : 0f;
+    }
+
+    /** The median of three values, the missing ones (NaN) left out; NaN if all are. */
+    static float median3(float a, float b, float c) {
+        boolean ha = a == a, hb = b == b, hc = c == c;
+        if (ha && hb && hc) return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+        if (ha && hb) return 0.5f * (a + b);
+        if (ha && hc) return 0.5f * (a + c);
+        if (hb && hc) return 0.5f * (b + c);
+        return ha ? a : hb ? b : c;
+    }
+
+    /** The median of v[lo..hi]'s values that aren't NaN, using scratch; NaN if there are none. */
+    static float medianOf(float[] v, int lo, int hi, float[] scratch) {
+        int n = 0;
+        for (int r = Math.max(0, lo); r <= hi && r < v.length; r++) if (v[r] == v[r]) scratch[n++] = v[r];
+        return n > 0 ? Stats.median(scratch, n) : Float.NaN;
+    }
+
+    /** The glow's profile P (rings 0 to ri + 1, the last 0) at r grid points out, linear between the rings. */
+    static float profile(float[] P, float r, int ri) {
+        int r1 = Math.min(ri, (int) r);
+        float f = Math.min(1f, r - r1);
+        return P[r1] + f * (P[r1 + 1] - P[r1]);
+    }
+
+    /** The first ring from r0 on where the profile, kept falling, is down to {@code floor} over ref (ri if none is). */
+    static int edge(float[] ms, int r0, int ri, float ref, float floor) {
+        float run = Float.MAX_VALUE;
+        for (int r = r0; r <= ri; r++) {
+            if (ms[r] == ms[r]) run = Math.min(run, ms[r] - ref);
+            if (run <= floor) return r;
+        }
+        return ri;
     }
 
     /**

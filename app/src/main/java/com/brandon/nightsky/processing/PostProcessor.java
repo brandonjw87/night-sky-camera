@@ -17,9 +17,10 @@ import java.util.Map;
 public final class PostProcessor {
     /**
      * The processing's version: raised whenever a change makes the same frames give a different picture. Saved with
-     * every master and recipe (G3), so a photo made by an older version can be offered again with the new one.
+     * every master and recipe (G3), so a photo made by an older version can be offered again with the new one (2: hot
+     * pixels in pairs and threes taken out, 1.9).
      */
-    public static final int PIPELINE = 1;
+    public static final int PIPELINE = 2;
 
     public static final class Output {
         public RgbImage image;
@@ -415,7 +416,7 @@ public final class PostProcessor {
         wantGround = !trails && (edgeMask != null || freezeGround);
         pr.hot = hotPixels(pr.units, pr.fs, progress);
         out.hot = pr.hot;
-        store.log("hot pixels: " + pr.hot.count());
+        store.log("hot pixels: " + pr.hot.count() + (pr.hot.clustered() > 0 ? " (" + pr.hot.clustered() + " of them in pairs or threes side by side)" : ""));
         return pr;
     }
 

@@ -122,6 +122,15 @@ public final class SkySim {
     public double starGain = 1;
     /** A tree branch over the left edge: a dark silhouette with small gaps of sky and a few lit leaves. */
     public boolean branch;
+    /**
+     * A Milky Way (1.9): diffuse light along the galactic plane, with star clouds and dark lanes fixed on the sky (real
+     * sky only: it needs the time and place). Its light where the band is middling bright, as a share of the sky glow's
+     * green (0: none); star clouds stand up to half again above that, the dark lanes take most of it away.
+     */
+    public double milkyWay;
+    private volatile float[] mwTint;
+    /** The Milky Way's light is worked out every MW_STEP pixels and interpolated between. */
+    static final int MW_STEP = 8;
     /** A smudged or fogged lens: this share of every star's light spread into a glow of this size (pixels). */
     public double haloFrac, haloSigma = 10;
     /** Dew forming on the lens: from frame fogFrom on, the glow's share grows by fogPerFrame a frame, up to fogMax more. */
@@ -440,6 +449,125 @@ public final class SkySim {
         return 1;
     }
 
+    // ------------------------------------------------------------------------------------------------
+    // The Milky Way (1.9)
+    // ------------------------------------------------------------------------------------------------
+
+    /** J2000 to galactic coordinates (rows: towards the galactic centre, l = 90 deg, the north galactic pole). */
+    static final double[] J2000_TO_GAL = {-0.0548755604, -0.8734370902, -0.4838350155, 0.4941094279, -0.4448296300, 0.7469822445,
+            -0.8676661490, -0.1980763734, 0.4559837762};
+
+    /** Frame i's grid of the Milky Way's light (mid exposure), every MW_STEP pixels; null without the real sky. */
+    private float[] milkyWayGrid(int i) {
+        double[] C = cameraToJ2000(i);
+        if (C == null) return null;
+        if (mwTint == null) mwTint = sensorTint(4800);
+        int gw = W / MW_STEP + 2, gh = H / MW_STEP + 2;
+        float[] g = new float[gw * gh];
+        double[] b = new double[3], e = new double[3], q = new double[3];
+        for (int gy = 0; gy < gh; gy++) {
+            for (int gx = 0; gx < gw; gx++) {
+                truth.unproject(gx * MW_STEP, gy * MW_STEP, b);
+                Rot.apply(C, b[0], b[1], b[2], e);
+                Rot.apply(J2000_TO_GAL, e[0], e[1], e[2], q);
+                double n = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+                g[gy * gw + gx] = (float) milkyWayAt(q[0] / n, q[1] / n, q[2] / n);
+            }
+        }
+        return g;
+    }
+
+    /** The Milky Way's light (its own units) at sensor point (x, y), from a frame's grid. */
+    private float milkyWayPx(float[] g, double x, double y) {
+        int gw = W / MW_STEP + 2, gh = H / MW_STEP + 2;
+        double u = x / MW_STEP, v = y / MW_STEP;
+        int i0 = Math.min(gw - 2, (int) u), j0 = Math.min(gh - 2, (int) v);
+        float tu = (float) (u - i0), tv = (float) (v - j0);
+        int k = j0 * gw + i0;
+        float top = g[k] + tu * (g[k + 1] - g[k]);
+        float bot = g[k + gw] + tu * (g[k + gw + 1] - g[k + gw]);
+        return top + tv * (bot - top);
+    }
+
+    /**
+     * Test: the Milky Way's light in frame i (mid exposure), green ADU per second per pixel before vignetting, every
+     * pixel of the sensor; null without one.
+     */
+    public float[] milkyWayTruth(int i) {
+        float[] g = milkyWay > 0 ? milkyWayGrid(i) : null;
+        if (g == null) return null;
+        float[] out = new float[W * H];
+        float k = (float) (milkyWay * skyRate[1]);
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) out[y * W + x] = k * milkyWayPx(g, x + 0.5, y + 0.5);
+        return out;
+    }
+
+    /**
+     * The Milky Way's light towards galactic direction (gx, gy, gz), a unit vector: about 1 along the band's middle
+     * (brightest towards the galactic centre and in Cygnus's star cloud, faint towards the anticentre), as thick as
+     * the real band (thicker at the bulge), with star clouds (2 to 8 degrees, up to half again as bright) and dark lanes
+     * (the Great Rift from Cygnus towards the centre, patchy dust elsewhere near the plane).
+     */
+    static double milkyWayAt(double gx, double gy, double gz) {
+        double l = Math.atan2(gy, gx), lDeg = Math.toDegrees(l), bDeg = Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, gz))));
+        double c = Math.cos(l / 2);
+        double base = 0.3 + 0.7 * c * c + 0.25 * Math.exp(-sq((lDeg - 75) / 15));
+        double thick = 5 + 6 * Math.exp(-sq(lDeg / 25));
+        double prof = Math.exp(-0.5 * sq(bDeg / thick));
+        if (prof < 1e-3) return 0;
+        double clouds = 1 + 0.45 * fbm(gx, gy, gz, 7, 4, 11);
+        double rift = Math.exp(-0.5 * sq((bDeg - 1.0) / 1.8)) * window(lDeg, -5, 95, 10);
+        double patchy = Math.max(0, fbm(gx, gy, gz, 10, 4, 23) + 0.15);
+        double dust = Math.min(0.85, 0.8 * rift * (0.6 + 0.4 * fbm(gx, gy, gz, 14, 3, 37)) + 0.55 * patchy * Math.exp(-0.5 * sq(bDeg / 4)));
+        return Math.max(0, base * prof * Math.max(0.2, clouds) * (1 - dust));
+    }
+
+    private static double sq(double v) {
+        return v * v;
+    }
+
+    /** 1 between a and b, easing to 0 over e either side. */
+    private static double window(double x, double a, double b, double e) {
+        double lo = Math.max(0, Math.min(1, (x - (a - e)) / e)), hi = Math.max(0, Math.min(1, ((b + e) - x) / e));
+        return Math.min(lo, hi);
+    }
+
+    /** Value noise summed over octaves (each twice the frequency and 0.55 of the amplitude), about -1 to 1. */
+    static double fbm(double x, double y, double z, double f, int octaves, int seed) {
+        double s = 0, a = 1, n = 0;
+        for (int o = 0; o < octaves; o++) {
+            s += a * noise3(x * f, y * f, z * f, seed + 31 * o);
+            n += a;
+            a *= 0.55;
+            f *= 2;
+        }
+        return Math.max(-1, Math.min(1, 1.6 * s / n));
+    }
+
+    /** Smoothly interpolated random values (-1 to 1) on the integer lattice. */
+    static double noise3(double x, double y, double z, int seed) {
+        int xi = (int) Math.floor(x), yi = (int) Math.floor(y), zi = (int) Math.floor(z);
+        double fx = x - xi, fy = y - yi, fz = z - zi;
+        double u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+        double c000 = lattice(xi, yi, zi, seed), c100 = lattice(xi + 1, yi, zi, seed);
+        double c010 = lattice(xi, yi + 1, zi, seed), c110 = lattice(xi + 1, yi + 1, zi, seed);
+        double c001 = lattice(xi, yi, zi + 1, seed), c101 = lattice(xi + 1, yi, zi + 1, seed);
+        double c011 = lattice(xi, yi + 1, zi + 1, seed), c111 = lattice(xi + 1, yi + 1, zi + 1, seed);
+        double x00 = c000 + u * (c100 - c000), x10 = c010 + u * (c110 - c010);
+        double x01 = c001 + u * (c101 - c001), x11 = c011 + u * (c111 - c011);
+        double y0 = x00 + v * (x10 - x00), y1 = x01 + v * (x11 - x01);
+        return y0 + w * (y1 - y0);
+    }
+
+    private static double lattice(int x, int y, int z, int seed) {
+        long h = x * 374761393L + y * 668265263L + z * 2246822519L + seed * 3266489917L;
+        h = (h ^ (h >>> 13)) * 1274126177L;
+        h ^= h >>> 16;
+        h = (h ^ (h >>> 29)) * 0x9E3779B97F4A7C15L;
+        h ^= h >>> 32;
+        return ((h >>> 11) & 0xFFFFF) / (double) 0xFFFFF * 2 - 1;
+    }
+
     /** Debug: indices of the simulated defective pixels and their dark rates (ADU/s). */
     public int[] hotPixelIndices() {
         return hotIdx.clone();
@@ -447,6 +575,13 @@ public final class SkySim {
 
     public float[] hotPixelRates() {
         return hotRate.clone();
+    }
+
+    /** Test: the defective pixels to simulate instead (indices and dark rates, ADU/s). */
+    public void setHotPixels(int[] idx, float[] rates) {
+        if (idx.length != rates.length) throw new IllegalArgumentException(idx.length + " pixels, " + rates.length + " rates");
+        hotIdx = idx.clone();
+        hotRate = rates.clone();
     }
 
     /** Debug: every star in frame i (middle of the exposure): x, y, flux, cam R/G, cam B/G, and the electrons it
@@ -558,7 +693,13 @@ public final class SkySim {
         final float[] img = new float[W * H];
         final double exp = frameExp;
         final int[] cfa = {0, 1, 1, 2};
-        // background: sky glow with gradient, vignetting, cloud glow, dark current
+        // background: sky glow with gradient, vignetting, cloud glow, the Milky Way, dark current
+        final float[] mwGrid = milkyWay > 0 ? milkyWayGrid(i) : null;
+        final boolean mw = mwGrid != null;
+        final double[] mwRate = new double[3];
+        if (mw) {
+            for (int c = 0; c < 3; c++) mwRate[c] = milkyWay * skyRate[1] * mwTint[c] / mwTint[1];
+        }
         Parallel.forRange(H, 16, new Parallel.Range() {
             @Override
             public void run(int y0, int y1) {
@@ -569,7 +710,9 @@ public final class SkySim {
                         double tr = transparency(i, x);
                         double glow = 1 + 0.8 * (1 - tr);
                         double open = branchT != null ? branchT[y * W + x] : 1;
-                        img[y * W + x] = (float) ((skyRate[c] * grad * glow * vignetting(x + 0.5, y + 0.5) * open + darkRate) * exp);
+                        double light = skyRate[c] * grad * glow;
+                        if (mw) light += mwRate[c] * milkyWayPx(mwGrid, x + 0.5, y + 0.5) * tr;
+                        img[y * W + x] = (float) ((light * vignetting(x + 0.5, y + 0.5) * open + darkRate) * exp);
                     }
                 }
             }

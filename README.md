@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.8.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.9.
 
 ## What it does
 
@@ -27,7 +27,10 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.8.
   sensor banding is taken out; the colours are measured from the stars themselves; satellites are named.
 - **A clean sky that keeps its faint stars.** The photo's grain and blotches are taken out of the sky between
   the stars, which are found and set aside first, so they keep their light, down to the faintest ones the
-  stack shows.
+  stack shows. Hot pixels are taken out too, the ones that come in pairs and threes as well as single ones.
+- **The Milky Way brought out.** The sky's own detail under the grain, the Milky Way's dark lanes and star
+  clouds, is made stronger, and never darker than the plain sky; **Sky detail** in the edit screen sets how much.
+  The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
   (one no satellite could have left). Meteors are taken out with the rest, or kept in the photo with **Keep
   meteors**. Each one caught is listed with its time, its shower, how bright it was and where it crossed, and the
@@ -162,8 +165,9 @@ Under the photo:
 Tap **Edit** under a photo. The picture changes as you go; press and hold **Compare** to see the photo as it
 was.
 
-- **Look:** stretch (1 to 10), exposure (-2 to +2), black point, colour, sky brightness, and a natural, punchy
-  or linear look. **As developed** puts them back.
+- **Look:** stretch (1 to 10), exposure (-2 to +2), black point, colour, sky detail (0 to 200%: how much the
+  Milky Way's lanes and star clouds are brought out), sky brightness, and a natural, punchy or linear look. **As
+  developed** puts them back.
 - **Crop:** 4:3, 3:2, 16:9 or 1:1, and **North up** (when the app recognised the sky).
 - **Frames:** each frame with its time and score. Drag **From** and **To** to trim the start or the end, tap a
   frame and **Leave out** to drop it (a plane, a bump), or make it the **Reference** the others line up on.

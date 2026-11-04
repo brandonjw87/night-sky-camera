@@ -81,6 +81,8 @@ public final class Recipe {
     public float black;
     /** Colour saturation (1: the develop step's). */
     public float saturation = 1f;
+    /** The sky's detail brought out (1.9), as a share of the develop step's (1: as developed, 0: none). */
+    public float detail = 1f;
     public String look = LOOK_NATURAL;
     public String crop = CROP_FULL;
     /** Turned so north is up (needs the plate solution). */
@@ -144,6 +146,7 @@ public final class Recipe {
         r.ev = ev;
         r.black = black;
         r.saturation = saturation;
+        r.detail = detail;
         r.look = look;
         r.crop = crop;
         r.northUp = northUp;
@@ -158,6 +161,7 @@ public final class Recipe {
         p.ev = ev;
         p.black = black;
         p.saturation *= saturation;
+        p.detail = Renderer.Params.DETAIL * detail;
         p.look = LOOK_PUNCHY.equals(look) ? Renderer.Params.PUNCHY : LOOK_LINEAR.equals(look) ? Renderer.Params.LINEAR
                 : Renderer.Params.NATURAL;
         return p;
@@ -230,6 +234,11 @@ public final class Recipe {
         return pipeline < PostProcessor.PIPELINE;
     }
 
+    /** True if it was rendered by an older version's rendering: made again with this one's, it only needs its stack. */
+    public boolean renderOutdated() {
+        return renderer < Renderer.VERSION;
+    }
+
     /** True if it was made by an older processing version, of its stack or of its rendering (G3: it can be made again). */
     public boolean outdated() {
         return stackOutdated() || renderer < Renderer.VERSION;
@@ -268,6 +277,7 @@ public final class Recipe {
         if (ev != was.ev) c.add((ev > 0 ? "+" : "") + num(ev) + " EV");
         if (black != was.black) c.add("black point " + Math.round(100 * black) + "%");
         if (saturation != was.saturation) c.add("saturation " + Math.round(100 * saturation) + "%");
+        if (detail != was.detail) c.add("sky detail " + Math.round(100 * detail) + "%");
         if (!look.equals(was.look)) c.add(look + " look");
         if (!crop.equals(was.crop)) c.add(CROP_FULL.equals(crop) ? "no crop" : crop + " crop");
         if (northUp != was.northUp) c.add(northUp ? "north up" : "as the camera saw it");
@@ -352,7 +362,7 @@ public final class Recipe {
         if (motion) j.put("motion", true);
         j.raw("stack", stackJson());
         j.obj("render").put("brightness", brightness, 9).put("stretch", stretch, 9).put("ev", ev, 9).put("black", black, 9)
-                .put("saturation", saturation, 9).put("look", look).put("crop", crop).put("northUp", northUp).end();
+                .put("saturation", saturation, 9).put("detail", detail, 9).put("look", look).put("crop", crop).put("northUp", northUp).end();
         j.put("stackKey", stackKey).put("masterHash", masterHash).put("pixelHash", pixelHash);
         j.put("summary", summary).put("total", total);
         return j.end().toString();
@@ -382,6 +392,7 @@ public final class Recipe {
             r.ev = (float) rd.num("ev", 0);
             r.black = (float) rd.num("black", 0);
             r.saturation = (float) rd.num("saturation", 1);
+            r.detail = (float) rd.num("detail", 1);
             r.look = rd.str("look", LOOK_NATURAL);
             r.crop = rd.str("crop", CROP_FULL);
             r.northUp = rd.bool("northUp", false);

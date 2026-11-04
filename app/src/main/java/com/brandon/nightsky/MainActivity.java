@@ -2764,9 +2764,10 @@ public final class MainActivity extends Activity {
                 }
             });
             more.add(eb);
-            if (r.recipe.outdated() && (r.merge == null || !r.recipe.stackOutdated())) {
-                // made by an older version: offered again with this one's processing (G3); a merge's stack can't be made
-                // again, but a newer rendering only needs the stack
+            if (r.recipe.renderOutdated() || (r.recipe.stackOutdated() && r.merge == null
+                    && SessionController.framesKept(new SessionStore(new File(SessionController.sessionsRoot(this), r.session))))) {
+                // made by an older version: offered again with this one's processing (G3); where its stack can't be made
+                // again (sessions stacked together, its frames deleted), a newer rendering only needs the stack
                 Button nb = smallButton("New processing", false);
                 nb.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -3200,6 +3201,19 @@ public final class MainActivity extends Activity {
                 r.saturation = v / 20f;
             }
         });
+        addSlider(es, box, 40, Math.round(r.detail * 20), new Slider() {
+            @Override
+            public String label(int v) {
+                return "Sky detail " + 5 * v + "%" + (v == 20 ? " (as developed)" : v == 0 ? ": none brought out" : "");
+            }
+
+            @Override
+            public void set(int v) {
+                r.detail = v / 20f;
+            }
+        });
+        box.addView(text("Sky detail brings out the Milky Way's dark lanes and star clouds. The plain sky, the stars, their glow and the "
+                + "ground are left as they are.", 12, RED_DIM, false), gap(2));
         addSlider(es, box, 100, Math.round(r.brightness * 100), new Slider() {
             @Override
             public String label(int v) {
@@ -3240,6 +3254,7 @@ public final class MainActivity extends Activity {
                 r.ev = 0f;
                 r.black = 0f;
                 r.saturation = 1f;
+                r.detail = 1f;
                 r.look = Recipe.LOOK_NATURAL;
                 List<Recipe> all = es.info.renders;
                 r.brightness = all.isEmpty() ? 0.5f : all.get(0).brightness;
@@ -3694,7 +3709,7 @@ public final class MainActivity extends Activity {
             }
             box.addView(c, gap(8));
         }
-        if (es.info.was.outdated() && (es.info.noRestack.isEmpty() || !es.info.was.stackOutdated())) {
+        if (es.info.was.outdated() && (es.info.noRestack.isEmpty() || es.info.was.renderOutdated())) {
             Button again = smallButton("Make it again with the new processing", false);
             again.setOnClickListener(new View.OnClickListener() {
                 @Override

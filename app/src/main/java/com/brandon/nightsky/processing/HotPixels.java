@@ -28,6 +28,13 @@ public final class HotPixels {
         return list.length;
     }
 
+    /** How many of them {@link #detect} found in clusters of two or three side by side (1.9). */
+    private int clustered;
+
+    public int clustered() {
+        return clustered;
+    }
+
     public boolean isBad(int x, int y) {
         return x >= 0 && y >= 0 && x < W && y < H && mask.get(y * W + x);
     }
@@ -86,7 +93,7 @@ public final class HotPixels {
         Parallel.forRange(bands, 1, new Parallel.Range() {
             @Override
             public void run(int b0, int b1) {
-                float[] s = new float[8];
+                float[] s = new float[8], rs = new float[4];
                 for (int b = b0; b < b1; b++) {
                     BitSet bs = new BitSet();
                     int ya = 2 + (int) ((long) (H - 4) * b / bands);
@@ -105,9 +112,13 @@ public final class HotPixels {
                                 float med = Stats.median8(a0, a1, a2, a3, a4, a5, a6, a7, s);
                                 float ex = v - med;
                                 // a defect is a single photosite: its immediate neighbours (other colours) are
-                                // not raised with it, while a star sitting on it lights them up too
-                                if (ex > thr && ex > 2.5f * (mx - med) && y >= 3 && y < H - 3 && x >= 3 && x < W - 3
-                                        && neighbourExcess(mean, i, W, s) < 0.3f * ex) bs.set(i);
+                                // not raised with it, while a star sitting on it lights them up too: one of them a
+                                // lot, or all of them some, on every side (a sharp star that hardly moves, 1.9; a
+                                // star's trail passing by lights one side, or two opposite)
+                                if (ex > thr && ex > 2.5f * (mx - med) && y >= 3 && y < H - 3 && x >= 3 && x < W - 3) {
+                                    ring(mean, i, W, s, sigma, null, 0, rs);
+                                    if (rs[0] < 0.3f * ex && (rs[1] < RING * ex + NOISE * rs[2] || rs[3] < AROUND * ex)) bs.set(i);
+                                }
                             } else if (v < mn - thr * 0.5f) {
                                 float med = Stats.median8(a0, a1, a2, a3, a4, a5, a6, a7, s);
                                 float ex = med - v;
@@ -120,22 +131,164 @@ public final class HotPixels {
             }
         });
         for (BitSet bs : partial) if (bs != null) mask.or(bs);
-        return new HotPixels(W, H, mask);
+        int n = clusters(mean, W, H, sigma, kSigma, mask);
+        HotPixels hp = new HotPixels(W, H, mask);
+        hp.clustered = n;
+        return hp;
     }
 
-    /** Largest excess of the 8 adjacent photosites over their own same-colour surroundings. */
-    private static float neighbourExcess(float[] m, int i, int W, float[] s) {
-        float best = -Float.MAX_VALUE;
+    /**
+     * What a defect's immediate neighbours may carry, summed, as a share of its own excess (and in sigmas of their noise
+     * on top): a star's light reaches them, all eight together about as much as the brightest photosite under it holds
+     * even when the star is sharp, while next to a defect they hold only noise (1.9).
+     */
+    static final float RING = 0.4f, NOISE = 1.5f;
+    /** A photosite near a strong one counts as part of its cluster when it is raised this much of the strongest's excess. */
+    static final float REL = 0.1f;
+    /**
+     * A star lights a single defect's neighbours on every side: along each of the four lines through it (across, down,
+     * the two diagonals) the two neighbours hold at least this share of its excess together, even the diagonals of a
+     * star as sharp as the half-size simulations draw them; a trail passing by leaves a line across it dark.
+     */
+    static final float AROUND = 0.05f;
+
+    /**
+     * Two or three defective photosites side by side, same-colour neighbours or adjacent ones (1.9). Each stands among
+     * the others' surroundings, so the single-photosite test, which takes a raised neighbour for a star's light, leaves
+     * them all, and they stack into a coloured blotch. From every photosite raised by the whole threshold: the photosites
+     * within two pixels of it raised by half the threshold and by a tenth of the strongest of them make the cluster (a
+     * faint star's trail passing by is far fainter than a defect strong enough to matter). Two or three of them, each
+     * with its own immediate neighbours (those outside the cluster) holding no more light than {@link #RING} allows, are
+     * defects; any more, or neighbours lit up, are a star's. Sets them in {@code mask}; returns how many it added.
+     */
+    static int clusters(final float[] mean, final int W, final int H, final float[] sigma, final float kSigma, BitSet mask) {
+        if (W < 16 || H < 16) return 0;
+        final int bands = Parallel.threads() * 3;
+        final BitSet[] pr = new BitSet[bands], ps = new BitSet[bands];
+        Parallel.forRange(bands, 1, new Parallel.Range() {
+            @Override
+            public void run(int b0, int b1) {
+                float[] s = new float[8];
+                for (int b = b0; b < b1; b++) {
+                    BitSet r = new BitSet(), st = new BitSet();
+                    int ya = 2 + (int) ((long) (H - 4) * b / bands);
+                    int yb = 2 + (int) ((long) (H - 4) * (b + 1) / bands);
+                    for (int y = ya; y < yb; y++) {
+                        int oy = y & 1;
+                        for (int x = 2; x < W - 2; x++) {
+                            int i = y * W + x;
+                            float v = mean[i];
+                            float a0 = mean[i - 2], a1 = mean[i + 2], a2 = mean[i - 2 * W], a3 = mean[i + 2 * W];
+                            float a4 = mean[i - 2 * W - 2], a5 = mean[i - 2 * W + 2], a6 = mean[i + 2 * W - 2], a7 = mean[i + 2 * W + 2];
+                            float mn = Math.min(Math.min(Math.min(a0, a1), Math.min(a2, a3)), Math.min(Math.min(a4, a5), Math.min(a6, a7)));
+                            float half = 0.5f * kSigma * sigma[(oy << 1) | (x & 1)];
+                            // the median of the eight is at least their least: most of the sky is done here
+                            if (!(v - mn > half)) continue;
+                            float ex = v - Stats.median8(a0, a1, a2, a3, a4, a5, a6, a7, s);
+                            if (ex > half) {
+                                r.set(i);
+                                if (ex > 2 * half) st.set(i);
+                            }
+                        }
+                    }
+                    pr[b] = r;
+                    ps[b] = st;
+                }
+            }
+        });
+        BitSet raised = new BitSet(W * H), strong = new BitSet(W * H);
+        for (int b = 0; b < bands; b++) {
+            if (pr[b] != null) raised.or(pr[b]);
+            if (ps[b] != null) strong.or(ps[b]);
+        }
+        int added = 0;
+        float[] s = new float[8], rs = new float[4], cex = new float[25], mex = new float[3];
+        int[] cand = new int[25], mem = new int[3];
+        // from every strong photosite: a row of three is found from whichever of them is strong
+        for (int i = strong.nextSetBit(0); i >= 0; i = strong.nextSetBit(i + 1)) {
+            int y = i / W, x = i - y * W;
+            // the members' neighbours' own surroundings must be inside the picture
+            if (x < 6 || y < 6 || x >= W - 6 || y >= H - 6) continue;
+            int nc = 0;
+            float peak = 0;
+            for (int dy = -2; dy <= 2; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    int j = i + dy * W + dx;
+                    if (!raised.get(j)) continue;
+                    cand[nc] = j;
+                    cex[nc] = excess(mean, j, W, s);
+                    peak = Math.max(peak, cex[nc]);
+                    nc++;
+                }
+            }
+            float rel = REL * peak;
+            int n = 0;
+            boolean ok = true, self = false;
+            for (int c = 0; c < nc; c++) {
+                if (!(cex[c] > rel)) continue;
+                if (n == 3) {
+                    ok = false;
+                    break;
+                }
+                mem[n] = cand[c];
+                mex[n++] = cex[c];
+                self |= cand[c] == i;
+            }
+            if (!ok || n < 2 || !self) continue;
+            // a member whose own neighbours are lit up makes it a star's light, or a star's beside the defects: leave it
+            for (int m = 0; m < n && ok; m++) {
+                ring(mean, mem[m], W, s, sigma, mem, n, rs);
+                ok = rs[1] < RING * mex[m] + NOISE * rs[2];
+            }
+            if (!ok) continue;
+            for (int m = 0; m < n; m++) {
+                if (!mask.get(mem[m])) {
+                    mask.set(mem[m]);
+                    added++;
+                }
+            }
+        }
+        return added;
+    }
+
+    /** A photosite's excess over the median of its eight same-colour surroundings. */
+    private static float excess(float[] m, int j, int W, float[] s) {
+        return m[j] - Stats.median8(m[j - 2], m[j + 2], m[j - 2 * W], m[j + 2 * W],
+                m[j - 2 * W - 2], m[j - 2 * W + 2], m[j + 2 * W - 2], m[j + 2 * W + 2], s);
+    }
+
+    /**
+     * The 8 adjacent photosites of {@code i}, leaving out the first {@code n} of {@code skip}: their largest excess over
+     * their own same-colour surroundings (out[0]), the sum of their excesses, those below their surroundings counted as
+     * none (out[1]: beside a star's trail they dip, and must not hide the light of the others), less what noise alone
+     * puts in it, and that sum's noise (out[2]); and the least, over the four lines through i, of its two neighbours'
+     * excess on that line (out[3]).
+     */
+    private static void ring(float[] m, int i, int W, float[] s, float[] sigma, int[] skip, int n, float[] out) {
+        float best = -Float.MAX_VALUE, sum = 0, var = 0;
+        // per line through i (across, down, and the diagonals), its two neighbours' excess
+        float[] line = new float[4];
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 if (dx == 0 && dy == 0) continue;
                 int j = i + dy * W + dx;
-                float med = Stats.median8(m[j - 2], m[j + 2], m[j - 2 * W], m[j + 2 * W],
-                        m[j - 2 * W - 2], m[j - 2 * W + 2], m[j + 2 * W - 2], m[j + 2 * W + 2], s);
-                best = Math.max(best, m[j] - med);
+                boolean member = false;
+                for (int k = 0; k < n; k++) member |= skip[k] == j;
+                if (member) continue;
+                float e = excess(m, j, W, s);
+                line[dy == 0 ? 0 : dx == 0 ? 1 : dx == dy ? 2 : 3] += Math.max(0f, e);
+                best = Math.max(best, e);
+                int y = j / W;
+                float sg = sigma[((y & 1) << 1) | ((j - y * W) & 1)];
+                // noise alone, counted only where above: on average 0.4 sigma each, varying by 0.58 sigma
+                sum += Math.max(0f, e) - 0.4f * sg;
+                var += 0.34f * sg * sg;
             }
         }
-        return best;
+        out[0] = best;
+        out[1] = sum;
+        out[2] = (float) Math.sqrt(var);
+        out[3] = Math.min(Math.min(line[0], line[1]), Math.min(line[2], line[3]));
     }
 
     /** Replaces defective pixels with the median of their usable same-colour neighbours (rows y0..y1). */

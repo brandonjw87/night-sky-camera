@@ -20,10 +20,10 @@ public final class Renderer {
 
     /**
      * The rendering's version: raised whenever a change makes the same stack give a different photo (2: the sky's noise
-     * taken out with the stars set aside, 1.4). Saved with every recipe (G3), so a photo rendered by an older version can
-     * be rendered again from its kept stack with this one.
+     * taken out with the stars set aside, 1.4; 3: the sky's detail brought out, 1.9). Saved with every recipe (G3), so a
+     * photo rendered by an older version can be rendered again from its kept stack with this one.
      */
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     public static final class Params {
         /** 0 = dark sky, 1 = bright sky; 0.5 puts the background near 12% grey. */
@@ -35,6 +35,13 @@ public final class Renderer {
          * Full-size renders, photos saved smaller and the photo's preview; not the live picture while stacking.
          */
         public float lumaNr = 1f;
+        /**
+         * How much of the sky's detail {@link Denoise} finds is brought out (1.9): the Milky Way's dark lanes and star
+         * clouds, 16 to 256 px wide in a full-size picture, where they stand clear of the noise. 0: none; {@link #DETAIL}:
+         * the develop step's. With the noise taken out (it needs {@link #lumaNr} over 0).
+         */
+        public float detail = DETAIL;
+        public static final float DETAIL = 0.7f;
         public boolean removeGradient = true;
         /**
          * Strength of the stretch, 1 (gentle) to 10 (strong): how far faint light is lifted above the sky background,
@@ -71,6 +78,8 @@ public final class Renderer {
         public float[] skyLevel = new float[3];
         public float maskedFraction;
         public int goodCells;
+        /** The share of the picture left out of the background's fit as the ground (1.9). */
+        float ground;
         /**
          * Star colours: chroma q = (r/Y - 1, b/Y - 1) is split into s along the blackbody locus direction
          * (axis) and p across it; locus[k] is the locus' p at s = locusS0 + k * locusDs.
@@ -122,9 +131,9 @@ public final class Renderer {
         }
 
         public String describe() {
-            return String.format(Locale.US, "crop %dx%d+%d+%d noiseY=%.3f chroma=%.3f/%.3f whiteY=%.1f sky=%.2f/%.2f/%.2f masked=%.1f%% cells=%d",
+            return String.format(Locale.US, "crop %dx%d+%d+%d noiseY=%.3f chroma=%.3f/%.3f whiteY=%.1f sky=%.2f/%.2f/%.2f masked=%.1f%% ground=%.1f%% cells=%d",
                     cw, ch, cx0, cy0, noiseY, noiseS, noiseP, whiteY, skyLevel[0], skyLevel[1], skyLevel[2], 100 * maskedFraction,
-                    goodCells);
+                    100 * ground, goodCells);
         }
     }
 
@@ -135,6 +144,12 @@ public final class Renderer {
 
     private static final float KR = 0.2126f, KG = 0.7152f, KB = 0.0722f;
     static final int CGX = 33, CGY = 25;
+    /**
+     * The ground (1.9, {@link #ground}): darker than GROUND_DARK of the sky's level, which is fitted to the cells with
+     * STARRY or more of the starriest quarter's share of star pixels, if there are GROUND_CELLS of them or more.
+     */
+    static final float GROUND_DARK = 0.575f, STARRY = 0.5f;
+    static final int GROUND_CELLS = 12;
 
     // ------------------------------------------------------------------------------------------------
     // Analysis
@@ -205,36 +220,19 @@ public final class Renderer {
         double[][] cval = new double[3][gx * gy];
         boolean[] cok = new boolean[gx * gy];
         float[] buf2 = new float[buf.length];
-        for (int cy = 0; cy < gy; cy++) {
-            for (int cx = 0; cx < gx; cx++) {
-                int xa = cx * pw / gx, xb = (cx + 1) * pw / gx, ya = cy * ph / gy, yb = (cy + 1) * ph / gy;
-                int kk = cy * gx + cx;
-                cu[kk] = ((xa + xb) * 0.5 / pw) * 2 - 1;
-                cv[kk] = ((ya + yb) * 0.5 / ph) * 2 - 1;
-                int total = (xb - xa) * (yb - ya);
-                cok[kk] = true;
-                for (int c = 0; c < 3; c++) {
-                    float[] src = p.channel(c);
-                    int n = 0;
-                    for (int y = ya; y < yb; y++) {
-                        for (int x = xa; x < xb; x++) {
-                            int i = y * pw + x;
-                            if (!mask[i]) buf[n++] = src[i];
-                        }
-                    }
-                    if (n < Math.max(4, total / 4)) {
-                        cok[kk] = false;
-                        continue;
-                    }
-                    System.arraycopy(buf, 0, buf2, 0, n);
-                    float med = Stats.median(buf2, n);
-                    System.arraycopy(buf, 0, buf2, 0, n);
-                    float sd = Stats.madSigma(buf2, n, med);
-                    int m2 = 0;
-                    for (int i = 0; i < n; i++) if (buf[i] < med + 2.5f * sd) buf2[m2++] = buf[i];
-                    cval[c][kk] = m2 >= 4 ? Stats.median(buf2, m2) : med;
-                }
+        cellLevels(p, mask, gx, gy, cu, cv, cval, cok, buf, buf2);
+        // the ground left out (1.9): the fit would bend down to meet it and leave the sky uneven
+        boolean[] skip = ground(Y, pw, ph, mask, gx, gy, cu, cv, cval, cok);
+        if (skip != null) {
+            int gn = 0;
+            for (int i = 0; i < skip.length; i++) {
+                if (skip[i] && !mask[i]) gn++;
+                skip[i] |= mask[i];
             }
+            a.ground = gn / (float) (pw * ph);
+            cellLevels(p, skip, gx, gy, cu, cv, cval, cok, buf, buf2);
+            // nor is its noise the sky's
+            mask = skip;
         }
         int okCells = 0;
         for (boolean b : cok) if (b) okCells++;
@@ -412,6 +410,94 @@ public final class Renderer {
             }
         }
         return o;
+    }
+
+    /**
+     * Each cell's level per channel (the median of its pixels {@code skip} leaves, clipped once more at +2.5 sigma so
+     * the sea of faint stars doesn't lift it) and its centre; not ok where under a quarter of its pixels are left.
+     */
+    private static void cellLevels(RgbImage p, boolean[] skip, int gx, int gy, double[] cu, double[] cv, double[][] cval,
+            boolean[] cok, float[] buf, float[] buf2) {
+        int pw = p.width, ph = p.height;
+        for (int cy = 0; cy < gy; cy++) {
+            for (int cx = 0; cx < gx; cx++) {
+                int xa = cx * pw / gx, xb = (cx + 1) * pw / gx, ya = cy * ph / gy, yb = (cy + 1) * ph / gy;
+                int kk = cy * gx + cx;
+                cu[kk] = ((xa + xb) * 0.5 / pw) * 2 - 1;
+                cv[kk] = ((ya + yb) * 0.5 / ph) * 2 - 1;
+                int total = (xb - xa) * (yb - ya);
+                cok[kk] = true;
+                for (int c = 0; c < 3; c++) {
+                    float[] src = p.channel(c);
+                    int n = 0;
+                    for (int y = ya; y < yb; y++) {
+                        for (int x = xa; x < xb; x++) {
+                            int i = y * pw + x;
+                            if (!skip[i]) buf[n++] = src[i];
+                        }
+                    }
+                    if (n < Math.max(4, total / 4)) {
+                        cok[kk] = false;
+                        continue;
+                    }
+                    System.arraycopy(buf, 0, buf2, 0, n);
+                    float med = Stats.median(buf2, n);
+                    System.arraycopy(buf, 0, buf2, 0, n);
+                    float sd = Stats.madSigma(buf2, n, med);
+                    int m2 = 0;
+                    for (int i = 0; i < n; i++) if (buf[i] < med + 2.5f * sd) buf2[m2++] = buf[i];
+                    cval[c][kk] = m2 >= 4 ? Stats.median(buf2, m2) : med;
+                }
+            }
+        }
+    }
+
+    /**
+     * The ground (1.9): the trees, a roof, the land, darker than {@link #GROUND_DARK} of the sky's level fitted to the
+     * starry cells alone (those with {@link #STARRY} or more of the starriest quarter's share of star pixels), and the
+     * pixels next to them; null if there's none, or too few starry cells to tell. Y: the proxy's luminance; mask: its
+     * star pixels.
+     */
+    static boolean[] ground(float[] Y, int pw, int ph, boolean[] mask, int gx, int gy, double[] cu, double[] cv,
+            double[][] cval, boolean[] cok) {
+        int nc = gx * gy;
+        float[] star = new float[nc];
+        for (int cy = 0; cy < gy; cy++) {
+            for (int cx = 0; cx < gx; cx++) {
+                int xa = cx * pw / gx, xb = (cx + 1) * pw / gx, ya = cy * ph / gy, yb = (cy + 1) * ph / gy;
+                int n = 0;
+                for (int y = ya; y < yb; y++) for (int x = xa; x < xb; x++) if (mask[y * pw + x]) n++;
+                star[cy * gx + cx] = n / (float) Math.max(1, (xb - xa) * (yb - ya));
+            }
+        }
+        float[] t = star.clone();
+        java.util.Arrays.sort(t);
+        float ref = t[(int) (0.75f * (nc - 1))];
+        if (!(ref > 0)) return null;
+        boolean[] starry = new boolean[nc];
+        double[] lum = new double[nc];
+        int ns = 0;
+        for (int k = 0; k < nc; k++) {
+            starry[k] = cok[k] && star[k] >= STARRY * ref;
+            if (starry[k]) ns++;
+            lum[k] = KR * cval[0][k] + KG * cval[1][k] + KB * cval[2][k];
+        }
+        if (ns < GROUND_CELLS) return null;
+        double[] P = robustPoly2(cu, cv, lum, starry), tm = new double[6];
+        boolean[] g = new boolean[pw * ph];
+        boolean any = false;
+        for (int y = 0; y < ph; y++) {
+            double v = ((y + 0.5) / ph) * 2 - 1;
+            for (int x = 0; x < pw; x++) {
+                int i = y * pw + x;
+                if (mask[i]) continue;
+                terms(((x + 0.5) / pw) * 2 - 1, v, tm);
+                double f = 0;
+                for (int r = 0; r < 6; r++) f += P[r] * tm[r];
+                if (f > 0 && Y[i] < GROUND_DARK * f) g[i] = any = true;
+            }
+        }
+        return any ? dilate(g, pw, ph, 1) : null;
     }
 
     /** IRLS fit of a quadratic surface; positive residuals (stars, clouds, Milky Way) are down-weighted harder. */
@@ -790,6 +876,8 @@ public final class Renderer {
         final int w, rows;
         /** Luminance, chroma differences (r - Y, b - Y), colour weight (0 for clipped), weighted luminance. */
         final float[] Y, CR, CB, HW, YC, T1, T2, T3, TH, TMP;
+        /** The sky's detail to bring out along the row being finished (1.9). */
+        final float[] DR;
         int rs, re; // crop rows held: [rs, re)
 
         Band(int w, int bandRows, float colorSigma) {
@@ -813,6 +901,7 @@ public final class Renderer {
             T3 = new float[n];
             TH = new float[n];
             TMP = new float[n];
+            DR = new float[w];
         }
 
         static float[] gaussKernel(int r, float sigma) {
@@ -911,6 +1000,9 @@ public final class Renderer {
             gaussBlur(HW, TH, n);
             short[] dy = dn != null ? dn.dy : null;
             float nrAmt = p.lumaNr;
+            // the sky's detail brought out (1.9), along each row
+            boolean detail = dn != null && dn.dd != null && p.detail != 0f;
+            float detAmt = p.detail;
 
             float inv = 1f / noise;
             float axR = a.axisR, axB = a.axisB;
@@ -923,11 +1015,13 @@ public final class Renderer {
             for (int y = y0; y < y1; y++) {
                 int o = (y - rs) * w;
                 int oo = (y - y0) * w;
+                if (detail) dn.detailRow(y, w, DR);
                 for (int x = 0; x < w; x++) {
                     int i = o + x;
                     float l = Y[i];
                     // the sky's noise taken out (the stars keep their light: the correction is the starless sky's)
                     if (dy != null) l += nrAmt * Half.toFloat(dy[y * w + x]);
+                    if (detail) l += detAmt * DR[x];
                     // Colour as ratios to the luminance (never absolute chroma, which would spill a star's
                     // colour onto dark neighbours), from the window; clipped samples carry no weight.
                     float th = TH[i];
