@@ -454,9 +454,9 @@ public final class Renderer {
 
     /**
      * The ground (1.9): the trees, a roof, the land, darker than {@link #GROUND_DARK} of the sky's level fitted to the
-     * starry cells alone (those with {@link #STARRY} or more of the starriest quarter's share of star pixels), and the
-     * pixels next to them; null if there's none, or too few starry cells to tell. Y: the proxy's luminance; mask: its
-     * star pixels.
+     * starry cells alone (those with {@link #STARRY} or more of the starriest quarter's share of star pixels), where it's
+     * three pixels across at the least, and the pixels next to it; null if there's none, or too few starry cells to
+     * tell. Y: the proxy's luminance; mask: its star pixels.
      */
     static boolean[] ground(float[] Y, int pw, int ph, boolean[] mask, int gx, int gy, double[] cu, double[] cv,
             double[][] cval, boolean[] cok) {
@@ -497,7 +497,18 @@ public final class Renderer {
                 if (f > 0 && Y[i] < GROUND_DARK * f) g[i] = any = true;
             }
         }
-        return any ? dilate(g, pw, ph, 1) : null;
+        if (!any) return null;
+        // the ground is wide: what's left after an opening (three pixels across at the least, the star pixels on it
+        // counted in), and the pixels next to that; single dark pixels are the noise's, where the fit runs above the sky
+        boolean[] gm = new boolean[g.length];
+        for (int i = 0; i < g.length; i++) gm[i] = g[i] || mask[i];
+        boolean[] e = GroundMap.erode(gm, pw, ph, 1);
+        boolean left = false;
+        for (int i = 0; i < e.length; i++) {
+            e[i] &= g[i];
+            left |= e[i];
+        }
+        return left ? GroundMap.dilate(e, pw, ph, 2) : null;
     }
 
     /** IRLS fit of a quadratic surface; positive residuals (stars, clouds, Milky Way) are down-weighted harder. */

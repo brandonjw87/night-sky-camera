@@ -151,12 +151,18 @@ public final class HotPixels {
      * star as sharp as the half-size simulations draw them; a trail passing by leaves a line across it dark.
      */
     static final float AROUND = 0.05f;
+    /**
+     * A cluster is found from a photosite raised SEED times the single test's threshold: two or three photosites side by
+     * side just over the noise are as often a faint star's image (from a frame the phone moved in, say) as defects, and
+     * defects that faint hardly show in the photo.
+     */
+    static final float SEED = 2f;
 
     /**
      * Two or three defective photosites side by side, same-colour neighbours or adjacent ones (1.9). Each stands among
      * the others' surroundings, so the single-photosite test, which takes a raised neighbour for a star's light, leaves
-     * them all, and they stack into a coloured blotch. From every photosite raised by the whole threshold: the photosites
-     * within two pixels of it raised by half the threshold and by a tenth of the strongest of them make the cluster (a
+     * them all, and they stack into a coloured blotch. From every photosite raised by {@link #SEED} times the threshold:
+     * the photosites within two pixels of it raised by half the threshold and by a tenth of the strongest of them make the cluster (a
      * faint star's trail passing by is far fainter than a defect strong enough to matter). Two or three of them, each
      * with its own immediate neighbours (those outside the cluster) holding no more light than {@link #RING} allows, are
      * defects; any more, or neighbours lit up, are a star's. Sets them in {@code mask}; returns how many it added.
@@ -187,7 +193,7 @@ public final class HotPixels {
                             float ex = v - Stats.median8(a0, a1, a2, a3, a4, a5, a6, a7, s);
                             if (ex > half) {
                                 r.set(i);
-                                if (ex > 2 * half) st.set(i);
+                                if (ex > 2 * SEED * half) st.set(i);
                             }
                         }
                     }
