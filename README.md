@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.9.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.10.
 
 ## What it does
 
@@ -39,6 +39,10 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.9.
 - **Photos that play.** Each photo has a few seconds of video inside it that ends on the photo: the frames adding
   up until the sky's grain melts away, or the trails drawing themselves. Google Photos plays it (it's a Motion
   Photo, like the Pixel camera's own), and so does **Play its video** in the app.
+- **Constellations you can see.** **Names** draws each constellation's figure on the photo, the lines from star
+  to star that star charts draw, with its name inside it. **Star glow** in the edit screen gives the brightest
+  stars a soft glow in their own colours, bigger the brighter the star; a star so bright it filled its pixels
+  takes its brightness and colour from the star catalogue once the app has recognised the sky.
 - **Session report.** What the photo shows (constellations, planets, the Milky Way, galaxies to look for), a
   score for every frame, and what went wrong with the fix.
 - **Edit any photo again.** Look, crop, north up, which frames go in, the reference frame, stars lined up by
@@ -126,8 +130,8 @@ Under the photo:
   saves the photo without it.
 - **Session report** opens what the picture shows, a score for every frame, and what went wrong with the fix.
   **Share the log** at its bottom sends the session's log (every step and choice it made) as a text file.
-- **Satellites** and **Names** draw the satellites' tracks and the stars' names on the photo; **Save this copy**
-  keeps that version.
+- **Satellites** and **Names** draw the satellites' tracks and the stars' names on the photo, Names with each
+  constellation's figure (when the app recognised the sky); **Save this copy** keeps that version.
 - **Add 5 minutes** (for half an hour after a session): lay the phone back down where it was and the extra
   minutes are stacked into the same photo. Volume up (or a Bluetooth remote's button) does the same while it's
   capturing.
@@ -166,8 +170,9 @@ Tap **Edit** under a photo. The picture changes as you go; press and hold **Comp
 was.
 
 - **Look:** stretch (1 to 10), exposure (-2 to +2), black point, colour, sky detail (0 to 200%: how much the
-  Milky Way's lanes and star clouds are brought out), sky brightness, and a natural, punchy or linear look. **As
-  developed** puts them back.
+  Milky Way's lanes and star clouds are brought out), star glow (0 to 200%: a soft glow on the brightest stars in
+  their own colours; none as developed, and none on star trails), sky brightness, and a natural, punchy or linear
+  look. **As developed** puts them back.
 - **Crop:** 4:3, 3:2, 16:9 or 1:1, and **North up** (when the app recognised the sky).
 - **Frames:** each frame with its time and score. Drag **From** and **To** to trim the start or the end, tap a
   frame and **Leave out** to drop it (a plane, a bump), or make it the **Reference** the others line up on.
@@ -288,6 +293,34 @@ tap **Stop the viewer** on the phone.
   the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
   couldn't run ends on).
 
+## Credits
+
+The stars come from the Yale Bright Star Catalogue. The constellations' figures and where their names go come from
+d3-celestial (https://github.com/ofrohn/d3-celestial), under its licence:
+
+```
+Copyright (c) 2015, Olaf Frohn
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+   disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+   following disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+   products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## For developers
 
 ### Layout
@@ -314,7 +347,7 @@ app/src/main/java/com/brandon/nightsky/
     SkyReadings         the sky reading log
     FrameStrip          the frame strip on the report and edit screens
     ZoomImageView       pinch-zoom picture with taps, painting and overlays
-    TrackPainter        satellite tracks and star names drawn on the photo
+    TrackPainter        satellite tracks, star names and constellation figures drawn on the photo
     MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo)
     Mp4Writer           the photo's video: H.264 through the phone's encoder (MediaCodec) into an MP4
     RemoteHost          the remote viewer: what the web page shows and the commands it can send
@@ -330,6 +363,7 @@ app/src/main/java/com/brandon/nightsky/
         PostProcessor   final stack, gradient removal, colour, noise analysis
         ColorCalibration white balance from catalogue stars' B-V colours
         SkySolver       plate solving against the Yale Bright Star Catalogue
+        SkyGuide, Figures  what's in the picture and where; the constellations' figures (from d3-celestial)
         Astro, Planets  time, Sun, Moon, planets
         Sat*, Sgp4      satellite prediction, matching and masks
         MeteorShowers   the shower calendar: radiants, their drift, rates, and which shower a meteor came from
@@ -345,6 +379,7 @@ app/src/main/java/com/brandon/nightsky/
         EdgeMask, GroundMap  the painted foreground and keeping the ground still
         Denoise         the sky's noise taken out, the stars found and set aside first
         Renderer        colour and tone (asinh stretch, looks, black point, saturation)
+        StarGlow        the brightest stars' glow: found in the picture, made bright and coloured from the catalogue
         PhotoVideo      the photo's video: the frames adding up again (or the trails drawing), rendered as the photo
         MotionPhoto     the video put inside the JPEG as a Motion Photo, and read back
         Framing         crops and north up
@@ -382,7 +417,9 @@ Arguments: output folder, scale (1 full size, 2 half size), frames, calibrated l
 
 The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsTest`, `ReadingTest`, `FocusTest`,
 `PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `ClearSkyTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`,
-`MeteorTest`, `DeepLinesTest`, `MotionPhotoTest` and `SatTest` (with the SGP4 verification files) run on their own;
+`MeteorTest`, `DeepLinesTest`, `MotionPhotoTest`, `HotPixelTest`, `DetailTest`, `FiguresTest`, `StarGlowTest` and
+`SatTest` (with the SGP4 verification files) run on their own (the four before `SatTest` can take a folder for
+their pictures);
 `ReportTest`, `SatSessionTest`, `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder,
 for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `PhotoVideoTest` takes an
 output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the path, also writes its videos as MP4.

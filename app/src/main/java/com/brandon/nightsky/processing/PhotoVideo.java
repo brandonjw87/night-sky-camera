@@ -1058,6 +1058,8 @@ public final class PhotoVideo {
 
     /** A grid picture rendered as the photo is (its colour by its own noise), cut and turned as the video shows it. */
     private int[] render(RgbImage S) {
+        // the photo's glow (1.10): its lights as the photo's render finds them in the stack (once; kept with the analysis)
+        if (params.glow > 0 && stack != null) Renderer.glow(stack, a, a, 1);
         float noise = noise(S);
         float ns = a.noiseY > 0 && noise > 0 ? noise / a.noiseY : (float) (1 / sx);
         int[] px = Renderer.renderScaled(S, a, params, (float) sx, ns);

@@ -83,6 +83,11 @@ public final class Recipe {
     public float saturation = 1f;
     /** The sky's detail brought out (1.9), as a share of the develop step's (1: as developed, 0: none). */
     public float detail = 1f;
+    /**
+     * The brightest stars' soft glow (1.10, {@link Renderer.Params#glow}): 0 none (the develop step's), 1 a clear glow, 2 a
+     * strong one. Deep sky only: a star trail isn't a star.
+     */
+    public float glow;
     public String look = LOOK_NATURAL;
     public String crop = CROP_FULL;
     /** Turned so north is up (needs the plate solution). */
@@ -147,6 +152,7 @@ public final class Recipe {
         r.black = black;
         r.saturation = saturation;
         r.detail = detail;
+        r.glow = glow;
         r.look = look;
         r.crop = crop;
         r.northUp = northUp;
@@ -162,6 +168,7 @@ public final class Recipe {
         p.black = black;
         p.saturation *= saturation;
         p.detail = Renderer.Params.DETAIL * detail;
+        p.glow = trails ? 0f : glow;
         p.look = LOOK_PUNCHY.equals(look) ? Renderer.Params.PUNCHY : LOOK_LINEAR.equals(look) ? Renderer.Params.LINEAR
                 : Renderer.Params.NATURAL;
         return p;
@@ -278,6 +285,7 @@ public final class Recipe {
         if (black != was.black) c.add("black point " + Math.round(100 * black) + "%");
         if (saturation != was.saturation) c.add("saturation " + Math.round(100 * saturation) + "%");
         if (detail != was.detail) c.add("sky detail " + Math.round(100 * detail) + "%");
+        if (glow != was.glow) c.add(glow > 0 ? "star glow " + Math.round(100 * glow) + "%" : "no star glow");
         if (!look.equals(was.look)) c.add(look + " look");
         if (!crop.equals(was.crop)) c.add(CROP_FULL.equals(crop) ? "no crop" : crop + " crop");
         if (northUp != was.northUp) c.add(northUp ? "north up" : "as the camera saw it");
@@ -362,7 +370,9 @@ public final class Recipe {
         if (motion) j.put("motion", true);
         j.raw("stack", stackJson());
         j.obj("render").put("brightness", brightness, 9).put("stretch", stretch, 9).put("ev", ev, 9).put("black", black, 9)
-                .put("saturation", saturation, 9).put("detail", detail, 9).put("look", look).put("crop", crop).put("northUp", northUp).end();
+                .put("saturation", saturation, 9).put("detail", detail, 9);
+        if (glow != 0) j.put("glow", glow, 9);
+        j.put("look", look).put("crop", crop).put("northUp", northUp).end();
         j.put("stackKey", stackKey).put("masterHash", masterHash).put("pixelHash", pixelHash);
         j.put("summary", summary).put("total", total);
         return j.end().toString();
@@ -393,6 +403,7 @@ public final class Recipe {
             r.black = (float) rd.num("black", 0);
             r.saturation = (float) rd.num("saturation", 1);
             r.detail = (float) rd.num("detail", 1);
+            r.glow = (float) rd.num("glow", 0);
             r.look = rd.str("look", LOOK_NATURAL);
             r.crop = rd.str("crop", CROP_FULL);
             r.northUp = rd.bool("northUp", false);

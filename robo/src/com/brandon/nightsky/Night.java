@@ -131,6 +131,7 @@ public class Night {
         report();
         Monkey.say("  result screen: " + labels());
         videoCheck(true, null);
+        namesCheck();
     }
 
     /** Stopped from the phone after a few frames: what there is is developed. */
@@ -1297,6 +1298,87 @@ public class Night {
         }
         playCheck(r);
         reopenCheck(r);
+    }
+
+    /**
+     * Names on the result (1.10): the report places the constellations' figures; Names draws them on the photo with the
+     * names (the picture changes; it's written to names.png to look at) and takes them off again; Save this copy saves a
+     * copy with them that decodes, the photo's own size.
+     */
+    static void namesCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        com.brandon.nightsky.processing.ReportCard card = r != null ? r.report : null;
+        if (card == null || card.sky == null || !card.sky.placed) {
+            Monkey.problem(scenario + ": the photo wasn't placed on the sky, so there are no names to check");
+            return;
+        }
+        java.util.Set<String> cons = new java.util.TreeSet<String>();
+        for (com.brandon.nightsky.processing.SkyGuide.Line l : card.sky.figures) cons.add(l.c);
+        Monkey.say("  figures: " + card.sky.figures.size() + " lines of " + cons.size() + " constellations " + cons);
+        if (card.sky.figures.size() < 10) Monkey.problem(scenario + ": only " + card.sky.figures.size() + " lines of the constellations' figures");
+        View z = (View) Monkey.field(Monkey.a, "zoom");
+        Bitmap plain = shown(z);
+        if (findLabel("Names") == null) {
+            Monkey.problem(scenario + ": no Names on the result screen: " + labels());
+            return;
+        }
+        press("Names");
+        run(1500);
+        Bitmap named = shown(z);
+        int changed = differ(plain, named);
+        Monkey.say(String.format(Locale.US, "  Names on: %d pixels of %dx%d drawn on", changed, named != null ? named.getWidth() : 0,
+                named != null ? named.getHeight() : 0));
+        if (changed < 2000) Monkey.problem(scenario + ": Names drew nothing on the photo (" + changed + " pixels changed)");
+        if (named != null) {
+            java.io.OutputStream os = new java.io.FileOutputStream(new File(Monkey.out, "names.png"));
+            named.compress(Bitmap.CompressFormat.PNG, 100, os);
+            os.close();
+        }
+        shot("names");
+        press("Save this copy");
+        // saved, and the result screen back
+        for (int k = 0; k < 600 && (r.labelled == null || Monkey.svc.controller().status().phase != SessionController.Phase.DONE
+                || findLabel("Names") == null); k++) {
+            run(100);
+        }
+        if (r.labelled == null) {
+            Monkey.problem(scenario + ": Save this copy saved nothing");
+        } else {
+            Bitmap copy = decode(r.labelled);
+            Monkey.say("  the copy with names: " + r.labelled + (copy != null ? " (" + copy.getWidth() + "x" + copy.getHeight() + ")" : " doesn't decode"));
+            if (copy == null) Monkey.problem(scenario + ": the copy with names doesn't decode");
+        }
+        press("Names");
+        run(1500);
+        int back = differ(plain, shown(z));
+        if (back > 0) Monkey.problem(scenario + ": " + back + " pixels still differ with Names off again");
+    }
+
+    /** The bitmap a picture view shows (null if none). */
+    static Bitmap shown(View v) {
+        if (!(v instanceof android.widget.ImageView)) return null;
+        android.graphics.drawable.Drawable d = ((android.widget.ImageView) v).getDrawable();
+        return d instanceof android.graphics.drawable.BitmapDrawable ? ((android.graphics.drawable.BitmapDrawable) d).getBitmap() : null;
+    }
+
+    /** How many pixels of two same-sized bitmaps differ (all of them if either is missing or the sizes differ). */
+    static int differ(Bitmap a, Bitmap b) {
+        if (a == null || b == null || a.getWidth() != b.getWidth() || a.getHeight() != b.getHeight()) {
+            return a == null && b == null ? 0 : Integer.MAX_VALUE;
+        }
+        int w = a.getWidth(), h = a.getHeight();
+        int[] pa = new int[w * h], pb = new int[w * h];
+        a.getPixels(pa, 0, w, 0, 0, w, h);
+        b.getPixels(pb, 0, w, 0, 0, w, h);
+        int n = 0;
+        for (int i = 0; i < pa.length; i++) if (pa[i] != pb[i]) n++;
+        return n;
+    }
+
+    /** A saved photo, decoded (null if it can't be). */
+    static Bitmap decode(android.net.Uri u) {
+        File f = FakeMediaStore.file(u);
+        return f == null || f.length() == 0 ? null : BitmapFactory.decodeFile(f.getPath());
     }
 
     /** "Play its video" on the result: it plays where the photo is, and the photo comes back when it ends, on a tap, and when it can't be played. */

@@ -98,6 +98,7 @@ public class EditFlow {
         // 4. how it's rendered only: from the same stack
         final Recipe e = in.recipe.edit();
         e.stretch = 6.5f;
+        e.glow = 1f;
         e.look = Recipe.LOOK_PUNCHY;
         e.crop = "16:9";
         int masters = Master.list(dir).size();
@@ -112,7 +113,9 @@ public class EditFlow {
                 && s.result.recipe.number == 5, words(s));
         check("from the same stack, no new master", r5.stackKey.equals(in.was.stackKey) && Master.list(dir).size() == masters,
                 r5.stackKey + " vs " + in.was.stackKey + ", masters " + Master.list(dir).size());
-        check("its note says what changed", r5.note.equals("edited: stretch 6.5, punchy look, 16:9 crop"), r5.note);
+        check("its note says what changed", r5.note.equals("edited: stretch 6.5, star glow 100%, punchy look, 16:9 crop"), r5.note);
+        check("its stars glow, and the log says which", r5.glow == 1f && lastLines(dir, 12).contains("star glow 100%: "),
+                lastLines(dir, 6));
         check("its picture is new", !r5.pixelHash.isEmpty() && !r5.pixelHash.equals(in.was.pixelHash), r5.pixelHash);
         check("a look-only edit has no video (nothing read the frames)", s.result.video == null && !s.result.motion
                 && !r5.motion && String.valueOf(FakeMediaStore.name(s.result.jpeg)).endsWith(".jpg")
@@ -139,7 +142,8 @@ public class EditFlow {
         check("its stack is this version's, kept, and keyed by its recipe", r6.pipeline == PostProcessor.PIPELINE
                 && r6.stackKey.equals(r6.stackKey()) && Master.read(dir, r6.stackKey) != null, r6.stackKey + " " + r6.stackKey());
         check("13 frames went in", s.detail.contains("13 of 13") || s.detail.contains("of 13"), s.detail);
-        check("how it's rendered carries over", r6.stretch == 6.5f && r6.crop.equals("16:9") && r6.look.equals(Recipe.LOOK_PUNCHY), "");
+        check("how it's rendered carries over", r6.stretch == 6.5f && r6.glow == 1f && r6.crop.equals("16:9")
+                && r6.look.equals(Recipe.LOOK_PUNCHY), "");
         check("the stacking showed its progress", sawPhase(SessionController.Phase.DEVELOPING, "Stacking the edit"), "");
         check("its master knows its reference frame", Master.read(dir, r6.stackKey).meta.referenceUnit == 8,
                 "" + Master.read(dir, r6.stackKey).meta.referenceUnit);

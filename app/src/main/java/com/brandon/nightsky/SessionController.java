@@ -58,6 +58,8 @@ import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.SkyReading;
+import com.brandon.nightsky.processing.SkySolver;
+import com.brandon.nightsky.processing.StarGlow;
 import com.brandon.nightsky.processing.Stats;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
@@ -789,6 +791,7 @@ final class SessionController {
     /** A master read back, with the session's report for it, rendered as {@code rc} says (null: the develop step's settings). */
     private Opened open(SessionStore st, Properties props, SensorSpec sp, Recipe rc, Master.Loaded l) {
         PostProcessor.Output o = outputOf(l, sp);
+        if (!l.meta.trails) placeSky(o, l.meta.solution(), l.meta.solutionJd, st);
         float brightness = rc != null ? rc.brightness : parseFloat(props.getProperty("brightness"), prefs.brightness());
         int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
         RgbImage sm = o.image.binned(f);
@@ -834,6 +837,20 @@ final class SessionController {
         op.framing = frameFor(rc, north, sm.cropWidth(), sm.cropHeight());
         op.headline = "Session of " + (r.startedMs > 0 ? nightLabel(r.startedMs) : st.id());
         return op;
+    }
+
+    /**
+     * The catalogue's bright stars and the planets where a plate-solved stack has them, for the brightest stars' glow
+     * (1.10, {@link StarGlow}): it takes a star's brightness and colour from them where the photo clips it.
+     */
+    private void placeSky(PostProcessor.Output o, SkySolver.Solution sol, double jdUtc, SessionStore st) {
+        if (sol == null || o.analysis == null) return;
+        try {
+            o.analysis.sky = StarGlow.sky(sol, jdUtc, SkyCatalog.get(ctx), o.analysis);
+        } catch (RuntimeException e) {
+            // the glow then goes by the photo's own light
+            st.log("star glow: the catalogue's stars not placed: " + e);
+        }
     }
 
     /** A master as developing's output: the stack, its colour and analysis, its lens model and reference frame. */
@@ -1362,7 +1379,7 @@ final class SessionController {
             int factor = e.quick ? 2 : 1;
             Uri jpeg = saveJpeg(st, op.o, op.spec, p, e, op.r.north, name, null, factor, hash);
             Recipe saved = saveRecipe(st, e, op.r.master, op.o, name, jpeg, hash[0]);
-            logNoise(st, op.o);
+            logNoise(st, op.o, p);
             Bitmap bmp = previewBitmap(op.small, op.o.analysis, p, op.factor);
             Framing pf = frameFor(e, op.r.north, op.small.cropWidth(), op.small.cropHeight());
             saveThumb(st, frame(bmp, pf));
@@ -4634,6 +4651,7 @@ final class SessionController {
         // the stack as its master keeps it (half floats), so the photo saved below is the one the master gives again
         Master.quantize(o, sp, m.trails);
         Master.Meta master = saveMaster(home, o, sp, m.recipe, m.props, !m.nights && !m.edit, m.merge);
+        if (!m.trails) placeSky(o, o.solution, o.solutionJd, st);
         if (m.edit && master != null) pruneMasters(home, master.key);
         if (m.merge == null && !m.edit) learnFromSession(m.props, o, sp, st);
         // a merge of nights isn't one session: its own summary and coverage map stand for the report card; an edit's is
@@ -4704,7 +4722,7 @@ final class SessionController {
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
         }
         o.video = null; // how the frames were read for it: let go
-        logNoise(home, o);
+        logNoise(home, o, params);
         if (m.again != null) {
             home.log(String.format(Locale.US, "decision: render r%03d made again from its recipe: %s%s", m.again.number,
                     sameAs(m.again, master, hash[0]), same ? ", so it isn't saved twice" : recipe != null
@@ -4984,10 +5002,15 @@ final class SessionController {
         return "Done. Your photo is ready.";
     }
 
-    /** What the noise reduction took out of the photo just saved from {@code o}, in {@code st}'s log (nothing if it found no noise). */
-    private static void logNoise(SessionStore st, PostProcessor.Output o) {
+    /**
+     * What the noise reduction took out of the photo just saved from {@code o} with {@code p}, in {@code st}'s log
+     * (nothing if it found no noise), and which stars glow in it.
+     */
+    private static void logNoise(SessionStore st, PostProcessor.Output o, Renderer.Params p) {
         String noise = o.analysis.noiseNote();
         if (!noise.isEmpty()) st.log("decision: the sky's noise taken out of the photo, the stars set aside first: " + noise);
+        String glow = p.glow > 0 ? o.analysis.glowNote() : "";
+        if (!glow.isEmpty()) st.log(String.format(Locale.US, "star glow %d%%: %s", Math.round(100 * p.glow), glow));
     }
 
     /** The photo as a JPEG, {@code factor} photo pixels to a JPEG pixel each way (1: full size), with {@code d} drawn on. */

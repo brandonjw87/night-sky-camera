@@ -1604,9 +1604,23 @@ public final class ReportCard {
                 if (!Double.isNaN(it.mag)) j.put("mag", round(it.mag, 1));
                 if (!Double.isNaN(it.x)) j.put("x", round(it.x, 3)).put("y", round(it.y, 3));
                 if (!Double.isNaN(it.share)) j.put("share", round(it.share, 3));
+                if (!Double.isNaN(it.lx)) j.put("lx", round(it.lx, 3)).put("ly", round(it.ly, 3));
                 j.end();
             }
-            j.end().end();
+            j.end();
+            if (!sky.figures.isEmpty()) {
+                j.arr("figures");
+                for (SkyGuide.Line l : sky.figures) {
+                    j.obj().put("c", l.c);
+                    if (!l.a) j.put("a", false);
+                    if (!l.b) j.put("b", false);
+                    j.arr("p");
+                    for (float v : l.pts) j.val(round(v, 4), 4);
+                    j.end().end();
+                }
+                j.end();
+            }
+            j.end();
         }
         if (!Double.isNaN(skyMag)) j.put("skyMag", round(skyMag, 2));
         if (!streaks.isEmpty()) {

@@ -3212,8 +3212,23 @@ public final class MainActivity extends Activity {
                 r.detail = v / 20f;
             }
         });
-        box.addView(text("Sky detail brings out the Milky Way's dark lanes and star clouds. The plain sky, the stars, their glow and the "
-                + "ground are left as they are.", 12, RED_DIM, false), gap(2));
+        box.addView(text("Sky detail brings out the Milky Way's dark lanes and star clouds. The plain sky, the stars and the ground are "
+                + "left as they are.", 12, RED_DIM, false), gap(2));
+        if (!r.trails) {
+            addSlider(es, box, 40, Math.round(r.glow * 20), new Slider() {
+                @Override
+                public String label(int v) {
+                    return "Star glow " + 5 * v + "%" + (v == 0 ? " (as developed: none)" : "");
+                }
+
+                @Override
+                public void set(int v) {
+                    r.glow = v / 20f;
+                }
+            });
+            box.addView(text("Star glow gives the brightest stars a soft glow in their own colours, a bigger one the brighter the star, "
+                    + "so the constellations stand out as your eye sees them.", 12, RED_DIM, false), gap(2));
+        }
         addSlider(es, box, 100, Math.round(r.brightness * 100), new Slider() {
             @Override
             public String label(int v) {
@@ -3255,6 +3270,7 @@ public final class MainActivity extends Activity {
                 r.black = 0f;
                 r.saturation = 1f;
                 r.detail = 1f;
+                r.glow = 0f;
                 r.look = Recipe.LOOK_NATURAL;
                 List<Recipe> all = es.info.renders;
                 r.brightness = all.isEmpty() ? 0.5f : all.get(0).brightness;

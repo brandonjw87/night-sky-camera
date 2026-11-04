@@ -74,6 +74,18 @@ public final class Master {
         public CameraModel model;
         public double[] solutionR;
         public double solutionJd = Double.NaN;
+        /** The lens model the plate solution refined for itself, when it did (1.10; null: {@link #model}). */
+        public CameraModel solutionModel;
+
+        /** The plate solution's mapping of the picture to the sky, or null if it wasn't solved. */
+        public SkySolver.Solution solution() {
+            CameraModel cm = solutionModel != null ? solutionModel : model;
+            if (solutionR == null || cm == null) return null;
+            SkySolver.Solution s = new SkySolver.Solution();
+            s.R = solutionR;
+            s.model = cm;
+            return s;
+        }
         /** The frame the stack was lined up on (-1 if unknown): the edit screen's starting reference. */
         public int referenceUnit = -1;
         /**
@@ -187,6 +199,7 @@ public final class Master {
         if (o.solution != null) {
             m.solutionR = o.solution.R.clone();
             m.solutionJd = o.solutionJd;
+            if (o.solution.modelRefined && o.solution.model != null) m.solutionModel = o.solution.model.copy();
         }
         StarList st = o.referenceStars;
         if (st != null && st.count > 0) {
@@ -428,17 +441,13 @@ public final class Master {
         j.put("summary", m.summary).put("integrationSeconds", m.integrationSeconds, 9).put("nEff", m.nEff, 6)
                 .put("medianHfr", m.medianHfr, 6).put("unitsUsed", m.unitsUsed).put("unitsTotal", m.unitsTotal)
                 .put("maxGain", m.maxGain, 9);
-        if (m.model != null) {
-            CameraModel c = m.model;
-            j.obj("model").put("width", c.width).put("height", c.height).put("fx", c.fx, 17).put("fy", c.fy, 17).put("cx", c.cx, 17)
-                    .put("cy", c.cy, 17).put("skew", c.skew, 17).put("k1", c.k1, 17).put("k2", c.k2, 17).put("k3", c.k3, 17)
-                    .put("p1", c.p1, 17).put("p2", c.p2, 17).put("source", c.source).end();
-        }
+        if (m.model != null) model(j, "model", m.model);
         if (m.solutionR != null) {
             j.arr("solutionR");
             for (double v : m.solutionR) j.val(v, 17);
             j.end();
             j.put("solutionJd", m.solutionJd, 17);
+            if (m.solutionModel != null) model(j, "solutionModel", m.solutionModel);
         }
         if (m.referenceUnit >= 0) j.put("referenceUnit", m.referenceUnit);
         if (m.starX != null) {
@@ -460,6 +469,32 @@ public final class Master {
         j.arr(name);
         for (float f : v) j.val(f, 9);
         j.end();
+    }
+
+    private static void model(Json j, String name, CameraModel c) {
+        j.obj(name).put("width", c.width).put("height", c.height).put("fx", c.fx, 17).put("fy", c.fy, 17).put("cx", c.cx, 17)
+                .put("cy", c.cy, 17).put("skew", c.skew, 17).put("k1", c.k1, 17).put("k2", c.k2, 17).put("k3", c.k3, 17)
+                .put("p1", c.p1, 17).put("p2", c.p2, 17).put("source", c.source).end();
+    }
+
+    /** A lens model as {@link #model(Json, String, CameraModel)} wrote it, or null. */
+    private static CameraModel model(JsonTree.Obj mo) {
+        if (mo == null) return null;
+        CameraModel cm = new CameraModel();
+        cm.width = mo.integer("width", 0);
+        cm.height = mo.integer("height", 0);
+        cm.fx = mo.num("fx", 0);
+        cm.fy = mo.num("fy", 0);
+        cm.cx = mo.num("cx", 0);
+        cm.cy = mo.num("cy", 0);
+        cm.skew = mo.num("skew", 0);
+        cm.k1 = mo.num("k1", 0);
+        cm.k2 = mo.num("k2", 0);
+        cm.k3 = mo.num("k3", 0);
+        cm.p1 = mo.num("p1", 0);
+        cm.p2 = mo.num("p2", 0);
+        cm.source = mo.str("source", "master");
+        return cm.fx > 0 && cm.fy > 0 ? cm : null;
     }
 
     static Meta readMeta(File f) {
@@ -492,27 +527,11 @@ public final class Master {
             m.unitsUsed = o.integer("unitsUsed", 0);
             m.unitsTotal = o.integer("unitsTotal", 0);
             m.maxGain = (float) o.num("maxGain", 1);
-            JsonTree.Obj mo = o.obj("model");
-            if (mo != null) {
-                CameraModel cm = new CameraModel();
-                cm.width = mo.integer("width", 0);
-                cm.height = mo.integer("height", 0);
-                cm.fx = mo.num("fx", 0);
-                cm.fy = mo.num("fy", 0);
-                cm.cx = mo.num("cx", 0);
-                cm.cy = mo.num("cy", 0);
-                cm.skew = mo.num("skew", 0);
-                cm.k1 = mo.num("k1", 0);
-                cm.k2 = mo.num("k2", 0);
-                cm.k3 = mo.num("k3", 0);
-                cm.p1 = mo.num("p1", 0);
-                cm.p2 = mo.num("p2", 0);
-                cm.source = mo.str("source", "master");
-                if (cm.fx > 0 && cm.fy > 0) m.model = cm;
-            }
+            m.model = model(o.obj("model"));
             double[] r = o.nums("solutionR");
             if (r != null && r.length == 9) m.solutionR = r;
             m.solutionJd = o.num("solutionJd", Double.NaN);
+            m.solutionModel = model(o.obj("solutionModel"));
             m.referenceUnit = o.integer("referenceUnit", -1);
             JsonTree.Obj so = o.obj("stars");
             if (so != null) {

@@ -16,6 +16,7 @@ import com.brandon.nightsky.processing.RgbImage;
 import com.brandon.nightsky.processing.Rot;
 import com.brandon.nightsky.processing.SensorSpec;
 import com.brandon.nightsky.processing.SessionStore;
+import com.brandon.nightsky.processing.StarGlow;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
 
@@ -327,6 +328,8 @@ public final class SimRunner {
             ds.close();
         }
         if (catalog != null && o.referenceUnit >= 0) checkSolution(sim, o, truth, startMs, lonDeg);
+        // as the app does for the photo: the catalogue's stars and the planets placed in it, for the stars' glow (1.10)
+        if (catalog != null && !trails) o.analysis.sky = StarGlow.sky(o.solution, o.solutionJd, catalog, o.analysis);
         if (System.getenv("SIM_FLUX") != null && o.referenceUnit >= 0) fluxTable(sim.starTable(o.referenceUnit), o.image, new File(System.getenv("SIM_FLUX")));
         if (System.getenv("SIM_DUMP") != null) {
             // raw float32 planes of the whole stacked image (r, g, b) + clip bytes, for offline analysis

@@ -1,5 +1,83 @@
 # Night Sky Camera: what's new
 
+## Version 1.10: constellations you can see
+
+### What's new
+
+- **The constellations drawn on your photo.** A long exposure shows thousands of stars, so the shapes you know get
+  lost among them. Now **Names** under the photo also draws each constellation's figure: thin pale-blue lines from
+  star to star, the shapes star charts draw (the Plough, Orion with his belt, Cassiopeia's W), with the
+  constellation's name inside its figure. The lines follow the sky as the lens bends it, stop just short of each
+  star so the star itself shows, and run off the edge where a figure carries on beyond the picture. **Save this
+  copy** saves the photo with them. All 88 constellations are there, 743 lines in all, from the open-source star
+  chart d3-celestial (its licence is in the README).
+- **Star glow, in Edit > Look:** from 0% (none, as developed) to 200%. It gives the brightest stars a soft glow
+  in their own colours, the brighter the star the bigger its glow, so blue-white Vega, orange Arcturus and red
+  Antares stand out from the crowd as they do to your eye, and the constellations with them. The glow comes from
+  the stars the photo itself shows: a star hidden by cloud gets none, and neither do the Moon or the streaks of
+  satellites and planes.
+- **Bright stars as bright, and in the colour, they really are.** A long exposure fills the brightest stars'
+  pixels right up, so the photo shows them all as the same white blob and can't tell how bright they are. When
+  the app has recognised the sky, Star glow now takes those stars' brightness from the star catalogue, measured
+  against the stars around them that didn't fill up, and their colour too. On a simulated summer sky, Vega's glow
+  comes out 8 times brighter than its filled-up pixels say, which is about how much brighter it really was. The
+  planets get their own colours as well: Mars orange-red, Jupiter cream, Saturn gold.
+- **The photo's video glows too.** With Star glow on, the video inside the photo glows like the photo from its
+  first frame.
+- **Opened again, in the same place.** A photo developed by 1.10 and opened again from **Sessions** uses the same
+  fit of the lens that placed its sky when it was developed, so its names, figures and glow land where they did.
+- **In the log:** with Star glow on, a line says how many stars glow, how many of them the catalogue recognised,
+  and how many it made brighter and coloured (`star glow 100%: 150 lights glow ... 26 are catalogue stars or
+  planets: 10 clipped ones made brighter ...`).
+- **Checked off the phone:** all 88 figures' 893 stars sit on the catalogue's stars. On six simulated skies (the
+  Plough, Orion, Lyra, Scorpius, the pole and Andromeda), every line follows its figure and ends at its stars, and
+  each name sits inside its figure, also on a cropped photo and through a lens that bends the edges hard. On a
+  made-up sky with 24 bright stars of known brightness and colour among 2,500 faint ones, a planet, the Moon and a
+  satellite's streak: every bright star was found, the ones that didn't fill up measured within 2.3% of their
+  light and 0.03 pixels of their place; the 5 that filled up got their exact light and colour from the catalogue;
+  the planet glowed in Mars' colour; the Moon, the streak and a star hidden by cloud got no glow; a star matched to
+  the wrong catalogue entry can't be made more than 30 times brighter; at 0% the photo is exactly as it was; and
+  the edit screen's preview glows with the same stars as the saved photo. The photo's video glows as the photo
+  does (its last picture within 3 levels of the glowing photo).
+
+### Install the update (Windows, USB cable)
+
+It installs over version 1.9 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- Star glow is 0% (none) on every photo as developed, so photos come out exactly as they did in 1.9 until you slide
+  it up for one under **Edit > Look**. There's no setting for all photos.
+- **Names** shows the figures whenever it shows the names; there's no separate switch.
+- Star glow is for deep sky photos; star trails photos don't have it.
+- Developing is no slower than in 1.9.
+
+### Try today
+
+- Nothing new to see in daylight: both need a night photo the app recognised the sky in. To see the slider, open
+  any photo, tap **Edit**, then **Look**: **Star glow** is under **Sky detail**.
+
+### Try tonight
+
+1. Take a normal session on a clear night, then tap **Names** under the photo. Check that the figures' lines land
+   on the stars; if one doesn't, open **Session report > Share the log** and send it.
+2. Tap **Edit > Look** and slide **Star glow** to 100%, then 200%, holding **Compare** to see the photo without it.
+   Say which you like, and if any star glows in the wrong colour or a bright one gets no glow.
+
+### Not working yet, or not tested
+
+- Tested off the phone only, on simulated skies.
+- The figures, and the catalogue's help with the brightest stars, need the app to recognise the sky (the session
+  report names the constellations when it has). On a photo it couldn't place (cloud, too few stars), Names shows
+  what it did before and the stars glow as bright as the photo shows them.
+- A planet's colour is its usual colour, not measured on the night.
+
 ## Version 1.9: clearer photos
 
 ### What's new

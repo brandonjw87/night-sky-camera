@@ -89,6 +89,11 @@ public final class RgbImage {
         return o;
     }
 
+    /** The picture this was binned from by {@link #binned}, while it's still about; else null. */
+    RgbImage binnedFrom() {
+        return binnedFrom != null ? binnedFrom.get() : null;
+    }
+
     /** True if this is {@code src} binned {@code factor} x {@code factor} from its crop at (cx0, cy0), by {@link #binned}. */
     public boolean isBinned(RgbImage src, int factor, int cx0, int cy0) {
         return binnedFrom != null && binnedFrom.get() == src && binnedBy == factor && binnedX0 == cx0 && binnedY0 == cy0;

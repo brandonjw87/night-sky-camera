@@ -13,7 +13,8 @@ import java.util.Map;
  * pointed (the sky solution of the reference frame) and when: the constellations, the brightest named stars,
  * the planets and the Moon, the Milky Way, and the best-known clusters, nebulae and galaxies. Everything named
  * is placed in the picture by the same solution that matched the stars, so nothing is guessed. Without a
- * solution but with the place and the time, it says what was straight up instead.
+ * solution but with the place and the time, it says what was straight up instead. With a solution it also places the
+ * constellations' figures (1.10), the lines between their stars, for drawing on the photo with the names.
  */
 public final class SkyGuide {
     /** One thing named, and where it is. */
@@ -27,6 +28,11 @@ public final class SkyGuide {
         public double x = Double.NaN, y = Double.NaN;
         /** Constellations: share of the picture. */
         public double share = Double.NaN;
+        /**
+         * Constellations: where the name is drawn when that isn't (x, y), the middle of its part of the picture: inside its
+         * figure (1.10). NaN for (x, y).
+         */
+        public double lx = Double.NaN, ly = Double.NaN;
 
         Item(String kind, String name) {
             this.kind = kind;
@@ -34,8 +40,30 @@ public final class SkyGuide {
         }
     }
 
+    /**
+     * A line of a constellation's figure in the picture (1.10), from one of its stars to the next, or to where it leaves
+     * the picture; bent as the lens bends it.
+     */
+    public static final class Line {
+        /** The constellation's IAU abbreviation ("UMa"). */
+        public final String c;
+        /** Points along it: u, v, u, v, ... as shares of the picture (0..1 inside it). */
+        public final float[] pts;
+        /** Whether it starts at a star (else where the lens model stops holding, outside the picture) and ends at one. */
+        public final boolean a, b;
+
+        public Line(String c, float[] pts, boolean a, boolean b) {
+            this.c = c;
+            this.pts = pts;
+            this.a = a;
+            this.b = b;
+        }
+    }
+
     public final List<String> lines = new ArrayList<String>();
     public final List<Item> items = new ArrayList<Item>();
+    /** The constellations' figures in the picture (1.10); empty when the picture wasn't placed on the sky. */
+    public final List<Line> figures = new ArrayList<Line>();
     /** The constellation at the middle of the picture (full name), "" if unknown. */
     public String centre = "";
     /** Whether the picture was placed on the sky (else only what was overhead is known). */
@@ -56,7 +84,20 @@ public final class SkyGuide {
             it.x = x.num("x", Double.NaN);
             it.y = x.num("y", Double.NaN);
             it.share = x.num("share", Double.NaN);
+            it.lx = x.num("lx", Double.NaN);
+            it.ly = x.num("ly", Double.NaN);
             g.items.add(it);
+        }
+        for (com.brandon.nightsky.remote.JsonTree.Obj x : o.objs("figures")) {
+            double[] p = x.nums("p");
+            if (p.length < 4 || p.length % 2 != 0) continue;
+            float[] pts = new float[p.length];
+            boolean ok = true;
+            for (int k = 0; k < p.length; k++) {
+                pts[k] = (float) p[k];
+                ok &= !Double.isNaN(p[k]);
+            }
+            if (ok) g.figures.add(new Line(x.str("c", ""), pts, x.bool("a", true), x.bool("b", true)));
         }
         return g;
     }
@@ -198,6 +239,7 @@ public final class SkyGuide {
             }
         });
         items.addAll(cons);
+        figures(f, cons);
         List<String> around = new ArrayList<String>();
         for (Item it : cons) {
             if (it.name.equals(centre) || it.share < 0.05 || around.size() >= 5) continue;
@@ -210,7 +252,7 @@ public final class SkyGuide {
             List<Item> stars = new ArrayList<Item>();
             for (int k = 0; k < catalog.n; k++) {
                 if (catalog.vmag[k] > 3.5f || catalog.name[k].isEmpty()) continue;
-                double[] uv = f.uv(catalog.vec(k));
+                double[] uv = f.near(catalog.vec(k));
                 if (uv == null || !inside(uv)) continue;
                 Item it = new Item("star", catalog.name[k]);
                 it.mag = catalog.vmag[k];
@@ -241,7 +283,7 @@ public final class SkyGuide {
             // planets in the picture, or just outside it
             List<String> in = new ArrayList<String>(), near = new ArrayList<String>();
             for (Planets.Seen p : Planets.all(jdTt)) {
-                double[] uv = f.uv(p.dir);
+                double[] uv = f.near(p.dir, WIDE);
                 if (uv == null) continue;
                 boolean inPic = inside(uv);
                 boolean nearPic = !inPic && uv[0] > -0.15 && uv[0] < 1.15 && uv[1] > -0.15 && uv[1] < 1.15;
@@ -271,7 +313,7 @@ public final class SkyGuide {
         // clusters, nebulae and galaxies
         List<Object[]> objs = new ArrayList<Object[]>();
         for (Object[] o : OBJECTS) {
-            double[] uv = f.uv(Astro.vec((Double) o[1] * Astro.DEG, (Double) o[2] * Astro.DEG));
+            double[] uv = f.near(Astro.vec((Double) o[1] * Astro.DEG, (Double) o[2] * Astro.DEG));
             if (uv == null || !inside(uv) || edge(uv) < 0.03) continue;
             objs.add(new Object[]{o, uv});
         }
@@ -288,6 +330,132 @@ public final class SkyGuide {
             look.add(it.name + " " + it.where + " (" + looks((Character) o[4]) + ")");
         }
         if (!look.isEmpty()) lines.add("Look for " + list(look) + ".");
+    }
+
+    /**
+     * How much further than {@link Frame#reach} things just outside the picture are looked for (a planet past an edge, the
+     * Milky Way beside the picture): the lens model still holds there for any lens a phone has.
+     */
+    static final double WIDE = 1.4;
+
+    /** Longest step along a figure's line between two of its stars (radians): the lens bends it no more than that shows. */
+    static final double FIGURE_STEP = 2 * Astro.DEG;
+    /** How far past the picture a figure's line is kept (shares of the picture), so it runs off the edge. */
+    static final double FIGURE_MARGIN = 0.05;
+    /** How far in from the edges a constellation's name point must be to be used (shares of the picture). */
+    static final double NAME_INSET = 0.04;
+
+    /**
+     * The constellations' figures in the picture: each line between two stars, followed along the sky's great circle in
+     * steps of {@link #FIGURE_STEP} and kept where the lens model holds and near the picture; and for the constellations
+     * {@code cons} whose figure shows, their names placed inside it rather than at the middle of their part of the picture.
+     */
+    private void figures(Frame f, List<Item> cons) {
+        Map<String, Item> byAbbr = new LinkedHashMap<String, Item>();
+        for (Item it : cons) byAbbr.put(it.name, it);
+        for (Figures.Figure fig : Figures.all()) {
+            int before = figures.size();
+            double su = 0, sv = 0;
+            int seen = 0;
+            for (double[][] run : fig.runs) {
+                for (int k = 0; k + 1 < run.length; k++) segment(f, fig.abbr, run[k], run[k + 1]);
+                for (double[] star : run) {
+                    double[] uv = f.near(star);
+                    if (uv == null || !inside(uv)) continue;
+                    su += uv[0];
+                    sv += uv[1];
+                    seen++;
+                }
+            }
+            Item it = byAbbr.get(BrightStars.constellation(fig.abbr));
+            if (it == null || figures.size() == before || seen == 0) continue;
+            double[] lab = f.near(fig.label);
+            if (lab != null && edge(lab) >= NAME_INSET) {
+                it.lx = lab[0];
+                it.ly = lab[1];
+            } else {
+                // its stars in the picture (counted once per line they're on)
+                it.lx = su / seen;
+                it.ly = sv / seen;
+            }
+        }
+    }
+
+    /** One line of a figure, from star {@code a} to star {@code b}: the parts of it near the picture. */
+    private void segment(Frame f, String c, double[] a, double[] b) {
+        double ang = Astro.sep(a, b);
+        if (!(ang > 1e-9) || ang > Math.PI - 1e-6) return;
+        int n = Math.max(1, (int) Math.ceil(ang / FIGURE_STEP));
+        double[][] uv = new double[n + 1][];
+        double sinA = Math.sin(ang);
+        for (int i = 0; i <= n; i++) {
+            double t = i / (double) n;
+            double wa = Math.sin((1 - t) * ang) / sinA, wb = Math.sin(t * ang) / sinA;
+            double[] d = {wa * a[0] + wb * b[0], wa * a[1] + wb * b[1], wa * a[2] + wb * b[2]};
+            uv[i] = f.near(d);
+        }
+        for (int i = 0; i <= n; ) {
+            if (uv[i] == null) {
+                i++;
+                continue;
+            }
+            int j = i;
+            while (j + 1 <= n && uv[j + 1] != null) j++;
+            run(c, uv, i, j, i == 0, j == n);
+            i = j + 1;
+        }
+    }
+
+    /** Points i0..i1 of a line (all where the lens model holds), cut to near the picture, as a {@link Line} if it shows. */
+    private void run(String c, double[][] uv, int i0, int i1, boolean fromStar, boolean toStar) {
+        double lo = -FIGURE_MARGIN, hi = 1 + FIGURE_MARGIN;
+        int first = -1, last = -1;
+        for (int i = i0; i <= i1; i++) {
+            double[] p = uv[i];
+            if (p[0] >= lo && p[0] <= hi && p[1] >= lo && p[1] <= hi) {
+                if (first < 0) first = i;
+                last = i;
+            }
+        }
+        if (first < 0) {
+            // no point near the picture: it may still cross it between two points
+            boolean crosses = false;
+            for (int i = i0; i < i1 && !crosses; i++) crosses = crossesPicture(uv[i], uv[i + 1]);
+            if (!crosses) return;
+            first = i0;
+            last = i1;
+        }
+        // one point past each end, so the line reaches the edge
+        int s = Math.max(i0, first - 1), e = Math.min(i1, last + 1);
+        if (e <= s) return;
+        float[] pts = new float[2 * (e - s + 1)];
+        for (int i = s; i <= e; i++) {
+            pts[2 * (i - s)] = (float) uv[i][0];
+            pts[2 * (i - s) + 1] = (float) uv[i][1];
+        }
+        figures.add(new Line(c, pts, fromStar && s == i0, toStar && e == i1));
+    }
+
+    /** Whether the straight line from p to q crosses the picture (0..1 each way). */
+    static boolean crossesPicture(double[] p, double[] q) {
+        // Liang-Barsky clipping against the unit square
+        double t0 = 0, t1 = 1, dx = q[0] - p[0], dy = q[1] - p[1];
+        double[] pp = {-dx, dx, -dy, dy}, qq = {p[0], 1 - p[0], p[1], 1 - p[1]};
+        for (int k = 0; k < 4; k++) {
+            if (pp[k] == 0) {
+                if (qq[k] < 0) return false;
+                continue;
+            }
+            double t = qq[k] / pp[k];
+            if (pp[k] < 0) {
+                if (t > t1) return false;
+                if (t > t0) t0 = t;
+            } else {
+                if (t < t0) return false;
+                if (t < t1) t1 = t;
+            }
+        }
+        return t0 <= t1;
     }
 
     /** The Moon: in the picture, or up and where, with its phase. */
@@ -307,7 +475,7 @@ public final class SkyGuide {
             dir = new double[3];
             Rot.apply(Rot.transpose(Astro.j2000ToDate(jdTt)), m[0], m[1], m[2], dir);
         }
-        double[] uv = f.uv(dir);
+        double[] uv = f.near(dir);
         String phase = String.format(Locale.US, "%.0f%% lit", 100 * illum);
         Item it = new Item("moon", "the Moon");
         it.mag = -12.7 + 2.5 * Math.log10(1 / Math.max(0.005, illum));
@@ -331,7 +499,7 @@ public final class SkyGuide {
         int bestStart = -1, bestLen = 0, runStart = -1, runLen = 0;
         double[][] uvs = new double[361][];
         for (int l = 0; l <= 360; l++) {
-            double[] uv = f.uv(galactic(l * Astro.DEG, 0));
+            double[] uv = f.near(galactic(l * Astro.DEG, 0));
             uvs[l] = uv != null && inside(uv) ? uv : null;
         }
         // the longest run of degrees inside, allowing for the wrap at 360
@@ -363,7 +531,7 @@ public final class SkyGuide {
             items.add(it);
             while (through.size() > 4) through.remove(through.size() - 1);
             lines.add("The Milky Way runs " + it.where + " of the picture, through " + list(through) + ".");
-            double[] core = f.uv(galactic(0, 0));
+            double[] core = f.near(galactic(0, 0));
             if (core != null && inside(core)) {
                 lines.add("The bright centre of our galaxy, in Sagittarius, is " + where(core[0], core[1]) + ".");
             }
@@ -381,7 +549,7 @@ public final class SkyGuide {
             double best = Double.MAX_VALUE;
             double[] near = null;
             for (int l = 0; l < 360; l++) {
-                double[] uv = f.uv(galactic(l * Astro.DEG, 0));
+                double[] uv = f.near(galactic(l * Astro.DEG, 0), WIDE);
                 if (uv == null) continue;
                 double d = Math.max(Math.max(-uv[0], uv[0] - 1), Math.max(-uv[1], uv[1] - 1));
                 if (d < best) {
@@ -440,9 +608,18 @@ public final class SkyGuide {
     }
 
     /** The picture's mapping to the sky. */
-    private static final class Frame {
+    static final class Frame {
         final SkySolver.Solution sol;
         final int x0, y0, w, h;
+
+        /**
+         * How far from the lens' axis its model is trusted, as the tangent of the angle: a little past the picture's
+         * farthest corner or edge (the distortion's polynomial can turn back further out, and would put the sky behind
+         * the camera's view in the picture).
+         */
+        final double reach;
+        /** Camera bearings to J2000 (the solution's) and back. */
+        private final double[] Rt;
 
         Frame(SkySolver.Solution sol, int x0, int y0, int w, int h) {
             this.sol = sol;
@@ -450,6 +627,33 @@ public final class SkyGuide {
             this.y0 = y0;
             this.w = w;
             this.h = h;
+            double r = 0;
+            double[] b = new double[3];
+            for (int j = 0; j <= 2; j++) {
+                for (int i = 0; i <= 2; i++) {
+                    if (i == 1 && j == 1) continue;
+                    sol.model.unproject(x0 + i * w / 2.0, y0 + j * h / 2.0, b);
+                    if (b[2] > 1e-6) r = Math.max(r, Math.hypot(b[0] / b[2], b[1] / b[2]));
+                }
+            }
+            reach = r > 0 ? r * 1.08 : Double.MAX_VALUE;
+            Rt = Rot.transpose(sol.R);
+        }
+
+        /**
+         * {@link #uv} of a J2000 direction where the lens model holds ({@link #reach}), which takes in the picture and a
+         * little around it; null further out.
+         */
+        double[] near(double[] j2000) {
+            return near(j2000, 1);
+        }
+
+        /** {@link #near} out to {@code reachFactor} times {@link #reach}. */
+        double[] near(double[] j2000, double reachFactor) {
+            double[] b = new double[3];
+            Rot.apply(Rt, j2000[0], j2000[1], j2000[2], b);
+            if (b[2] <= 1e-6 || Math.hypot(b[0] / b[2], b[1] / b[2]) > reach * reachFactor) return null;
+            return uv(j2000);
         }
 
         double[] dir(double u, double v) {

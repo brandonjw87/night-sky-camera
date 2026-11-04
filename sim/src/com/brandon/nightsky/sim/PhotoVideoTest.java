@@ -282,6 +282,21 @@ public final class PhotoVideoTest {
                         && meanAbs(cf.get(build - 1), cf.get(vf.frameCount() - 1)) < 7,
                 String.format(Locale.US, "%dx%d, last picture %.2f levels from the photo", vf.width(), vf.height(),
                         meanAbs(cf.get(build - 1), cf.get(vf.frameCount() - 1))));
+        // with a strong star glow (1.10): the frames glow as the photo does, from the first one on
+        Renderer.Params pg = new Renderer.Params();
+        pg.glow = 2f;
+        PhotoVideo vg = PhotoVideo.of(o.video, o.image, o.analysis, pg, "full", null, PhotoVideo.MAX_SIDE);
+        File dg = new File(dir, "glow");
+        dg.mkdirs();
+        Collector cg = new Collector(dg, vg.width(), vg.height(), new int[]{0, build - 1, vg.frameCount() - 1}, null);
+        vg.build(cg, QUIET);
+        int[] photoG = Master.render(o.image, o.analysis, pg);
+        vg.finish(photoG, o.analysis.cw, o.analysis.ch, cg);
+        double gEnd = meanAbs(cg.get(build - 1), cg.get(vg.frameCount() - 1)), gFirst = meanAbs(cg.get(0), c.get(0)),
+                gLast = meanAbs(cg.get(build - 1), lastBuild);
+        check("with star glow, the frames glow as the photo does from the first on", gEnd < 6 && gFirst > 0.2 && gLast > 0.2,
+                String.format(Locale.US, "last picture %.2f levels from the glowing photo; the glow adds %.2f levels to the first picture, "
+                        + "%.2f to the last", gEnd, gFirst, gLast));
     }
 
     static void trails(File dir, int scale, int frames) throws Exception {
