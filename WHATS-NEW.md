@@ -9,7 +9,9 @@
   those got through as small red, green or blue specks, because together they looked like a tiny star. Now each
   pair and three is found and taken out too. On a simulated sensor with 304 such pairs and threes, version 1.8
   found none of them and 1.9 finds them all, taking nothing else for a hot pixel; in the developed photo, the
-  worst coloured speck where they are went from 123 levels of colour to 50, no more than the sky's own grain.
+  worst coloured speck where they are went from 123 levels of colour to 50, no more than the sky's own grain. On
+  six simulated test nights it also found 5 to 7 more of the simulated sensor's 1,253 hot pixels than 1.8 did, and
+  took at most one pixel a night for a hot one that wasn't (1.8: up to 7).
 - **The Milky Way's dark lanes and star clouds brought out.** While the photo's grain is taken out, the app now
   also finds the sky's real detail, from about 16 to 256 pixels wide (the dark lanes of dust along the Milky
   Way, its brighter star clouds), wherever it stands clear of the grain, and makes it stronger: the lanes darker,
