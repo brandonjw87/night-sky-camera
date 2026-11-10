@@ -1350,6 +1350,8 @@ public class Night {
         }
         press("Names");
         run(1500);
+        // the result screen was built again after the save, so the picture view is a new one
+        z = (View) Monkey.field(Monkey.a, "zoom");
         int back = differ(plain, shown(z));
         if (back > 0) Monkey.problem(scenario + ": " + back + " pixels still differ with Names off again");
     }
