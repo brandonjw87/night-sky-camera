@@ -7,3 +7,5 @@ local.properties
 *.keystore
 *.jks
 captures/
+__pycache__/
+intro/sky_cache.npz

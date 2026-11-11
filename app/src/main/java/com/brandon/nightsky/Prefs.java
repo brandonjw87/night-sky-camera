@@ -218,6 +218,31 @@ final class Prefs {
         sp.edit().putBoolean("photoVideo", v).apply();
     }
 
+    /**
+     * Save photos as HDR photos (2.0): a screen with the headroom (this phone's) shows their stars brighter than white;
+     * everything else shows them as before. The result screen shows them that way too.
+     */
+    boolean hdrPhotos() {
+        return sp.getBoolean("hdrPhotos", true);
+    }
+
+    void setHdrPhotos(boolean v) {
+        sp.edit().putBoolean("hdrPhotos", v).apply();
+    }
+
+    /**
+     * The opening film (2.0) when the app is opened from its icon: {@link IntroView#COLOUR}, {@link IntroView#RED}
+     * (the app's night red, for dark-adapted eyes) or {@link IntroView#OFF}.
+     */
+    int intro() {
+        int v = sp.getInt("intro", IntroView.COLOUR);
+        return v == IntroView.RED || v == IntroView.OFF ? v : IntroView.COLOUR;
+    }
+
+    void setIntro(int v) {
+        sp.edit().putInt("intro", v).apply();
+    }
+
     /** Quick developing: one stacking pass and a half-size photo (the Quick look preset). */
     boolean quick() {
         return sp.getBoolean("quick", false);

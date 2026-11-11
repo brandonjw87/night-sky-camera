@@ -32,6 +32,7 @@ import com.brandon.nightsky.processing.FocusModel;
 import com.brandon.nightsky.processing.FocusSweep;
 import com.brandon.nightsky.processing.FocusWatch;
 import com.brandon.nightsky.processing.Framing;
+import com.brandon.nightsky.processing.HdrGain;
 import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
@@ -841,7 +842,7 @@ final class SessionController {
 
     /**
      * The catalogue's bright stars and the planets where a plate-solved stack has them, for the brightest stars' glow
-     * (1.10, {@link StarGlow}): it takes a star's brightness and colour from them where the photo clips it.
+     * (2.0, {@link StarGlow}): it takes a star's brightness and colour from them where the photo clips it.
      */
     private void placeSky(PostProcessor.Output o, SkySolver.Solution sol, double jdUtc, SessionStore st) {
         if (sol == null || o.analysis == null) return;
@@ -1043,7 +1044,22 @@ final class SessionController {
         } catch (RuntimeException | OutOfMemoryError e) {
             android.util.Log.w("NightSky", "could not draw the tracks and names: " + e);
         }
-        return frame(b, previewFraming);
+        return shine(frame(b, previewFraming), b == base);
+    }
+
+    /**
+     * The on-screen copy as the saved HDR photo shows (2.0): with its brightness map, so this phone's screen shows its
+     * stars brighter than white. {@code plain}: nothing is drawn on it; a copy with names or tracks gets no map (its
+     * lettering would shine with the stars), as its saved copy gets none.
+     */
+    private Bitmap shine(Bitmap b, boolean plain) {
+        if (b == null || !HdrScreen.supported()) return b;
+        if (plain && prefs.hdrPhotos()) {
+            if (!HdrScreen.shines(b)) HdrScreen.shine(b);
+        } else {
+            HdrScreen.plain(b);
+        }
+        return b;
     }
 
     /** The bitmap cut and turned as {@code f} says (the same one when f leaves it as it is, or doesn't fit it). */
@@ -4430,6 +4446,7 @@ final class SessionController {
         if (quick) {
             pp.patternCleanup = false;
             pp.streakCorridors = false;
+            pp.fringes = false;
         }
         Made m = new Made();
         m.o = pp.run(trails, progress);
@@ -4890,7 +4907,7 @@ final class SessionController {
             Bitmap t = Bitmap.createScaledBitmap(bmp, w, hh, true);
             java.io.FileOutputStream os = new java.io.FileOutputStream(new File(st.dir, "thumb.jpg"));
             try {
-                t.compress(Bitmap.CompressFormat.JPEG, 85, os);
+                HdrScreen.compressPlain(t, 85, os);
             } finally {
                 os.close();
                 if (t != bmp) t.recycle();
@@ -5056,7 +5073,7 @@ final class SessionController {
             }
             if (hash != null) hash[0] = pixelHash(bmp);
             if (d != null) TrackPainter.draw(bmp, o.analysis.cx0, o.analysis.cy0, factor, d.tracks, d.sky, d.showTracks, d.showLabels);
-            return writeJpeg(st, bmp, name, exif(o, sp, cw, ch), mo);
+            return writeJpeg(st, bmp, name, exif(o, sp, cw, ch), mo, d == null);
         } finally {
             bmp.recycle();
         }
@@ -5088,7 +5105,7 @@ final class SessionController {
         try {
             bmp.setPixels(out, 0, f.outW, 0, 0, f.outW, f.outH);
             out = null;
-            return writeJpeg(st, bmp, name, exif(o, sp, f.outW, f.outH), mo);
+            return writeJpeg(st, bmp, name, exif(o, sp, f.outW, f.outH), mo, d == null);
         } finally {
             bmp.recycle();
         }
@@ -5097,11 +5114,23 @@ final class SessionController {
     /**
      * {@link MediaSaver#saveJpeg}, with a line in {@code st}'s log when the photo had to be saved without its EXIF block;
      * with {@code mo}, the video ends on {@code bmp} and goes inside the photo (or, if it can't, the log says why).
+     * {@code plain}: nothing is drawn on the photo, so it's saved as an HDR photo (2.0) when the setting says so; a copy
+     * with names and tracks on it isn't, as its lettering would shine with the stars.
      */
-    private Uri writeJpeg(SessionStore st, Bitmap bmp, String name, MediaSaver.Exif ex, Motion mo) throws IOException {
+    private Uri writeJpeg(SessionStore st, Bitmap bmp, String name, MediaSaver.Exif ex, Motion mo, boolean plain) throws IOException {
         boolean withVideo = mo != null && finishVideo(st, mo, bmp);
-        Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex, withVideo ? mo.mp4 : null, withVideo ? mo.pv.stillUs() : 0);
+        boolean hdr = plain && prefs.hdrPhotos();
+        Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex, withVideo ? mo.mp4 : null, withVideo ? mo.pv.stillUs() : 0, hdr);
         String file = name + (withVideo && ex.videoFailed == null ? ".MP.jpg" : ".jpg");
+        if (ex.hdr != null) {
+            if (st != null) st.log(String.format(Locale.US, "decision: %s saved as an HDR photo: a screen with the headroom (this phone's, "
+                    + "in Google Photos) shows its stars up to %.0f times brighter than white, everything else shows it as before (%s)",
+                    file, Math.pow(2, HdrGain.MAX_STOPS), ex.hdr));
+        } else if (hdr && ex.hdrFailed != null) {
+            String s = "decision: " + file + " saved as an ordinary photo, not an HDR one: " + ex.hdrFailed;
+            if (st != null) st.log(s);
+            android.util.Log.w("NightSky", s);
+        }
         if (ex.failed != null) {
             String s = "decision: " + file + " saved without its EXIF block (the date, camera and exposure the gallery shows), "
                     + "as it couldn't be written: " + ex.failed;

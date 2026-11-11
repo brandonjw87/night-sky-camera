@@ -9,7 +9,9 @@ import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
 
+import com.brandon.nightsky.processing.HdrGain;
 import com.brandon.nightsky.processing.MotionPhoto;
+import com.brandon.nightsky.processing.UltraHdr;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -44,6 +46,10 @@ final class MediaSaver {
         String failed;
         /** Set by {@link #saveJpeg} when its video couldn't go in, so the photo was saved without it: why. */
         String videoFailed;
+        /** Set by {@link #saveJpeg} when the photo was saved as an HDR photo: what was brightened, for the log. */
+        String hdr;
+        /** Set by {@link #saveJpeg} when an HDR photo was asked for and it was saved as an ordinary one: why. */
+        String hdrFailed;
     }
 
     interface Writer {
@@ -64,8 +70,19 @@ final class MediaSaver {
      * plays it. If it can't go in, the photo is saved as name.jpg without it and {@code exif.videoFailed} says why.
      */
     static Uri saveJpeg(Context c, Bitmap bmp, String name, Exif exif, File video, long stillUs) throws IOException {
+        return saveJpeg(c, bmp, name, exif, video, stillUs, false);
+    }
+
+    /**
+     * {@link #saveJpeg(Context, Bitmap, String, Exif, File, long)}, as an HDR photo when {@code hdr} (2.0): the photo
+     * with a second, small picture behind it that tells a screen with the headroom how much brighter than white to show
+     * its stars ({@link HdrGain}, in Android's Ultra HDR layout: {@link UltraHdr}). Everything else shows the photo
+     * exactly as before. If that can't be made or written, the photo is saved as before and {@code exif.hdrFailed} says
+     * why; a photo with nothing bright enough to lift is saved as before too.
+     */
+    static Uri saveJpeg(Context c, Bitmap bmp, String name, Exif exif, File video, long stillUs, boolean hdr) throws IOException {
         File tmp = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".jpg");
-        File motion = null;
+        File gain = null, out = null;
         try {
             encode(bmp, tmp);
             if (exif != null) {
@@ -77,21 +94,55 @@ final class MediaSaver {
                     encode(bmp, tmp);
                 }
             }
+            String note = null;
+            if (hdr) {
+                try {
+                    gain = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".gain.jpg");
+                    note = gainMap(bmp, gain);
+                    if (note == null && exif != null) exif.hdrFailed = "nothing in it is bright enough to lift";
+                } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                    note = null;
+                    if (exif != null) exif.hdrFailed = why(e);
+                }
+            }
             File src = tmp;
             String display = name + ".jpg";
-            if (video != null) {
-                motion = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".MP.jpg");
+            out = new File(c.getCacheDir(), "save_" + System.nanoTime() + ".out.jpg");
+            boolean done = false;
+            // the photo with its map (and its video); failing that with its video alone; failing that with its map alone
+            if (note != null) {
+                String[] back = new String[1];
+                String err = writeHdr(tmp, gain, video, stillUs, out, back);
+                if (err == null) {
+                    done = true;
+                    src = out;
+                    if (video != null) display = name + ".MP.jpg";
+                    if (exif != null) exif.hdr = note + "; " + back[0];
+                } else if (exif != null) {
+                    exif.hdrFailed = err;
+                }
+            }
+            if (!done && video != null) {
                 try {
-                    OutputStream os = new BufferedOutputStream(new FileOutputStream(motion), 1 << 16);
+                    OutputStream os = new BufferedOutputStream(new FileOutputStream(out), 1 << 16);
                     try {
                         MotionPhoto.write(tmp, video, stillUs, os);
                     } finally {
                         os.close();
                     }
-                    src = motion;
+                    done = true;
+                    src = out;
                     display = name + ".MP.jpg";
                 } catch (IOException | RuntimeException e) {
-                    if (exif != null) exif.videoFailed = e.getMessage() != null ? e.getMessage() : e.toString();
+                    if (exif != null) exif.videoFailed = why(e);
+                    String[] back = new String[1];
+                    if (note != null && writeHdr(tmp, gain, null, 0, out, back) == null) {
+                        src = out;
+                        if (exif != null) {
+                            exif.hdr = note + "; " + back[0];
+                            exif.hdrFailed = null;
+                        }
+                    }
                 }
             }
             final File from = src;
@@ -106,7 +157,83 @@ final class MediaSaver {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
             //noinspection ResultOfMethodCallIgnored
-            if (motion != null) motion.delete();
+            if (gain != null) gain.delete();
+            //noinspection ResultOfMethodCallIgnored
+            if (out != null) out.delete();
+        }
+    }
+
+    private static String why(Throwable e) {
+        return e.getMessage() != null ? e.getMessage() : e.toString();
+    }
+
+    /**
+     * The photo, its map and its video (null: none) into {@code out}; null if written, or why not. Written, the file is
+     * handed to this phone's own decoder ({@link HdrScreen#readsBack}): if that reads photos' maps and not this one's,
+     * the file isn't kept (it's "why not"). {@code back[0]}: what the decoder said, for the log.
+     */
+    private static String writeHdr(File jpeg, File gain, File video, long stillUs, File out, String[] back) {
+        try {
+            OutputStream os = new BufferedOutputStream(new FileOutputStream(out), 1 << 16);
+            try {
+                UltraHdr.write(jpeg, gain, HdrGain.meta(), video, stillUs, os);
+            } finally {
+                os.close();
+            }
+        } catch (IOException | RuntimeException e) {
+            return why(e);
+        }
+        int read = HdrScreen.readsBack(out);
+        if (read == HdrScreen.NOT_READ) {
+            return "this phone's own decoder didn't find the brightness map in the file as it was written, so it's left out "
+                    + "rather than trusted";
+        }
+        back[0] = read == HdrScreen.READ ? "read back by this phone's own decoder before it was saved"
+                : "not read back, as this Android's decoder reads no brightness maps";
+        return null;
+    }
+
+    /** The map's JPEG quality: its values are smooth but for the stars, whose shapes it must keep. */
+    private static final int GAIN_QUALITY = 90;
+
+    /**
+     * Writes {@code bmp}'s brightness map to {@code f}, a JPEG as large as the photo (a star is a pixel or two wide: a
+     * smaller map would smear its lift over the sky around it). Returns the line for the log, or null when the photo
+     * has nothing to lift (and no file is written).
+     */
+    static String gainMap(Bitmap bmp, File f) throws IOException {
+        int w = bmp.getWidth(), h = bmp.getHeight();
+        HdrGain g = new HdrGain(w, h);
+        int rows = Math.max(1, Math.min(h, (1 << 18) / w));
+        int[] px = new int[w * rows];
+        for (int y = 0; y < h; y += rows) {
+            int n = Math.min(rows, h - y);
+            bmp.getPixels(px, 0, w, 0, y, w, n);
+            for (int j = 0; j < n; j++) g.measure(y + j, px, j * w);
+        }
+        // the encoder takes no single-channel bitmap: grey in all three, which costs the file next to nothing
+        Bitmap map = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        try {
+            byte[] line = new byte[w];
+            for (int y = 0; y < h; y += rows) {
+                int n = Math.min(rows, h - y);
+                bmp.getPixels(px, 0, w, 0, y, w, n);
+                for (int j = 0; j < n; j++) {
+                    g.row(y + j, px, j * w, line, 0);
+                    for (int x = 0, o = j * w; x < w; x++, o++) px[o] = 0xFF000000 | ((line[x] & 255) * 0x010101);
+                }
+                map.setPixels(px, 0, w, 0, y, w, n);
+            }
+            if (g.most() == 0) return null;
+            OutputStream os = new BufferedOutputStream(new FileOutputStream(f), 1 << 16);
+            try {
+                if (!map.compress(Bitmap.CompressFormat.JPEG, GAIN_QUALITY, os)) throw new IOException("JPEG encoding of the map failed");
+            } finally {
+                os.close();
+            }
+            return g.note();
+        } finally {
+            map.recycle();
         }
     }
 
@@ -168,7 +295,9 @@ final class MediaSaver {
     private static void encode(Bitmap bmp, File f) throws IOException {
         OutputStream os = new BufferedOutputStream(new FileOutputStream(f), 1 << 16);
         try {
-            if (!bmp.compress(Bitmap.CompressFormat.JPEG, 95, os)) throw new IOException("JPEG encoding failed");
+            // an ordinary JPEG even when the bitmap carries a brightness map for the screen: the file's own map is
+            // written by this class
+            if (!HdrScreen.compressPlain(bmp, 95, os)) throw new IOException("JPEG encoding failed");
         } finally {
             os.close();
         }

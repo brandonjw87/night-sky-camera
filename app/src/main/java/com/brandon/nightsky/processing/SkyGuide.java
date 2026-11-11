@@ -14,7 +14,7 @@ import java.util.Map;
  * the planets and the Moon, the Milky Way, and the best-known clusters, nebulae and galaxies. Everything named
  * is placed in the picture by the same solution that matched the stars, so nothing is guessed. Without a
  * solution but with the place and the time, it says what was straight up instead. With a solution it also places the
- * constellations' figures (1.10), the lines between their stars, for drawing on the photo with the names.
+ * constellations' figures (2.0), the lines between their stars, for drawing on the photo with the names.
  */
 public final class SkyGuide {
     /** One thing named, and where it is. */
@@ -30,7 +30,7 @@ public final class SkyGuide {
         public double share = Double.NaN;
         /**
          * Constellations: where the name is drawn when that isn't (x, y), the middle of its part of the picture: inside its
-         * figure (1.10). NaN for (x, y).
+         * figure (2.0). NaN for (x, y).
          */
         public double lx = Double.NaN, ly = Double.NaN;
 
@@ -41,7 +41,7 @@ public final class SkyGuide {
     }
 
     /**
-     * A line of a constellation's figure in the picture (1.10), from one of its stars to the next, or to where it leaves
+     * A line of a constellation's figure in the picture (2.0), from one of its stars to the next, or to where it leaves
      * the picture; bent as the lens bends it.
      */
     public static final class Line {
@@ -62,7 +62,7 @@ public final class SkyGuide {
 
     public final List<String> lines = new ArrayList<String>();
     public final List<Item> items = new ArrayList<Item>();
-    /** The constellations' figures in the picture (1.10); empty when the picture wasn't placed on the sky. */
+    /** The constellations' figures in the picture (2.0); empty when the picture wasn't placed on the sky. */
     public final List<Line> figures = new ArrayList<Line>();
     /** The constellation at the middle of the picture (full name), "" if unknown. */
     public String centre = "";

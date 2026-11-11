@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.10.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.0.
 
 ## What it does
 
@@ -31,6 +31,12 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 1.10
 - **The Milky Way brought out.** The sky's own detail under the grain, the Milky Way's dark lanes and star
   clouds, is made stronger, and never darker than the plain sky; **Sky detail** in the edit screen sets how much.
   The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture.
+- **Sharp stars without coloured edges.** How big the lens and the air drew the stars is measured in each photo,
+  on its own stars, and part of that blur is taken back out: stars come out smaller and brighter in the middle,
+  with exactly the light they had. The red and blue edges a lens gives the stars towards the corners are measured
+  on the stars too, and taken out as the frames are stacked. **Star sharpness** in the edit screen sets how much.
+- **HDR photos.** Photos are saved as Ultra HDR photos: on this phone's screen, in Google Photos and in the app,
+  the stars shine up to four times brighter than white. Anywhere else they look exactly as before.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
   (one no satellite could have left). Meteors are taken out with the rest, or kept in the photo with **Keep
   meteors**. Each one caught is listed with its time, its shower, how bright it was and where it crossed, and the
@@ -118,7 +124,8 @@ Install it with Google's USB tool instead:
 7. Pick it up. The photo develops in a minute or two and appears on the screen. Pinch to zoom in on the stars
    and drag the brightness slider.
 
-The app's screen is dim red so it doesn't ruin your night vision.
+The app's screen is dim red so it doesn't ruin your night vision. The two-second film it opens with (when opened
+from its icon; a tap skips it) can be shown in dim red too, or turned off: **Advanced > The opening film**.
 
 ## After the photo
 
@@ -170,9 +177,10 @@ Tap **Edit** under a photo. The picture changes as you go; press and hold **Comp
 was.
 
 - **Look:** stretch (1 to 10), exposure (-2 to +2), black point, colour, sky detail (0 to 200%: how much the
-  Milky Way's lanes and star clouds are brought out), star glow (0 to 200%: a soft glow on the brightest stars in
-  their own colours; none as developed, and none on star trails), sky brightness, and a natural, punchy or linear
-  look. **As developed** puts them back.
+  Milky Way's lanes and star clouds are brought out), star sharpness (0 to 140%: how far each star's light is
+  drawn back in towards its middle; 100% as developed), star glow (0 to 200%: a soft glow on the brightest stars
+  in their own colours; none as developed), sky brightness, and a natural, punchy or linear look. Star trails
+  photos have neither star sharpness nor star glow. **As developed** puts them back.
 - **Crop:** 4:3, 3:2, 16:9 or 1:1, and **North up** (when the app recognised the sky).
 - **Frames:** each frame with its time and score. Drag **From** and **To** to trim the start or the end, tap a
   frame and **Leave out** to drop it (a plane, a bump), or make it the **Reference** the others line up on.
@@ -287,6 +295,11 @@ tap **Stop the viewer** on the phone.
   developing, the frames stay on the phone (up to 20 GB in all, set under **Advanced > Sessions and storage**)
   so you can edit, merge and add minutes later; the oldest sessions' frames go first, and the photos always
   stay. Each session's stacked picture takes about 75 MB more.
+- Photos are saved as HDR photos (Ultra HDR): a screen and an app that show HDR, like this phone's and Google
+  Photos, show their stars brighter than white; everything else shows the photo as before. Each file is read
+  back by the phone's own decoder before it's saved, and saved as an ordinary photo if that fails. To save
+  ordinary photos: **Advanced > HDR photos**. A copy with names or satellite tracks drawn on it (**Save this
+  copy**) is an ordinary photo.
 - What goes online: satellite orbits from CelesTrak (nothing is sent) and the cloud forecast from Open-Meteo
   (your place rounded to about 10 km). Both can be turned off under Advanced. Nothing else leaves the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
@@ -294,6 +307,10 @@ tap **Stop the viewer** on the phone.
   couldn't run ends on).
 
 ## Credits
+
+The opening film's lettering is set in [Inter](https://rsms.me/inter/) by Rasmus Andersson, used under the SIL
+Open Font License 1.1 (the film holds only pictures of the letters, not the font), and the film is rendered with
+[Blender](https://www.blender.org/). How it's made: [intro/README.md](intro/README.md).
 
 The stars come from the Yale Bright Star Catalogue. The constellations' figures and where their names go come from
 d3-celestial (https://github.com/ofrohn/d3-celestial), under its licence:
@@ -348,7 +365,9 @@ app/src/main/java/com/brandon/nightsky/
     FrameStrip          the frame strip on the report and edit screens
     ZoomImageView       pinch-zoom picture with taps, painting and overlays
     TrackPainter        satellite tracks, star names and constellation figures drawn on the photo
-    MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo)
+    MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo, as an HDR photo)
+    HdrScreen           HDR photos on this phone's screen, and its decoder reading a saved one back
+    IntroView           the opening film (res/raw/intro.mp4) over the first screen
     Mp4Writer           the photo's video: H.264 through the phone's encoder (MediaCodec) into an MP4
     RemoteHost          the remote viewer: what the web page shows and the commands it can send
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
@@ -359,6 +378,7 @@ app/src/main/java/com/brandon/nightsky/
         SensorPattern   fixed-pattern noise and banding
         LocalWeights    per-region normalisation and transparency (partly cloudy nights)
         SharpStacker    Bayer drizzle stack with outlier rejection (satellites, planes)
+        ChromaShift     the lens's colour fringes, measured on the stack's stars
         TrailsStacker   star trails with a clean background
         PostProcessor   final stack, gradient removal, colour, noise analysis
         ColorCalibration white balance from catalogue stars' B-V colours
@@ -377,16 +397,20 @@ app/src/main/java/com/brandon/nightsky/
         Master, Recipe  kept stacks and the recipes that make every render
         MergeProcessor  nights merged into one stack
         EdgeMask, GroundMap  the painted foreground and keeping the ground still
-        Denoise         the sky's noise taken out, the stars found and set aside first
+        Denoise         the sky's noise taken out, the stars found and set aside first; the stars sharpened
         Renderer        colour and tone (asinh stretch, looks, black point, saturation)
         StarGlow        the brightest stars' glow: found in the picture, made bright and coloured from the catalogue
         PhotoVideo      the photo's video: the frames adding up again (or the trails drawing), rendered as the photo
         MotionPhoto     the video put inside the JPEG as a Motion Photo, and read back
+        HdrGain, UltraHdr  how much brighter than white the stars may show; the Ultra HDR file that says so
         Framing         crops and north up
         DngWriter       16-bit linear DNG
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
+intro/                  the scripts that made the opening film (Blender, Python; see intro/README.md)
 tools/build_apk.sh      builds the APK without Gradle
+tools/gate.sh           every simulator test and the regression nights in one go, on a commit
+tools/memprobe.sh       the Java heap a full-size session needs, measured under a phone-sized heap
 tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright Star Catalogue
 ```
 
@@ -419,11 +443,14 @@ The tests in `sim/` each print `ALL PASS` when they pass: `EditTest`, `SettingsT
 `PlanTest`, `ColorTest`, `SatPlanTest`, `PreflightTest`, `ClearSkyTest`, `CaptureReportTest`, `CheckTest`, `DenoiseTest`,
 `MeteorTest`, `DeepLinesTest`, `MotionPhotoTest`, `HotPixelTest`, `DetailTest`, `FiguresTest`, `StarGlowTest` and
 `SatTest` (with the SGP4 verification files) run on their own (the four before `SatTest` can take a folder for
-their pictures);
+their pictures); `SharpTest` (sharper stars), `CaTest` (colour fringes) and `UltraHdrTest` (HDR photos) take an
+output folder;
 `ReportTest`, `SatSessionTest`, `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder,
 for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `PhotoVideoTest` takes an
 output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the path, also writes its videos as MP4.
 `MeteorLimit` (an output folder, then the scale) measures how faint a meteor the camera catches.
+`tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
+another version's.
 
 ### The app off the phone
 
@@ -431,4 +458,5 @@ output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the 
 desktop JVM with Robolectric, without Gradle or Google's Maven repository. `robo/setup.sh` fetches what it needs
 from Maven Central once; then `robo/run.sh Night base,stall` runs whole sessions through the real capture code
 with a simulated camera that renders the real stars and can stop, stall, fail or be taken away, and
-`robo/run.sh Monkey` taps every control on every screen. [robo/README.md](robo/README.md) lists every scenario.
+`robo/run.sh Monkey` taps every control on every screen, and `robo/run.sh Intro` checks the opening film.
+[robo/README.md](robo/README.md) lists every scenario.

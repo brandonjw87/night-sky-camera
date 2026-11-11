@@ -186,6 +186,8 @@ public final class MergeProcessor {
     /** Bytes the stack may keep per-sample buffers in; 0 for the fixed {@link PostProcessor#STACK_MEMORY}. */
     public long stackMemory;
     public boolean colorCalibration = true;
+    /** Whether the lens's colour fringes are measured on the merged stack and taken out ({@link ChromaShift}). */
+    public boolean fringes = true;
     /** Outlier rejection as the base session chose it; AUTO picks per pixel by the frames there. */
     public Rejection.Method rejection = Rejection.Method.AUTO;
 
@@ -381,6 +383,25 @@ public final class MergeProcessor {
         st.noise = null;
         out.noise = nr;
         out.noiseUnit = plans.get(single).unit;
+        // the lens's colour fringes (2.0): measured on this stack's stars and, where they're worth it, taken out by a
+        // second stack (every night is the same lens)
+        st.chroma = PostProcessor.measureFringes(out, sr.image, refStars, fringes, log);
+        if (st.chroma != null) {
+            st.into = sr.image;
+            st.label = "Stacking " + merged + " sessions again without the lens's colour fringes";
+            try {
+                sr = st.stack(plans, part(progress, 0.5f, 0.5f));
+            } catch (OutOfMemoryError e) {
+                // the first stack was being overwritten: make it again as it was
+                st.chroma = null;
+                out.fringes = null;
+                log.log("colour fringes: ran out of memory taking them out; stacked again as before");
+                sr = st.stack(plans, part(progress, 0.5f, 0.5f));
+            } finally {
+                st.into = null;
+            }
+            if (st.chroma != null) PostProcessor.fringesTakenOut(out, sr.image, refStars, log);
+        }
 
         // 6) the reports, the picture's analysis and its colour
         long rej = 0, smp = 0;

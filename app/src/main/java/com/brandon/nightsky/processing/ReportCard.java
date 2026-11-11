@@ -191,6 +191,7 @@ public final class ReportCard {
             r.alignment();
             r.trails();
             r.colour();
+            r.fringes();
         }
         Collections.sort(r.problems, new Comparator<Problem>() {
             @Override
@@ -1035,6 +1036,14 @@ public final class ReportCard {
         } else {
             notes.add("Colours use the camera's own balance: " + c.reason + ".");
         }
+    }
+
+    /** The lens's colour fringes (2.0), when they were taken out: how large they were. */
+    private void fringes() {
+        ChromaShift.Result f = in.out.fringes;
+        if (f == null || f.model == null || in.out.fringesAfter == null) return;
+        notes.add(String.format(Locale.US, "The lens's colour fringes were taken out: towards the corners it puts a star's %s than "
+                + "its green (measured on %d stars).", f.shifts(true), f.measured));
     }
 
     // ------------------------------------------------------------------------------------------------

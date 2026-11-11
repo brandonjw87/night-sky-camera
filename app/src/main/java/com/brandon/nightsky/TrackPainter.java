@@ -15,7 +15,7 @@ import java.util.List;
 /**
  * Draws on a copy of the picture: satellites' tracks as dashed lines with their names (the ones the picture
  * confirmed bright, the ones only predicted faint), and the names of the stars, planets and constellations, with the
- * constellations' figures (1.10).
+ * constellations' figures (2.0).
  */
 final class TrackPainter {
     private TrackPainter() {}

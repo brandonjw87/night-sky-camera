@@ -147,6 +147,15 @@ public final class SharpStacker {
      * still count for the coverage (the crop). Null: every sample counts.
      */
     public GroundMap ground;
+    /**
+     * The lens's colour fringes to take out (2.0, {@link ChromaShift}): red's and blue's photosites are read where the
+     * lens put that colour's light, a fraction of a pixel out or in from green's along the line from the frame's middle,
+     * so the three colours of every star land on each other. Null: all three are read at the same place.
+     */
+    public ChromaShift.Model chroma;
+    /** {@link #chroma} for the inner loops: whether there is one, its middle, 1 / its half diagonal squared, a and b per colour. */
+    private boolean ca;
+    private float caX, caY, caInvR2, caAr, caBr, caAb, caBb;
 
     /** Keeping every sample needs bands at least this tall, or re-reading the frames' overlapping rows costs too much. */
     static final int MIN_KEEP_ROWS = 24;
@@ -234,6 +243,18 @@ public final class SharpStacker {
 
     public Result stack(final List<Plan> plans, final Progress progress) throws IOException {
         final int nf = plans.size();
+        ChromaShift.Model cm = chroma;
+        // a shift the loaded rows' margin and the frame's edge allow for (a lens's is a fraction of this)
+        ca = cm != null && cm.largest() > 0 && cm.largest() <= 2.5;
+        if (ca) {
+            caX = cm.cx;
+            caY = cm.cy;
+            caInvR2 = 1f / (cm.halfDiagonal * cm.halfDiagonal);
+            caAr = cm.aR;
+            caBr = cm.bR;
+            caAb = cm.aB;
+            caBb = cm.bB;
+        }
         final double[] nodeB = WarpGrid.nodeBearings(model, W, H, STEP);
         final WarpGrid[] grids = new WarpGrid[nf];
         for (int f = 0; f < nf; f++) grids[f] = WarpGrid.build(model, nodeB, W, H, STEP, plans.get(f).R);
@@ -611,7 +632,17 @@ public final class SharpStacker {
      */
     private boolean sampleRgb(float[] d, int rs, float mx, float my, float[] t, float[] rgb, float[] thr, float[] nz) {
         boolean clip = false;
-        bilinear(d, rs, pR, mx, my, t);
+        float bx = mx, by = my;
+        if (ca) {
+            // red and blue where the lens put them (ChromaShift.Model)
+            float ux = mx - caX, uy = my - caY, q = (ux * ux + uy * uy) * caInvR2;
+            float kr = caAr + caBr * q, kb = caAb + caBb * q;
+            bilinear(d, rs, pR, mx + ux * kr, my + uy * kr, t);
+            bx += ux * kb;
+            by += uy * kb;
+        } else {
+            bilinear(d, rs, pR, mx, my, t);
+        }
         rgb[0] = t[0];
         float vr = t[2];
         if (thr != null && t[1] >= thr[pR]) clip = true;
@@ -625,7 +656,7 @@ public final class SharpStacker {
             if (thr != null && t[1] >= thr[pG2]) clip = true;
         }
         rgb[1] = g;
-        bilinear(d, rs, pB, mx, my, t);
+        bilinear(d, rs, pB, bx, by, t);
         rgb[2] = t[0];
         if (thr != null && t[1] >= thr[pB]) clip = true;
         if (nz != null) {
@@ -663,11 +694,20 @@ public final class SharpStacker {
      * it in {@code nz}, without sampling.
      */
     private void noiseFactors(float mx, float my, float[] nz) {
-        float vr = planeVariance(pR, mx, my), vg = planeVariance(pG1, mx, my);
+        float rx = mx, ry = my, bx = mx, by = my;
+        if (ca) {
+            float ux = mx - caX, uy = my - caY, q = (ux * ux + uy * uy) * caInvR2;
+            float kr = caAr + caBr * q, kb = caAb + caBb * q;
+            rx += ux * kr;
+            ry += uy * kr;
+            bx += ux * kb;
+            by += uy * kb;
+        }
+        float vr = planeVariance(pR, rx, ry), vg = planeVariance(pG1, mx, my);
         if (pG2 != pG1) vg = 0.25f * (vg + planeVariance(pG2, mx, my));
         nz[0] = (float) Math.sqrt(vr);
         nz[1] = (float) Math.sqrt(vg);
-        nz[2] = (float) Math.sqrt(planeVariance(pB, mx, my));
+        nz[2] = (float) Math.sqrt(planeVariance(pB, bx, by));
     }
 
     private static float planeVariance(int p, float mx, float my) {
@@ -681,7 +721,16 @@ public final class SharpStacker {
      * around the nearest photosite of that colour with the (pixel-sized) output pixel.
      */
     private void drizzleRgb(float[] d, int rs, float mx, float my, float[] t, float[] dz) {
-        nearest(d, rs, pR, mx, my, t);
+        float bx = mx, by = my;
+        if (ca) {
+            float ux = mx - caX, uy = my - caY, q = (ux * ux + uy * uy) * caInvR2;
+            float kr = caAr + caBr * q, kb = caAb + caBb * q;
+            nearest(d, rs, pR, mx + ux * kr, my + uy * kr, t);
+            bx += ux * kb;
+            by += uy * kb;
+        } else {
+            nearest(d, rs, pR, mx, my, t);
+        }
         dz[0] = t[0] * t[1];
         dz[3] = t[1];
         nearest(d, rs, pG1, mx, my, t);
@@ -692,7 +741,7 @@ public final class SharpStacker {
             dz[1] += t[0] * t[1];
             dz[4] += t[1];
         }
-        nearest(d, rs, pB, mx, my, t);
+        nearest(d, rs, pB, bx, by, t);
         dz[2] = t[0] * t[1];
         dz[5] = t[1];
     }

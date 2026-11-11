@@ -5,7 +5,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * The constellations' figures (1.10): the lines between their stars that star charts draw, so a constellation's shape
+ * The constellations' figures (2.0): the lines between their stars that star charts draw, so a constellation's shape
  * can be found among the photo's thousands of stars, and a point inside each figure for its name. From the
  * constellation lines and name positions of d3-celestial (github.com/ofrohn/d3-celestial, data/constellations.lines.json
  * and constellations.json), rounded to a hundredth of a degree; Serpens' two parts are one figure here.

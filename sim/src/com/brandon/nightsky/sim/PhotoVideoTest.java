@@ -282,7 +282,7 @@ public final class PhotoVideoTest {
                         && meanAbs(cf.get(build - 1), cf.get(vf.frameCount() - 1)) < 7,
                 String.format(Locale.US, "%dx%d, last picture %.2f levels from the photo", vf.width(), vf.height(),
                         meanAbs(cf.get(build - 1), cf.get(vf.frameCount() - 1))));
-        // with a strong star glow (1.10): the frames glow as the photo does, from the first one on
+        // with a strong star glow (2.0): the frames glow as the photo does, from the first one on
         Renderer.Params pg = new Renderer.Params();
         pg.glow = 2f;
         PhotoVideo vg = PhotoVideo.of(o.video, o.image, o.analysis, pg, "full", null, PhotoVideo.MAX_SIDE);

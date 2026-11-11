@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Star glow (1.10): a soft glow around the brightest stars, as a soft-focus filter spreads a little of each light around
+ * Star glow (2.0): a soft glow around the brightest stars, as a soft-focus filter spreads a little of each light around
  * it. Stacked, the bright stars come out hardly bigger than the thousands of faint ones, and the constellations' shapes
  * are lost among them; with the glow the brightest stand out in their own colours, a bigger glow the brighter the star,
  * as the eye picks them out of the sky.

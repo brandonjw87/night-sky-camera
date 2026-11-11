@@ -74,7 +74,7 @@ public final class Master {
         public CameraModel model;
         public double[] solutionR;
         public double solutionJd = Double.NaN;
-        /** The lens model the plate solution refined for itself, when it did (1.10; null: {@link #model}). */
+        /** The lens model the plate solution refined for itself, when it did (2.0; null: {@link #model}). */
         public CameraModel solutionModel;
 
         /** The plate solution's mapping of the picture to the sky, or null if it wasn't solved. */
@@ -143,7 +143,10 @@ public final class Master {
     public static Renderer.Analysis analyze(RgbImage img, SensorSpec colourSpec, boolean trails) {
         Renderer.Analysis a = Renderer.analyze(img, colourSpec);
         // star trails: colour over a longer window, as the trails' colour flickers with the sampling phase
-        if (trails) a.colorSigma = 3f;
+        if (trails) {
+            a.colorSigma = 3f;
+            a.trails = true;
+        }
         return a;
     }
 

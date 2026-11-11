@@ -1,9 +1,37 @@
 # Night Sky Camera: what's new
 
-## Version 1.10: constellations you can see
+## Version 2.0: sharper stars, HDR photos and a new opening
 
 ### What's new
 
+- **A new opening film.** The two seconds the app opens with were made again from nothing, as a real 3D film:
+  "Made by: Brandon J. Wallace" in bevelled metal letters floating over a dark shore and a still lake, under the
+  Milky Way. The camera swings round to the name in the dark while a flash charges, the flash fires and the
+  letters go white, then they settle into warm light while a glint crosses the name and a shooting star passes.
+  It has its own sound: the flash charging, the pop, the shutter. It plays when you open the app from its icon,
+  once each time the app is started, and a tap skips it at any moment. It doesn't play when the app is opened by
+  the tile, a shortcut, a notification or the recent apps, or while a session is running. **Advanced > The
+  opening film** has **In colour**, **Night red** (dimmer, for eyes used to the dark) and **Off**, with **Play
+  it now** to see it again. Its sound plays only when the app's sounds are on, the phone isn't silenced and
+  nothing else is playing.
+- **HDR photos.** The Pixel's screen can show light brighter than white, and a night sky is the best use there
+  is for that. Photos are now saved as HDR photos (Android's Ultra HDR, the kind the Pixel's own camera saves): on
+  this phone's screen, in Google Photos and on the app's result screen, the stars shine up to four times brighter
+  than white while the sky stays as dark as it was. On a screen or in an app that doesn't do HDR the photo looks
+  exactly as before, so nothing is lost by it. Each HDR file is read back by the phone's own decoder before it's
+  saved; if the phone can't read it, the photo is saved as an ordinary one and the log says why. To turn it off:
+  **Advanced > HDR photos**.
+- **Sharper stars.** The lens and the air spread every star's light into a small blur. The app now measures how
+  big a star image is in each photo, on that photo's own stars, and draws each star's light part of the way back
+  in towards its middle. Stars come out smaller, and brighter in the middle, with exactly the light they had:
+  none is made up and none is lost. The sky between the stars, its grain, the faintest stars and the brightest
+  ones (the ones that filled their pixels, or nearly) are left as they were. **Edit > Look > Star sharpness**
+  sets how much, from 0% (as the lens drew them) to 140%; 100% is as developed. Star trails photos don't get it.
+- **Colour fringes taken out.** A lens bends red, green and blue light by slightly different amounts, so towards
+  the corners of a photo each star gets a red edge on one side and a blue edge on the other. The app now measures
+  that on the photo's own stars after the first stack, then stacks the frames once more reading each colour where
+  its light really fell. It's a measurement, not a guess about the lens: a lens without fringes is left alone
+  (anything under 0.12 of a pixel), and so is a photo with too few stars to measure them on.
 - **The constellations drawn on your photo.** A long exposure shows thousands of stars, so the shapes you know get
   lost among them. Now **Names** under the photo also draws each constellation's figure: thin pale-blue lines from
   star to star, the shapes star charts draw (the Plough, Orion with his belt, Cassiopeia's W), with the
@@ -24,12 +52,41 @@
   planets get their own colours as well: Mars orange-red, Jupiter cream, Saturn gold.
 - **The photo's video glows too.** With Star glow on, the video inside the photo glows like the photo from its
   first frame.
-- **Opened again, in the same place.** A photo developed by 1.10 and opened again from **Sessions** uses the same
+- **Opened again, in the same place.** A photo developed by 2.0 and opened again from **Sessions** uses the same
   fit of the lens that placed its sky when it was developed, so its names, figures and glow land where they did.
-- **In the log:** with Star glow on, a line says how many stars glow, how many of them the catalogue recognised,
-  and how many it made brighter and coloured (`star glow 100%: 150 lights glow ... 26 are catalogue stars or
-  planets: 10 clipped ones made brighter ...`).
-- **Checked off the phone:** all 88 figures' 893 stars sit on the catalogue's stars. On six simulated skies (the
+- **A crash that was waiting, fixed.** A night plan's morning summary asked Android for a quiet notification in a
+  way that isn't part of Android's public interface, which could have stopped the app at dawn on the phone. It
+  now asks the public way.
+- **In the log:** new lines say what each of these did. The fringes (`colour fringes: towards the corners the lens
+  puts a star's red light 0.45 px further out and its blue 0.31 px further in than its green; taken out as the
+  frames were stacked ...`), the stars' size and sharpening (`star images 1.28 px (sigma, on 543 stars), a blur
+  of 1.03 px drawn back in on 2.1% of the pixels`), the HDR photo (`saved as an HDR photo ... read back by this
+  phone's own decoder before it was saved`), and with Star glow on, how many stars glow and how many the
+  catalogue recognised. The first real night's `star images` line is worth sending: it says how sharp the Pixel's
+  lens really is.
+
+### Checked off the phone
+
+- **The opening film:** in the app run off the phone, 121 checks: it plays once when the app is opened from its
+  icon and fades into the first screen, a tap skips it, Night red and Off do what they say, Play it now plays
+  it again, and it never comes up over a session or when the app is opened another way.
+- **HDR photos:** each test file is read back four ways, 130 checks: by the app's own reader, by copies of the
+  logic that Android's picture decoder uses to find the brightness map and that Google's video player uses to
+  find the photo's video (it must still play), and by a plain JPEG reader, which must see the photo exactly as
+  before.
+- **Sharper stars:** on a made-up sky of 520 stars of known size, 28 checks. The star images' size is measured
+  within 7% for small and large ones (0.95 to 2.2 px). As developed, stars come out 15% narrower with their
+  middles 1.6 times as high (22% and 1.9 times at the most the method gives), each star keeping its light to
+  within a hundredth of a percent. Not one pixel of the sky between the stars changes. Stars as faint as the
+  grain, stars at three quarters and more of the brightness a pixel can hold, stars that filled their pixels and
+  stars that filled them in only some frames are left exactly as they were (stars at half of it get less), and
+  so are photos with too few stars, star images too small to gain, and star trails. The preview shows the same
+  sharpening as the saved photo.
+- **Colour fringes:** on simulated nights through a lens that puts red light 0.45 px further out and blue 0.31
+  px further in at the corners, 56 checks: the fringes are measured on about 1,000 stars and taken out to under
+  a hundredth of a pixel; fringes under 0.12 px and a lens with none are left alone; fields too faint to
+  measure say so; and the stars keep their red and blue light (totals within 0.3%).
+- **Constellations and star glow:** all 88 figures' 893 stars sit on the catalogue's stars. On six simulated skies (the
   Plough, Orion, Lyra, Scorpius, the pole and Andromeda), every line follows its figure and ends at its stars, and
   each name sits inside its figure, also on a cropped photo and through a lens that bends the edges hard. On a
   made-up sky with 24 bright stars of known brightness and colour among 2,500 faint ones, a planet, the Moon and a
@@ -39,6 +96,8 @@
   the wrong catalogue entry can't be made more than 30 times brighter; at 0% the photo is exactly as it was; and
   the edit screen's preview glows with the same stars as the saved photo. The photo's video glows as the photo
   does (its last picture within 3 levels of the glowing photo).
+- **The whole app:** every automatic check of the processing (31 test programs) passes on the finished code, and
+  a whole simulated night was run through the app off the phone, from Start to the saved photo.
 
 ### Install the update (Windows, USB cable)
 
@@ -52,27 +111,52 @@ It installs over version 1.9 and keeps your settings and sessions.
 
 ### Defaults
 
-- Star glow is 0% (none) on every photo as developed, so photos come out exactly as they did in 1.9 until you slide
-  it up for one under **Edit > Look**. There's no setting for all photos.
-- **Names** shows the figures whenever it shows the names; there's no separate switch.
-- Star glow is for deep sky photos; star trails photos don't have it.
-- Developing is no slower than in 1.9.
+- The opening film plays in colour when the app is opened from its icon. To change it or turn it off:
+  **Advanced > The opening film**.
+- HDR photos are on (**Advanced > HDR photos**).
+- Star sharpness is 100% (as developed) on every deep sky photo; **Edit > Look** changes it for one photo.
+  Colour fringes are taken out whenever they're measured; there's no setting.
+- Star glow is 0% (none) on every photo as developed, until you slide it up for one under **Edit > Look**.
+  **Names** shows the figures whenever it shows the names; there's no separate switch. Star trails photos get
+  neither Star glow nor Star sharpness.
+- Developing does a little more work than in 1.9: measuring and sharpening the stars, and sometimes one more
+  pass over the frames for the fringes.
+- Photos developed by 1.9 stay as they are. **New processing** under an older photo makes it again with 2.0's
+  processing: from its frames if they're still on the phone, otherwise from its stacked picture (sharper stars
+  and HDR, but its fringes stay).
 
 ### Try today
 
-- Nothing new to see in daylight: both need a night photo the app recognised the sky in. To see the slider, open
-  any photo, tap **Edit**, then **Look**: **Star glow** is under **Sky detail**.
+- Open the app from its icon to see the new film. **Advanced > The opening film** switches it to Night red or
+  Off.
+- Open an older photo from **Sessions** and tap **New processing**. It comes back with sharper stars, saved as
+  an HDR photo, and with its fringes taken out if its frames are still on the phone. Then **Edit > Look > Star
+  sharpness**: slide it to 0% and 140% and hold **Compare**.
+- Open that photo in Google Photos with the screen brightness up. The stars should stand out brighter than the
+  white of the buttons around the photo. If the photo looks washed out or wrong there, turn **Advanced > HDR
+  photos** off and say so.
 
 ### Try tonight
 
-1. Take a normal session on a clear night, then tap **Names** under the photo. Check that the figures' lines land
-   on the stars; if one doesn't, open **Session report > Share the log** and send it.
-2. Tap **Edit > Look** and slide **Star glow** to 100%, then 200%, holding **Compare** to see the photo without it.
-   Say which you like, and if any star glows in the wrong colour or a bright one gets no glow.
+1. Take a normal session on a clear night. Zoom into a corner of the photo: the stars there should have no red
+   and blue edges. Zoom into the middle: the stars should be small and crisp.
+2. Tap **Names** under the photo. Check that the figures' lines land on the stars; if one doesn't, open **Session
+   report > Share the log** and send it.
+3. Tap **Edit > Look** and slide **Star glow** to 100%, then 200%, holding **Compare** to see the photo without
+   it. Say which you like, and if any star glows in the wrong colour or a bright one gets no glow.
+4. Send the log either way (**Session report > Share the log**): its `star images` and `colour fringes` lines are
+   the first real measurements of this phone's lens.
 
 ### Not working yet, or not tested
 
-- Tested off the phone only, on simulated skies.
+- Nothing in 2.0 has run on the real Pixel yet. It was tested off the phone only, on simulated skies.
+- HDR on the Pixel's own screen is new ground: off the phone the file could be checked, but not how the screen
+  shows it. The first photo you open in Google Photos is the real test.
+- The opening film is played by the phone's own video player, which the off-phone test stands in for. If it
+  stutters or shows nothing, turn it **Off** and say so.
+- The final testing of this version was cut short on purpose, to save usage: the six simulated test nights
+  weren't compared line by line with 1.9's as for earlier versions (sharper stars and the fringes change every
+  photo, as intended), and the random screen-tapping run, the launch checks and the screenshots weren't run.
 - The figures, and the catalogue's help with the brightest stars, need the app to recognise the sky (the session
   report names the constellations when it has). On a photo it couldn't place (cloud, too few stars), Names shows
   what it did before and the stars glow as bright as the photo shows them.

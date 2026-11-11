@@ -131,6 +131,8 @@ public class Night {
         report();
         Monkey.say("  result screen: " + labels());
         videoCheck(true, null);
+        hdrCheck(true);
+        hdrFallbackCheck();
         namesCheck();
     }
 
@@ -1253,8 +1255,12 @@ public class Night {
         } else {
             Monkey.say(String.format(Locale.US, "    inside: the photo's %d bytes, then the video at %d (%d bytes); the photo's frame at %d us",
                     info.imageEnd, info.videoStart, info.videoLength, info.stillUs));
-            if (info.videoLength != mp4.length || info.videoStart != info.imageEnd || info.videoStart + info.videoLength != all.length) {
-                Monkey.problem(scenario + ": the video isn't right after the photo, to the end of the file");
+            // an HDR photo (2.0) has its brightness map between the photo and the video
+            com.brandon.nightsky.processing.UltraHdr.Info hdr = com.brandon.nightsky.processing.UltraHdr.read(photo);
+            long after = hdr != null ? hdr.gainEnd : info.imageEnd;
+            if (info.videoLength != mp4.length || info.videoStart != after || info.videoStart + info.videoLength != all.length) {
+                Monkey.problem(scenario + ": the video isn't right after the photo" + (hdr != null ? " and its brightness map" : "")
+                        + ", to the end of the file");
             } else if (!Arrays.equals(Arrays.copyOfRange(all, (int) info.videoStart, all.length), mp4)) {
                 Monkey.problem(scenario + ": the video inside isn't the one kept with the session");
             }
@@ -1301,7 +1307,7 @@ public class Night {
     }
 
     /**
-     * Names on the result (1.10): the report places the constellations' figures; Names draws them on the photo with the
+     * Names on the result (2.0): the report places the constellations' figures; Names draws them on the photo with the
      * names (the picture changes; it's written to names.png to look at) and takes them off again; Save this copy saves a
      * copy with them that decodes, the photo's own size.
      */
@@ -1329,6 +1335,7 @@ public class Night {
         Monkey.say(String.format(Locale.US, "  Names on: %d pixels of %dx%d drawn on", changed, named != null ? named.getWidth() : 0,
                 named != null ? named.getHeight() : 0));
         if (changed < 2000) Monkey.problem(scenario + ": Names drew nothing on the photo (" + changed + " pixels changed)");
+        if (named != null && named.hasGainmap()) Monkey.problem(scenario + ": the picture with names on it still has its brightness map");
         if (named != null) {
             java.io.OutputStream os = new java.io.FileOutputStream(new File(Monkey.out, "names.png"));
             named.compress(Bitmap.CompressFormat.PNG, 100, os);
@@ -1347,6 +1354,12 @@ public class Night {
             Bitmap copy = decode(r.labelled);
             Monkey.say("  the copy with names: " + r.labelled + (copy != null ? " (" + copy.getWidth() + "x" + copy.getHeight() + ")" : " doesn't decode"));
             if (copy == null) Monkey.problem(scenario + ": the copy with names doesn't decode");
+            // its lettering would shine with the stars: an ordinary photo
+            if (copy != null && copy.hasGainmap()) Monkey.problem(scenario + ": the copy with names was saved as an HDR photo");
+            File cf = FakeMediaStore.file(r.labelled);
+            if (cf != null && com.brandon.nightsky.processing.UltraHdr.read(cf) != null) {
+                Monkey.problem(scenario + ": the copy with names has a brightness map behind it");
+            }
         }
         press("Names");
         run(1500);
@@ -1354,6 +1367,243 @@ public class Night {
         z = (View) Monkey.field(Monkey.a, "zoom");
         int back = differ(plain, shown(z));
         if (back > 0) Monkey.problem(scenario + ": " + back + " pixels still differ with Names off again");
+        if (new Prefs(Monkey.app).hdrPhotos() && (shown(z) == null || !shown(z).hasGainmap())) {
+            Monkey.problem(scenario + ": with Names off again the picture has no brightness map");
+        }
+    }
+
+    /**
+     * The photo as an HDR photo (2.0). {@code want}: the gallery's file is the photo followed by its brightness map,
+     * where an Ultra HDR reader looks for it; the map is as large as the photo, lifts up to four times white, and
+     * matches the photo's pixels (stars lifted, sky not); the log says so, and how the file was checked before it was
+     * saved; the result screen's picture carries a map too, in a window that asks for HDR. Else: an ordinary photo, on
+     * screen too.
+     * <p>
+     * A phone's Android (14 and later) hands the map over with the decoded photo, and the app checks every HDR photo
+     * that way before saving it ({@link HdrScreen#readsBack}). This computer's Android decoder reads no brightness maps
+     * at all, not even from a photo it wrote itself, so here the map's own JPEG is taken out of the file and decoded,
+     * and the numbers are the ones in the file's XMP; sim/UltraHdrTest holds the file's layout against the rules of
+     * Android's and Google's readers.
+     */
+    static void hdrCheck(boolean want) throws Exception {
+        SessionController.Status st = Monkey.svc.controller().status();
+        SessionController.Result r = st.result;
+        if (st.phase != SessionController.Phase.DONE || r == null || r.jpeg == null) {
+            Monkey.problem(scenario + ": no photo to check as an HDR photo: " + outcome());
+            return;
+        }
+        File dir = new File(Monkey.root, r.session);
+        String log = read(new File(dir, "log.txt"));
+        File photo = FakeMediaStore.file(r.jpeg);
+        if (photo == null || photo.length() == 0) {
+            Monkey.problem(scenario + ": the photo isn't in the gallery (" + r.jpeg + ")");
+            return;
+        }
+        com.brandon.nightsky.processing.UltraHdr.Info info = com.brandon.nightsky.processing.UltraHdr.read(photo);
+        Bitmap pic = BitmapFactory.decodeFile(photo.getPath());
+        View z = (View) Monkey.field(Monkey.a, "zoom");
+        Bitmap onScreen = shown(z);
+        int mode = Monkey.a.getWindow().getColorMode();
+        if (!want) {
+            Monkey.say("  HDR: off; the photo is an ordinary one");
+            if (info != null || (pic != null && pic.hasGainmap())) Monkey.problem(scenario + ": the photo has a brightness map with HDR photos off");
+            if (onScreen != null && onScreen.hasGainmap()) Monkey.problem(scenario + ": the picture on screen has a brightness map with HDR photos off");
+            if (mode == android.content.pm.ActivityInfo.COLOR_MODE_HDR) Monkey.problem(scenario + ": the window asks for HDR with HDR photos off");
+            if (log.contains("saved as an HDR photo")) Monkey.problem(scenario + ": the log says an HDR photo was saved");
+            return;
+        }
+        Monkey.say("  HDR: " + lines(log, "HDR photo"));
+        if (!log.contains("saved as an HDR photo: a screen with the headroom")) Monkey.problem(scenario + ": the log doesn't say the photo was saved as an HDR photo");
+        int back = HdrScreen.readsBack(photo);
+        String said = back == HdrScreen.READ ? "read back by this phone's own decoder before it was saved"
+                : "not read back, as this Android's decoder reads no brightness maps";
+        if (back == HdrScreen.NOT_READ) {
+            Monkey.problem(scenario + ": Android's decoder reads brightness maps here, and not this photo's");
+        } else if (!log.contains(said)) {
+            Monkey.problem(scenario + ": the log doesn't say how the HDR photo was checked (\"" + said + "\")");
+        }
+        Bitmap m = null;
+        if (info == null) {
+            Monkey.problem(scenario + ": the photo in the gallery isn't an HDR photo");
+        } else {
+            Monkey.say(String.format(Locale.US, "    inside: the photo's %d bytes, then its brightness map (%d bytes, %.1f%% more)", info.primaryEnd,
+                    info.gainEnd - info.primaryEnd, 100.0 * (info.gainEnd - info.primaryEnd) / info.primaryEnd));
+            if (info.mpfImages != 2 || info.mpfGainStart != info.primaryEnd || info.dirGainLength != info.gainEnd - info.primaryEnd) {
+                Monkey.problem(scenario + ": the HDR photo's index or directory doesn't point at its map");
+            }
+            com.brandon.nightsky.processing.UltraHdr.Meta x = info.meta;
+            if (x == null || x.gainMapMin != 0 || x.gainMapMax != 2 || x.gamma != 1 || x.capacityMin != 0 || x.capacityMax != 2
+                    || Math.abs(x.offsetSdr - 1.0 / 64) > 1e-6 || Math.abs(x.offsetHdr - 1.0 / 64) > 1e-6) {
+                Monkey.problem(scenario + ": the map's numbers in the file aren't the ones meant");
+            }
+        }
+        if (pic == null) {
+            Monkey.problem(scenario + ": the HDR photo doesn't decode");
+        } else if (pic.hasGainmap()) {
+            android.graphics.Gainmap g = pic.getGainmap();
+            m = g.getGainmapContents();
+            float[] max = g.getRatioMax(), min = g.getRatioMin(), gamma = g.getGamma();
+            Monkey.say(String.format(Locale.US, "    Android decodes it with its map: %dx%d %s, %.2fx to %.2fx, gamma %.2f, in full from %.2fx headroom",
+                    m.getWidth(), m.getHeight(), m.getConfig(), min[0], max[0], gamma[0], g.getDisplayRatioForFullHdr()));
+            if (Math.abs(max[0] - 4f) > 0.01f || Math.abs(min[0] - 1f) > 0.01f || Math.abs(gamma[0] - 1f) > 0.01f
+                    || Math.abs(g.getDisplayRatioForFullHdr() - 4f) > 0.01f || Math.abs(g.getMinDisplayRatioForHdrTransition() - 1f) > 0.01f) {
+                Monkey.problem(scenario + ": the map's numbers aren't the ones written");
+            }
+            if (back != HdrScreen.READ) Monkey.problem(scenario + ": Android decodes the photo with its map, and the app's own check says it doesn't");
+        } else if (info != null) {
+            byte[] all = java.nio.file.Files.readAllBytes(photo.toPath());
+            m = BitmapFactory.decodeByteArray(all, (int) info.primaryEnd, (int) (info.gainEnd - info.primaryEnd));
+            if (m == null) {
+                Monkey.problem(scenario + ": the brightness map's own JPEG doesn't decode");
+            } else {
+                Monkey.say(String.format(Locale.US, "    the map's own JPEG, taken out of the file (this computer's Android decoder reads no brightness "
+                        + "maps): %dx%d", m.getWidth(), m.getHeight()));
+            }
+        }
+        if (pic != null && m != null) {
+            if (m.getWidth() != pic.getWidth() || m.getHeight() != pic.getHeight()) {
+                Monkey.problem(scenario + ": the map is " + m.getWidth() + "x" + m.getHeight() + ", not the photo's size");
+            } else {
+                // the map against the photo's own pixels: what HdrGain makes of the decoded photo, within the JPEGs' loss
+                int w = pic.getWidth(), h = pic.getHeight();
+                com.brandon.nightsky.processing.HdrGain hg = new com.brandon.nightsky.processing.HdrGain(w, h);
+                int[] row = new int[w];
+                for (int y = 0; y < h; y++) {
+                    pic.getPixels(row, 0, w, 0, y, w, 1);
+                    hg.measure(y, row, 0);
+                }
+                byte[] want8 = new byte[w];
+                int[] got = new int[w];
+                boolean alphaOnly = m.getConfig() == Bitmap.Config.ALPHA_8;
+                java.nio.ByteBuffer alpha = null;
+                if (alphaOnly) {
+                    alpha = java.nio.ByteBuffer.allocate(m.getRowBytes() * h);
+                    m.copyPixelsToBuffer(alpha);
+                }
+                long sum = 0, lifted = 0, skyLifted = 0, sky = 0;
+                int worst = 0, top = 0;
+                for (int y = 0; y < h; y++) {
+                    pic.getPixels(row, 0, w, 0, y, w, 1);
+                    hg.row(y, row, 0, want8, 0);
+                    if (!alphaOnly) m.getPixels(got, 0, w, 0, y, w, 1);
+                    for (int x = 0; x < w; x++) {
+                        int v = alphaOnly ? alpha.get(y * m.getRowBytes() + x) & 255 : (got[x] >> 8) & 255;
+                        int d = Math.abs(v - (want8[x] & 255));
+                        sum += d;
+                        worst = Math.max(worst, d);
+                        top = Math.max(top, v);
+                        if (v >= 32) lifted++;
+                        int lv = Math.max((row[x] >> 16) & 255, Math.max((row[x] >> 8) & 255, row[x] & 255));
+                        if (lv < 60) {
+                            sky++;
+                            if (v >= 16) skyLifted++;
+                        }
+                    }
+                }
+                Monkey.say(String.format(Locale.US, "    the map against the photo: %.3f levels apart on average (worst %d), %.2f%% of the photo lifted, "
+                        + "the most %d of 255; %d of %d dark sky pixels lifted", sum / (double) (w * h), worst, 100.0 * lifted / (w * h), top, skyLifted, sky));
+                if (sum / (double) (w * h) > 0.5) Monkey.problem(scenario + ": the map isn't the photo's brightness map");
+                if (top < 200) Monkey.problem(scenario + ": no star in the photo gets most of the lift (the most is " + top + " of 255)");
+                if (lifted == 0 || lifted > w * h / 20) Monkey.problem(scenario + ": " + lifted + " pixels lifted: not just the stars");
+                if (skyLifted > sky / 2000) Monkey.problem(scenario + ": " + skyLifted + " dark sky pixels are lifted");
+            }
+        }
+        if (onScreen == null || !onScreen.hasGainmap()) {
+            Monkey.problem(scenario + ": the picture on the result screen has no brightness map");
+        } else {
+            android.graphics.Gainmap g = onScreen.getGainmap();
+            Monkey.say(String.format(Locale.US, "    on screen: the %dx%d picture has its map (%s, up to %.1fx), the window's colour mode is %s",
+                    onScreen.getWidth(), onScreen.getHeight(), g.getGainmapContents().getConfig(), g.getRatioMax()[0],
+                    mode == android.content.pm.ActivityInfo.COLOR_MODE_HDR ? "HDR" : String.valueOf(mode)));
+            if (Math.abs(g.getRatioMax()[0] - 4f) > 0.01f) Monkey.problem(scenario + ": the on-screen map's top isn't 4x");
+            // everything written from a picture that carries a map stays an ordinary JPEG: the map is this app's to write
+            Bitmap c = HdrScreen.withoutMap(onScreen);
+            if (c == onScreen || c.hasGainmap() || !onScreen.hasGainmap() || differ(c, onScreen) != 0) {
+                Monkey.problem(scenario + ": the copy without a map isn't the same picture without its map");
+            }
+            if (c != onScreen) c.recycle();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            if (!HdrScreen.compressPlain(onScreen, 90, bo) || !onScreen.hasGainmap()) {
+                Monkey.problem(scenario + ": writing the on-screen picture as an ordinary JPEG failed, or took its map off");
+            } else {
+                File f = new File(Monkey.out, "plain-check.jpg");
+                java.nio.file.Files.write(f.toPath(), bo.toByteArray());
+                Bitmap d = BitmapFactory.decodeFile(f.getPath());
+                if (d == null || d.hasGainmap() || com.brandon.nightsky.processing.UltraHdr.read(f) != null) {
+                    Monkey.problem(scenario + ": the on-screen picture written as an ordinary JPEG isn't one");
+                }
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
+        if (mode != android.content.pm.ActivityInfo.COLOR_MODE_HDR) Monkey.problem(scenario + ": the result screen's window doesn't ask for HDR");
+        // the session's small picture (the sessions page, the widget, the laptop viewer) is an ordinary JPEG
+        File thumb = new File(dir, "thumb.jpg");
+        if (thumb.isFile() && com.brandon.nightsky.processing.UltraHdr.read(thumb) != null) {
+            Monkey.problem(scenario + ": the session's small picture has a brightness map behind it");
+        }
+    }
+
+    /**
+     * An HDR photo this phone's own decoder can't read back isn't kept (2.0): the saver is told the decoder read maps
+     * and not this one's, and saves the photo the way 1.9 did, a Motion Photo with its video and no map, and says why;
+     * without a video, an ordinary photo. Then, with the decoder reading it, an HDR photo with its video again.
+     */
+    static void hdrFallbackCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null || r.jpeg == null || r.video == null) {
+            Monkey.problem(scenario + ": no photo with a video to save again");
+            return;
+        }
+        Bitmap pic = decode(r.jpeg);
+        if (pic == null) {
+            Monkey.problem(scenario + ": the photo doesn't decode, to save it again");
+            return;
+        }
+        Integer before = HdrScreen.readsBackForced;
+        try {
+            String[] names = {"fallback-video", "fallback-plain", "read-back"};
+            for (int k = 0; k < names.length; k++) {
+                HdrScreen.readsBackForced = k < 2 ? HdrScreen.NOT_READ : HdrScreen.READ;
+                MediaSaver.Exif ex = new MediaSaver.Exif();
+                ex.width = pic.getWidth();
+                ex.height = pic.getHeight();
+                android.net.Uri u = MediaSaver.saveJpeg(Monkey.app, pic, "hdr-" + names[k], ex, k == 1 ? null : r.video, 1_000_000L, true);
+                File f = FakeMediaStore.file(u);
+                String name = FakeMediaStore.name(u);
+                com.brandon.nightsky.processing.UltraHdr.Info info = f != null ? com.brandon.nightsky.processing.UltraHdr.read(f) : null;
+                MotionPhoto.Info mp = f != null ? MotionPhoto.read(f) : null;
+                Bitmap d = f != null ? BitmapFactory.decodeFile(f.getPath()) : null;
+                Monkey.say(String.format(Locale.US, "  HDR photo %s: %s, %d KB, map %s, video %s; %s", k < 2 ? "its own decoder can't read" : "read back",
+                        name, f != null ? f.length() / 1024 : 0, info != null ? "inside" : "none", mp != null ? "inside" : "none",
+                        ex.hdr != null ? ex.hdr : "not HDR: " + ex.hdrFailed));
+                if (d == null) Monkey.problem(scenario + ": " + name + " doesn't decode");
+                if (k < 2) {
+                    if (info != null || ex.hdr != null) Monkey.problem(scenario + ": " + name + " kept a map its own decoder couldn't read");
+                    if (ex.hdrFailed == null || !ex.hdrFailed.contains("this phone's own decoder didn't find the brightness map")) {
+                        Monkey.problem(scenario + ": " + name + " doesn't say why it isn't an HDR photo (" + ex.hdrFailed + ")");
+                    }
+                    if (k == 0 && (mp == null || !"hdr-fallback-video.MP.jpg".equals(name) || ex.videoFailed != null
+                            || mp.videoLength != r.video.length() || mp.videoStart + mp.videoLength != f.length())) {
+                        Monkey.problem(scenario + ": " + name + " isn't the Motion Photo 1.9 would have saved");
+                    }
+                    if (k == 1 && (mp != null || !"hdr-fallback-plain.jpg".equals(name))) Monkey.problem(scenario + ": " + name + " isn't an ordinary photo");
+                } else {
+                    if (info == null || mp == null || ex.hdrFailed != null || ex.hdr == null
+                            || !ex.hdr.endsWith("read back by this phone's own decoder before it was saved") || !"hdr-read-back.MP.jpg".equals(name)) {
+                        Monkey.problem(scenario + ": " + name + " isn't an HDR photo with its video when its decoder reads it (" + ex.hdr + ", "
+                                + ex.hdrFailed + ")");
+                    }
+                }
+                if (f != null) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        } finally {
+            HdrScreen.readsBackForced = before;
+            pic.recycle();
+        }
     }
 
     /** The bitmap a picture view shows (null if none). */

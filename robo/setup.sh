@@ -55,7 +55,17 @@ EOF
 fi
 
 echo "== robolectric and junit"
-quiet "$MVN" -q "${SETTINGS[@]}" -f "$HERE/pom.xml" dependency:copy-dependencies -DoutputDirectory="$ROBO_HOME/deps"
+if ! quiet "$MVN" -q "${SETTINGS[@]}" -f "$HERE/pom.xml" dependency:copy-dependencies -DoutputDirectory="$ROBO_HOME/deps"; then
+    # Maven Central has refused its larger jars with 429 too: once more from Google's copy of it
+    echo "  Maven Central refused; trying its mirror"
+    {
+        echo "<settings>"
+        echo "  <mirrors><mirror><id>central-mirror</id><mirrorOf>central</mirrorOf><url>$MIRROR</url></mirror></mirrors>"
+        [ -f "$ROBO_HOME/settings.xml" ] && sed -n '/<proxies>/,/<\/proxies>/p' "$ROBO_HOME/settings.xml"
+        echo "</settings>"
+    } > "$ROBO_HOME/settings-mirror.xml"
+    quiet "$MVN" -q -s "$ROBO_HOME/settings-mirror.xml" -f "$HERE/pom.xml" dependency:copy-dependencies -DoutputDirectory="$ROBO_HOME/deps"
+fi
 ls "$ROBO_HOME/deps" | wc -l | xargs echo "  jars:"
 
 echo "== android jars"

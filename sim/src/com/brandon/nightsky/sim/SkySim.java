@@ -131,6 +131,19 @@ public final class SkySim {
     private volatile float[] mwTint;
     /** The Milky Way's light is worked out every MW_STEP pixels and interpolated between. */
     static final int MW_STEP = 8;
+    /**
+     * The lens's colour fringes (2.0): how far a star's red and its blue light land from its green at the frame's
+     * corner (pixels, outwards positive), growing from the middle as (1 - caCubic) rho + caCubic rho^3.
+     */
+    public double caRed, caBlue, caCubic = 0.6;
+
+    /** That shift for red ({@code c} 0) or blue (2) at a place on the sensor: {x, y} in pixels (zeros for green). */
+    public double[] caAt(int c, double px, double py) {
+        double s = c == 0 ? caRed : c == 2 ? caBlue : 0;
+        double hd = 0.5 * Math.hypot(W, H), ax = px - truth.cx, ay = py - truth.cy;
+        double kk = s * ((1 - caCubic) + caCubic * (ax * ax + ay * ay) / (hd * hd)) / hd;
+        return new double[]{ax * kk, ay * kk};
+    }
     /** A smudged or fogged lens: this share of every star's light spread into a glow of this size (pixels). */
     public double haloFrac, haloSigma = 10;
     /** Dew forming on the lens: from frame fogFrom on, the glow's share grows by fogPerFrame a frame, up to fogMax more. */
@@ -734,7 +747,18 @@ public final class SkySim {
                 if (amp < 0.05) continue;
                 double rr = Math.hypot(px - W / 2.0, py - H / 2.0) / (0.5 * Math.hypot(W, H));
                 double sg = psfSigma * (1 + 0.45 * rr * rr);
-                addSpot(img, px, py, sg, amp, cfa, k);
+                if (caRed == 0 && caBlue == 0) {
+                    addSpot(img, px, py, sg, amp, cfa, k, -1);
+                } else {
+                    // each colour where the lens puts it: red and blue out or in from green along the line from the
+                    // lens's own middle (which isn't quite the sensor's)
+                    double hd = 0.5 * Math.hypot(W, H), ax = px - truth.cx, ay = py - truth.cy;
+                    double kk = ((1 - caCubic) + caCubic * (ax * ax + ay * ay) / (hd * hd)) / hd;
+                    double ux = ax * kk, uy = ay * kk;
+                    addSpot(img, px + ux * caRed, py + uy * caRed, sg, amp, cfa, k, 0);
+                    addSpot(img, px, py, sg, amp, cfa, k, 1);
+                    addSpot(img, px + ux * caBlue, py + uy * caBlue, sg, amp, cfa, k, 2);
+                }
             }
         }
         // a smudged lens: part of each star's light in a wide glow (once, at mid-exposure: the glow doesn't care
@@ -749,7 +773,7 @@ public final class SkySim {
                 double amp = flux[k] * starGain * exp * transparency(i, px) * vignetting(px, py) * haloFrac;
                 if (branchT != null && px >= 0 && py >= 0 && px < W && py < H) amp *= branchT[(int) py * W + (int) px];
                 if (amp < 3) continue;
-                addSpot(img, px, py, haloSigma, amp, cfa, k);
+                addSpot(img, px, py, haloSigma, amp, cfa, k, -1);
             }
         }
         // transients
@@ -849,7 +873,8 @@ public final class SkySim {
         for (int x = 0; x < W; x++) colFixed[x] = (float) (colFixedSigma * gauss(r));
     }
 
-    private void addSpot(float[] img, double px, double py, double sg, double amp, int[] cfa, int k) {
+    /** Star k's light as a spot at (px, py); {@code only}: just the photosites of that colour (0 red, 1 green, 2 blue), -1 all. */
+    private void addSpot(float[] img, double px, double py, double sg, double amp, int[] cfa, int k, int only) {
         int r = (int) Math.ceil(4 * sg);
         int x0 = (int) Math.floor(px) - r, x1 = (int) Math.floor(px) + r;
         int y0 = (int) Math.floor(py) - r, y1 = (int) Math.floor(py) + r;
@@ -871,6 +896,7 @@ public final class SkySim {
                 int x = x0 + xx;
                 if (x < 0 || x >= W) continue;
                 int c = cfa[((y & 1) << 1) | (x & 1)];
+                if (only >= 0 && c != only) continue;
                 float cf = c == 0 ? cr[k] : (c == 1 ? cg[k] : cb[k]);
                 img[y * W + x] += (float) (amp * fx[xx] * fy[yy] * cf);
             }

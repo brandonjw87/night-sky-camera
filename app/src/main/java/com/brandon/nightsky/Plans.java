@@ -215,7 +215,7 @@ final class Plans {
             String name = session + ".jpg";
             OutputStream o = new FileOutputStream(new File(thumbDir(c), name));
             try {
-                small.compress(Bitmap.CompressFormat.JPEG, 85, o);
+                HdrScreen.compressPlain(small, 85, o);
             } finally {
                 o.close();
             }
@@ -239,7 +239,7 @@ final class Plans {
             Bitmap small = Bitmap.createScaledBitmap(preview, w, h, true);
             OutputStream o = new FileOutputStream(tmp);
             try {
-                small.compress(Bitmap.CompressFormat.JPEG, 85, o);
+                HdrScreen.compressPlain(small, 85, o);
             } finally {
                 o.close();
             }
@@ -395,6 +395,9 @@ final class Plans {
         nm.createNotificationChannel(ch);
     }
 
+    /** The group of the notifications that make no sound (see {@link #notifyMorning}). */
+    private static final String QUIET_GROUP = "nightsky.quiet";
+
     private static Notification.Builder builder(Context c) {
         channel(c);
         return new Notification.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_notification).setColor(MainActivity.RED).setAutoCancel(true);
@@ -444,7 +447,11 @@ final class Plans {
                 .setContentTitle(p.summaryTitle())
                 .setContentText(lines.isEmpty() ? "" : lines.get(0))
                 .setContentIntent(openApp(c, "summary", false, 37))
-                .setSilent(true)
+                // quiet at dawn, by the public route: a notification in a group that alerts through its summary, and
+                // this group has none. (Notification.Builder.setSilent, used until 1.9, is hidden from apps: on the
+                // phone the call would have stopped the app with a NoSuchMethodError.)
+                .setGroup(QUIET_GROUP)
+                .setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
                 .setCategory(Notification.CATEGORY_STATUS);
         Bitmap pic = null;
         try {

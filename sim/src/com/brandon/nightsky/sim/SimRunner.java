@@ -137,6 +137,13 @@ public final class SimRunner {
         }
         if (System.getenv("SIM_BUMP") != null) sim.bumpFrame = Integer.parseInt(System.getenv("SIM_BUMP"));
         if (System.getenv("SIM_HALO") != null) sim.haloFrac = Double.parseDouble(System.getenv("SIM_HALO"));
+        // SIM_CA=red,blue[,cubic share]: the lens's colour fringes, pixels at the corner at full size (outwards positive)
+        double[] ca = doubles(System.getenv("SIM_CA"));
+        if (ca != null) {
+            sim.caRed = ca[0] / scale;
+            sim.caBlue = (ca.length > 1 ? ca[1] : 0) / scale;
+            if (ca.length > 2) sim.caCubic = ca[2];
+        }
         // SIM_SEED: the noise's seed (the sky stays the same), to measure the noise of two runs directly
         long noiseSeed = System.getenv("SIM_SEED") != null ? Long.parseLong(System.getenv("SIM_SEED")) : 7;
         System.out.printf(Locale.US, "Sim %dx%d, %d stars, %d frames of %.0fs, calibrated=%s, mode=%s%n", W, H, sim.starCount(),
@@ -231,7 +238,10 @@ public final class SimRunner {
         if (System.getenv("SIM_QUICK") != null) {
             pp.patternCleanup = false;
             pp.streakCorridors = false;
+            pp.fringes = false;
         }
+        // SIM_NOFRINGE=1: leave the lens's colour fringes in (to compare)
+        if (System.getenv("SIM_NOFRINGE") != null) pp.fringes = false;
         if (catalog != null) {
             SessionSky sky = new SessionSky();
             sky.latDeg = sim.latitudeDeg;
@@ -328,7 +338,7 @@ public final class SimRunner {
             ds.close();
         }
         if (catalog != null && o.referenceUnit >= 0) checkSolution(sim, o, truth, startMs, lonDeg);
-        // as the app does for the photo: the catalogue's stars and the planets placed in it, for the stars' glow (1.10)
+        // as the app does for the photo: the catalogue's stars and the planets placed in it, for the stars' glow (2.0)
         if (catalog != null && !trails) o.analysis.sky = StarGlow.sky(o.solution, o.solutionJd, catalog, o.analysis);
         if (System.getenv("SIM_FLUX") != null && o.referenceUnit >= 0) fluxTable(sim.starTable(o.referenceUnit), o.image, new File(System.getenv("SIM_FLUX")));
         if (System.getenv("SIM_DUMP") != null) {

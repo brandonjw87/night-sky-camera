@@ -24,7 +24,7 @@ import java.util.Properties;
 import java.util.TimeZone;
 
 /**
- * The constellations' figures (1.10). The table: 88 figures, each named, whose stars are the catalogue's. Placed on
+ * The constellations' figures (2.0). The table: 88 figures, each named, whose stars are the catalogue's. Placed on
  * pictures through a plate solution: every line follows the sky between two stars as the lens shows it, starts and ends
  * at its stars unless it runs off the picture, and no point comes from beyond where the lens model holds, even with a
  * distortion that turns back on itself (where the plain projection would put stars from behind the camera's view in the

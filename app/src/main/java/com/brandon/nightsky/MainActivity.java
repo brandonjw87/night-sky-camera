@@ -256,6 +256,8 @@ public final class MainActivity extends Activity {
         setContentView(root);
         Plans.channel(this);
         Intent in = getIntent();
+        // the opening film (2.0), when the app is opened from its icon (asked before the intent is dealt with)
+        boolean film = IntroView.wanted(prefs, state, in);
         if (state != null || (in != null && (in.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0)) {
             // made again after Android reclaimed the app, or reopened from the recent apps: with the intent it was
             // first opened by, whose request (a session from the widget, re-arming the plan) was done back then
@@ -269,6 +271,16 @@ public final class MainActivity extends Activity {
         }
         showHome();
         bindService(new Intent(this, CaptureService.class), conn, Context.BIND_AUTO_CREATE);
+        // over the first screen, which is ready underneath it
+        if (film) intro = IntroView.play(this, prefs.intro(), IntroView.soundWanted(this, prefs), null);
+    }
+
+    /** The opening film while it's on the screen (null once it has gone). */
+    private IntroView intro;
+
+    /** The opening film, if it's still playing (for the tests). */
+    IntroView intro() {
+        return intro != null && !intro.finished() ? intro : null;
     }
 
     @Override
@@ -474,6 +486,7 @@ public final class MainActivity extends Activity {
     private void clearRefs() {
         closeReport();
         setPageBack(false);
+        HdrScreen.window(this, false);
         nightBox = null;
         headline = detail = stage = null;
         checks = null;
@@ -1083,6 +1096,53 @@ public final class MainActivity extends Activity {
             }
         });
         box.addView(video, gap(6));
+
+        // the opening film (2.0)
+        box.addView(label("The opening film"), gap(20));
+        final int look = prefs.intro();
+        final Button[] films = {chip("In colour", look == IntroView.COLOUR), chip("Night red", look == IntroView.RED),
+                chip("Off", look == IntroView.OFF)};
+        View.OnClickListener filmClick = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int k = v == films[2] ? IntroView.OFF : v == films[1] ? IntroView.RED : IntroView.COLOUR;
+                prefs.setIntro(k);
+                for (int i = 0; i < films.length; i++) styleChip(films[i], i == k);
+            }
+        };
+        LinearLayout fr = row();
+        for (Button b : films) {
+            b.setTextSize(14);
+            b.setOnClickListener(filmClick);
+            fr.addView(b, weight());
+        }
+        box.addView(fr, gap(6));
+        box.addView(text("Two seconds when the app is opened from its icon; a tap skips it. Night red is dimmer, for eyes "
+                + "used to the dark.", 13, RED_DIM, false), gap(6));
+        Button playFilm = button("Play it now", false);
+        playFilm.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (intro() != null) return;
+                int k = prefs.intro();
+                intro = IntroView.play(MainActivity.this, k == IntroView.RED ? IntroView.RED : IntroView.COLOUR,
+                        IntroView.soundWanted(MainActivity.this, prefs), null);
+            }
+        });
+        box.addView(playFilm, gap(6));
+
+        // HDR photos (2.0)
+        box.addView(label("HDR photos"), gap(20));
+        CheckBox hdr = check("Save photos as HDR photos: this phone's screen shows their stars up to four times brighter than "
+                + "white, in Google Photos and here on the result screen. Everywhere else they look exactly as before.",
+                prefs.hdrPhotos());
+        hdr.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setHdrPhotos(on);
+            }
+        });
+        box.addView(hdr, gap(6));
 
         // what the Partly cloudy and Quick look presets turn on (E6)
         box.addView(label("Clouds and quick looks"), gap(20));
@@ -2587,6 +2647,8 @@ public final class MainActivity extends Activity {
         zoom = new ZoomImageView(this);
         zoom.setBackgroundColor(BG);
         col.addView(zoom, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        // the photo as its HDR file shows it (2.0): its stars brighter than white, where the screen can
+        HdrScreen.window(this, prefs.hdrPhotos());
         headline = text("", 18, RED, true);
         detail = text("", 13, RED_DIM, false);
         col.addView(headline, gap(8));
@@ -3215,6 +3277,19 @@ public final class MainActivity extends Activity {
         box.addView(text("Sky detail brings out the Milky Way's dark lanes and star clouds. The plain sky, the stars and the ground are "
                 + "left as they are.", 12, RED_DIM, false), gap(2));
         if (!r.trails) {
+            addSlider(es, box, 28, Math.round(r.sharp * 20), new Slider() {
+                @Override
+                public String label(int v) {
+                    return "Star sharpness " + 5 * v + "%" + (v == 20 ? " (as developed)" : v == 0 ? ": as the lens drew them" : "");
+                }
+
+                @Override
+                public void set(int v) {
+                    r.sharp = v / 20f;
+                }
+            });
+            box.addView(text("Star sharpness draws each star's light back in towards its middle, which undoes part of the blur of the "
+                    + "lens and the air. The sky, the faintest stars and the ground are left as they are.", 12, RED_DIM, false), gap(2));
             addSlider(es, box, 40, Math.round(r.glow * 20), new Slider() {
                 @Override
                 public String label(int v) {
@@ -3270,6 +3345,7 @@ public final class MainActivity extends Activity {
                 r.black = 0f;
                 r.saturation = 1f;
                 r.detail = 1f;
+                r.sharp = 1f;
                 r.glow = 0f;
                 r.look = Recipe.LOOK_NATURAL;
                 List<Recipe> all = es.info.renders;

@@ -20,7 +20,7 @@ import java.util.Locale;
 import java.util.Random;
 
 /**
- * Star glow (1.10) on a made-up sky whose stars are known: two dozen bright stars of known magnitude and colour among
+ * Star glow (2.0) on a made-up sky whose stars are known: two dozen bright stars of known magnitude and colour among
  * thousands of faint ones, the brightest of them clipped, a planet, a satellite's streak, the Moon, and a catalogue star
  * that a cloud hides.
  * <ul>

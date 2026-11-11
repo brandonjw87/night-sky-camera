@@ -18,9 +18,9 @@ public final class PostProcessor {
     /**
      * The processing's version: raised whenever a change makes the same frames give a different picture. Saved with
      * every master and recipe (G3), so a photo made by an older version can be offered again with the new one (2: hot
-     * pixels in pairs and threes taken out, 1.9).
+     * pixels in pairs and threes taken out, 1.9; 3: the lens's colour fringes taken out as the frames are stacked, 2.0).
      */
-    public static final int PIPELINE = 2;
+    public static final int PIPELINE = 3;
 
     public static final class Output {
         public RgbImage image;
@@ -47,6 +47,11 @@ public final class PostProcessor {
         /** The sensor's pattern as measured (null if it wasn't), and the walking noise before and after taking it out. */
         public SensorPattern pattern;
         public double walkingBefore = Double.NaN, walkingAfter = Double.NaN;
+        /**
+         * The lens's colour fringes as measured on the first stack's stars (null if they weren't), and measured again on
+         * the stack they were taken out of (null if none were).
+         */
+        public ChromaShift.Result fringes, fringesAfter;
         /** Where the reference frame pointed (null if unknown), and the time it was solved for (UTC Julian date). */
         public SkySolver.Solution solution;
         public double solutionJd = Double.NaN;
@@ -169,6 +174,11 @@ public final class PostProcessor {
     public static final long STACK_MEMORY = 64L << 20;
     /** Whether to measure the sensor's own pattern and take it out (walking noise, banding); tests switch it off. */
     public boolean patternCleanup = true;
+    /**
+     * Whether to measure the lens's colour fringes on the stack's stars and take them out ({@link ChromaShift}, 2.0);
+     * the Quick look, which stacks once, and tests switch it off.
+     */
+    public boolean fringes = true;
     /** Place, time and the star catalogue, to find where the camera pointed; null to skip that. */
     public SessionSky sky;
     /**
@@ -362,6 +372,7 @@ public final class PostProcessor {
                     moved > 0 ? " Skipped " + moved + " moved." : "");
             out.analysis = Renderer.analyze(img, spec);
             out.analysis.colorSigma = 3f;
+            out.analysis.trails = true;
             out.video = PhotoVideo.Source.trails(spec, fs, hot, tu);
             if (colorCalibration) {
                 decide(out, "colour: the fixed " + Math.round(spec.wbCct) + " K white balance, as star trails can't be measured "
@@ -640,9 +651,15 @@ public final class PostProcessor {
             // its maps aren't needed again: their memory goes back before the next stack
             ev = null;
         }
+        // the lens's colour fringes, measured on this first stack's stars: the next stack takes them out, whether it's
+        // made anyway (for the sensor's pattern, for the streaks) or for them alone
+        StarList fringeStars = refDetections != null ? refDetections : ref != null ? ref.stars : null;
+        st.chroma = measureFringes(out, sr.image, fringeStars, fringes && out.aligned, store);
         SharpStacker.Result again = cleanPattern(out, st, sr, plans, target, fixed, model, fs, hot, progress);
         if (corridors && again == sr) again = stackWithoutStreaks(st, sr, plans, progress);
+        if (st.chroma != null && again == sr) again = stackWithoutFringes(st, sr, plans, progress);
         sr = again;
+        if (st.chroma != null) fringesTakenOut(out, sr.image, fringeStars, store);
         if (st.ground != null) keepGroundStill(out, st, sr, plans, model, fs, hot, progress);
         if (st.noise != null) {
             out.noise = st.noise.result();
@@ -1131,6 +1148,78 @@ public final class PostProcessor {
         return tracks;
     }
 
+    /**
+     * The lens's colour fringes (2.0) on a first stack's stars ({@link ChromaShift}): what the next stack is to take
+     * out, or null when nothing is (not wanted, not measurable, or too small to matter; the decisions say which).
+     */
+    static ChromaShift.Model measureFringes(Output out, RgbImage image, StarList stars, boolean wanted, SessionStore log) {
+        if (!wanted) return null;
+        try {
+            ChromaShift.Result r = ChromaShift.measure(image, stars);
+            out.fringes = r;
+            if (r.red != null || r.blue != null) {
+                log.log(String.format(Locale.US, "colour fringes: %s (%d stars measured, %d ms)", r.numbers(), r.measured, r.ms));
+            }
+            String s = null;
+            if (r.why != null) s = "colour fringes: not measured, " + r.why;
+            else if (r.model == null) {
+                s = String.format(Locale.US, "colour fringes: none worth taking out (towards the corners a star's %s than its green; "
+                        + "%d stars measured)", r.shifts(false), r.measured);
+            }
+            if (s != null) {
+                out.decisions.add(s);
+                log.log("decision: " + s);
+            }
+            return r.model;
+        } catch (RuntimeException e) {
+            // a bonus: never let it cost the photo
+            log.log("colour fringes: measuring them failed: " + e);
+            return null;
+        }
+    }
+
+    /** After the stack that took the fringes out: measured again on the same stars, and said. */
+    static void fringesTakenOut(Output out, RgbImage image, StarList stars, SessionStore log) {
+        ChromaShift.Result before = out.fringes;
+        if (before == null || before.model == null) return;
+        String left = "not measured again";
+        try {
+            ChromaShift.Result after = ChromaShift.measure(image, stars);
+            out.fringesAfter = after;
+            if (after.red != null || after.blue != null) {
+                log.log(String.format(Locale.US, "colour fringes, taken out: %s (%d stars measured, %d ms)", after.numbers(), after.measured,
+                        after.ms));
+                left = after.sizes() + " left";
+            }
+        } catch (RuntimeException e) {
+            log.log("colour fringes: measuring them again failed: " + e);
+        }
+        String s = String.format(Locale.US, "colour fringes: towards the corners the lens puts a star's %s than its green; taken out as "
+                + "the frames were stacked, each colour read where its light fell (%d stars measured; %s)", before.shifts(true),
+                before.measured, left);
+        out.decisions.add(s);
+        log.log("decision: " + s);
+    }
+
+    /** The stack made again without the lens's colour fringes (no other step made it again anyway). */
+    private SharpStacker.Result stackWithoutFringes(SharpStacker st, SharpStacker.Result sr, List<SharpStacker.Plan> plans,
+                                                    Progress progress) throws IOException {
+        st.into = sr.image;
+        st.label = "Stacking again without the lens's colour fringes";
+        try {
+            return st.stack(plans, progress);
+        } catch (OutOfMemoryError e) {
+            // the first stack was being overwritten: make it again as it was
+            st.chroma = null;
+            st.label = "Stacking";
+            store.log("colour fringes: ran out of memory taking them out; stacked again as before");
+            return st.stack(plans, progress);
+        } finally {
+            st.into = null;
+            st.label = "Stacking";
+        }
+    }
+
     /** The stack made again with the streaks' corridors (the pattern step didn't make it again anyway). */
     private SharpStacker.Result stackWithoutStreaks(SharpStacker st, SharpStacker.Result sr, List<SharpStacker.Plan> plans,
                                                     Progress progress) throws IOException {
@@ -1321,6 +1410,7 @@ public final class PostProcessor {
         gs.memoryBudget = st.memoryBudget;
         gs.method = st.method;
         gs.label = "Keeping the ground still";
+        gs.chroma = st.chroma;
         gs.rowFrom = rows[0];
         gs.rowTo = rows[1];
         SharpStacker.Result g = gs.stack(still, progress);

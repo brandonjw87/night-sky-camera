@@ -24,6 +24,9 @@ import java.util.Locale;
  * <p>
  * A copy binned smaller (Quick look's half-size photo) is matched with its own, smaller star images.
  * <p>
+ * Sharper stars (2.0): the same pass over the picture knows which light is the stars', so it also works out how to
+ * draw each star's light back in towards its middle ({@link Result#ds}, {@link #SHARP_ITER}).
+ * <p>
  * The correction is a half float per pixel of the crop, and it depends only on the picture: the work is done in tiles,
  * each with the context around it that it needs (mirrored at the picture's edges), so it comes out the same, bit for
  * bit, however many threads share it.
@@ -83,6 +86,33 @@ public final class Denoise {
     static final float HALO_SIG = 2f, HALO_PEAKED = 0.6f;
     /** A light that wasn't clipped throws no more than this many times its own light into its glow. */
     static final float HALO_LIGHT = 1f;
+    /**
+     * Sharper stars (2.0, {@link Result#ds}). A star image's size is measured on the picture's own stars: the ones that
+     * stand PSF_SNR times the noise or more in the matched filter and aren't clipped or over SHARP_CLIP of the clip
+     * level, PSF_MIN_STARS of them or more. SHARP_SHARE of that blur is then taken out of the stars' light (what stands
+     * SHARP_FLOOR times the noise over the filled-in sky on the stars' pixels: under that it's as much noise as star)
+     * with SHARP_ITER steps of Richardson and Lucy's method, each a blur of SHARP_K px reach there and back: it moves
+     * light towards where it came from, makes and loses none, and never takes a pixel under the sky.
+     * <p>
+     * How much of that a star gets goes by the star's own brightness: the highest blurred light among the pixels of
+     * that light that hang together with it (passed on from pixel to pixel SHARP_OWN times), so that a star's pixels all
+     * get the same share and a speck of noise beside a bright star gets a speck's. Under SHARP_SNR0 times its noise the
+     * star is left as it is, from SHARP_SNR1 it gets all of it; all of it too while the star's peak stands under
+     * SHARP_FULL of the clip level, and none from SHARP_NONE. A star with a pixel that clipped in some frame, or one at
+     * SHARP_NONE of the clip level, is left whole: a clipped star's flat top isn't a star image. Star images smaller
+     * than SHARP_MIN px (sigma) have no blur worth taking out (a binned copy's), and a blur over SHARP_MOST px isn't
+     * taken for more than that.
+     */
+    static final int SHARP_ITER = 4, SHARP_K = 4, R_SHARP = 2 * SHARP_ITER * SHARP_K, SHARP_OWN = 8;
+    static final float SHARP_SHARE = 0.8f, SHARP_MIN = 0.85f, SHARP_MOST = 1.33f, SHARP_FLOOR = 1f;
+    static final float SHARP_SNR0 = 5f, SHARP_SNR1 = 12f, SHARP_CLIP = 0.5f, SHARP_FULL = 0.35f, SHARP_NONE = 0.6f;
+    static final float PSF_SNR = 20f;
+    static final int PSF_MIN_STARS = 30;
+    /** The star sizes' histogram: PSF_BINS bins of PSF_STEP px from PSF_FROM. */
+    static final int PSF_BINS = 160;
+    static final float PSF_FROM = 0.4f, PSF_STEP = 0.02f;
+    /** The finest layer's noise (the picture less its 1 px B3 smooth) against a pixel's own. */
+    private static final float FINEST_OF_PIXEL = 0.8908f;
     /** Fine layers; the coarse ones, on every QF-th pixel of the 8 px smooth. */
     public static final int LEVELS = 3, QF = 4, QLEVELS = 5;
     /** Tiles of work, and cells of the noise map (a tile holds 2 x 2 cells, so each cell is one tile's). */
@@ -135,14 +165,41 @@ public final class Denoise {
         /** Share of the sky where the detail is brought out; bright lights whose glow was kept out of it. */
         public float detailShare;
         public int haloes;
-        public long ms;
+        /**
+         * Sharper stars (2.0): per pixel of the crop, row after row, what to add to the luminance (half floats) times
+         * {@link Renderer.Params#sharp}; null when the stars are left as they are (too few of them to measure, star
+         * images too small to gain, star trails).
+         */
+        public short[] ds;
+        /** A star image's sigma in this picture (px; NaN: not measured) and on how many stars; the blur taken out (px). */
+        public float starSigma = Float.NaN, sharpSigma;
+        public int starsMeasured;
+        /** Share of the pixels whose light the sharpening moves. */
+        public float sharpShare;
+        /** How long it all took, and the sharpening's part of that. */
+        public long ms, msSharp;
 
         public String describe() {
             return String.format(Locale.US, "noise %.3f / %.3f / %.3f in the 1-2, 2-4 and 4-8 px layers and %.4f to %.4f in the "
                             + "coarse ones, measured between the stars (stars on %.0f%% of the pixels; matched filter's noise %.3f, "
                             + "first guess %.3f); %.2f to %.2f times the average over the picture; the sky's detail brought out on "
-                            + "%.0f%% of it, %d bright lights' glows kept out of it (%d ms)", sigma[0], sigma[1], sigma[2], min(sigmaQ),
-                    max(sigmaQ), 100 * starFraction, sigmaMf, guessMf, mapMin, mapMax, 100 * detailShare, haloes, ms);
+                            + "%.0f%% of it, %d bright lights' glows kept out of it; %s (%d ms)", sigma[0], sigma[1], sigma[2], min(sigmaQ),
+                    max(sigmaQ), 100 * starFraction, sigmaMf, guessMf, mapMin, mapMax, 100 * detailShare, haloes, sharpNote(), ms);
+        }
+
+        /** The stars' size and what the sharpening does about it (2.0), for the log. */
+        public String sharpNote() {
+            if (starSigma != starSigma) return "star images not measured (" + starsMeasured + " stars to go by), left as they are";
+            if (ds == null) {
+                return String.format(Locale.US, "star images %.2f px (sigma, on %d stars), left as they are", starSigma, starsMeasured);
+            }
+            return String.format(Locale.US, "star images %.2f px (sigma, on %d stars), a blur of %.2f px drawn back in on %.1f%% of "
+                    + "the pixels", starSigma, starsMeasured, sharpSigma, 100 * sharpShare);
+        }
+
+        /** What the sharpening adds to the luminance of crop pixel (x, y), times {@link Renderer.Params#sharp}. */
+        public float sharpAt(int x, int y) {
+            return ds == null ? 0f : Half.toFloat(ds[y * cw + x]);
         }
 
         /** What to add to the luminance of crop pixel (x, y). */
@@ -211,24 +268,33 @@ public final class Denoise {
         b.dOff = r.dOff + r.dScale * (factor - 1) * 0.5f;
         b.detailShare = r.detailShare;
         b.haloes = r.haloes;
+        b.starSigma = r.starSigma;
+        b.sharpSigma = r.sharpSigma;
+        b.starsMeasured = r.starsMeasured;
+        b.sharpShare = r.sharpShare;
         final short[] dy = new short[w * h];
+        // the sharpening binned the same way: what the full-size photo's stars gain and lose, pixel block by pixel block
+        final short[] ds = r.ds != null ? new short[w * h] : null;
         final float inv = 1f / (factor * factor);
         Parallel.forRange(h, 8, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
                 for (int j = j0; j < j1; j++) {
                     for (int i = 0; i < w; i++) {
-                        float s = 0;
+                        float s = 0, t = 0;
                         for (int d = 0; d < factor; d++) {
                             int o = (j * factor + d) * r.cw + i * factor;
                             for (int e = 0; e < factor; e++) s += Half.toFloat(r.dy[o + e]);
+                            if (ds != null) for (int e = 0; e < factor; e++) t += Half.toFloat(r.ds[o + e]);
                         }
                         dy[j * w + i] = Half.fromFloat(s * inv);
+                        if (ds != null) ds[j * w + i] = Half.fromFloat(t * inv);
                     }
                 }
             }
         });
         b.dy = dy;
+        b.ds = ds;
         return b;
     }
 
@@ -246,14 +312,18 @@ public final class Denoise {
         res.ch = j.ch;
         res.guessMf = j.ratio0 * s1;
         // stars with the guess, filled in; the noise measured on the sky that leaves
-        j.footprints(res.guessMf);
+        j.footprints(res.guessMf, null);
         if (!j.measure(res)) return null;
         j.coarse(res);
         j.bStar = null;
-        // stars again with the measured noise; the correction from the sky that leaves
-        res.starFraction = j.footprints(res.sigmaMf);
+        // stars again with the measured noise (and their sizes counted); the correction from the sky that leaves
+        int[] sizes = new int[PSF_BINS];
+        res.starFraction = j.footprints(res.sigmaMf, sizes);
         res.dy = j.correct(res);
+        long t1 = System.currentTimeMillis();
+        j.sharpen(res, sizes);
         res.ms = System.currentTimeMillis() - t0;
+        res.msSharp = System.currentTimeMillis() - t1;
         return res;
     }
 
@@ -404,25 +474,29 @@ public final class Denoise {
 
         /**
          * The star pixels where the matched filter stands {@link #DETECT} times {@code smf} over the 8 px smooth, and the
-         * quarter-size fill of the sky around them; returns the share of the pixels that are stars.
+         * quarter-size fill of the sky around them; returns the share of the pixels that are stars. With {@code sizes},
+         * the star images' sizes are counted into it ({@link Work#sizes}).
          */
-        float footprints(final float smf) {
+        float footprints(final float smf, final int[] sizes) {
             final long[] stars = new long[1];
             Parallel.forRange(tiles(), grain(tiles()), new Parallel.Range() {
                 @Override
                 public void run(int t0, int t1) {
                     Work w = work();
                     long n = 0;
+                    int[] h = sizes != null ? new int[PSF_BINS] : null;
                     for (int t = t0; t < t1; t++) {
                         w.at(t % ntx, t / ntx, R_LAYERS + R_DISC);
                         w.load(false);
                         w.layers(w.Y);
                         w.matched(w.Y, w.MF);
                         n += w.stamp(1f / smf);
+                        if (h != null) w.sizes(1f / smf, h);
                     }
                     synchronized (stars) {
                         stars[0] += n;
                     }
+                    if (h != null) add(sizes, h);
                     done(w);
                 }
             });
@@ -1001,6 +1075,82 @@ public final class Denoise {
         }
 
         /**
+         * Sharper stars (2.0): a star image's size from the sizes counted (their median), and when the stars are big
+         * enough and many enough, what draws each one's light back in towards its middle ({@link Result#ds}).
+         */
+        void sharpen(final Result res, int[] sizes) {
+            long n = 0;
+            for (int c : sizes) n += c;
+            res.starsMeasured = (int) Math.min(Integer.MAX_VALUE, n);
+            if (n < PSF_MIN_STARS) return;
+            double half = n / 2.0, acc = 0;
+            float sg = PSF_FROM + PSF_BINS * PSF_STEP;
+            for (int k = 0; k < PSF_BINS; k++) {
+                int c = sizes[k];
+                if (acc + c >= half) {
+                    sg = PSF_FROM + (float) (k + (c > 0 ? (half - acc) / c : 0)) * PSF_STEP;
+                    break;
+                }
+                acc += c;
+            }
+            res.starSigma = sg;
+            if (a.trails || sg < SHARP_MIN) return;
+            final float sd = Math.min(SHARP_SHARE * sg, SHARP_MOST);
+            final float[] k = gauss(SHARP_K, sd);
+            float k2 = 0;
+            for (float v : k) k2 += v * v;
+            // a pixel's noise, and the blurred star light's (the taps' squares add up, each way)
+            final float pix = res.sigma[0] / FINEST_OF_PIXEL;
+            final float noise = pix * k2;
+            // a star's peak from its blurred light's: the blur spreads a star image of sg px over sg^2 + sd^2
+            final float peakOf = (sg * sg + sd * sd) / (sg * sg);
+            final float full = SHARP_FULL * a.whiteY, none = SHARP_NONE * a.whiteY;
+            final short[] ds = new short[cw * ch];
+            final long[] moved = new long[1];
+            Parallel.forRange(tiles(), grain(tiles()), new Parallel.Range() {
+                @Override
+                public void run(int t0, int t1) {
+                    Work w = work();
+                    float[] nrow = new float[ncx];
+                    long m = 0;
+                    for (int t = t0; t < t1; t++) {
+                        w.at(t % ntx, t / ntx, R_SHARP + R_FILL);
+                        w.load(true);
+                        if (!w.anyStar()) continue;
+                        w.fill();
+                        w.sharpen(k, SHARP_FLOOR * pix, SHARP_SNR0 * noise, peakOf, none);
+                        for (int y = w.y0; y < w.y1; y++) {
+                            int o = (y - w.by0) * w.bw - w.bx0;
+                            mapRow(y, nrow);
+                            for (int x = w.x0; x < w.x1; x++) {
+                                int i = o + x;
+                                float d = w.CV[i];
+                                if (d == 0f) continue;
+                                float own = w.CW[i];
+                                if (own == Float.POSITIVE_INFINITY) continue;
+                                float g = smooth(own / (noise * cellAt(nrow, x)), SHARP_SNR0, SHARP_SNR1);
+                                if (g <= 0f) continue;
+                                g *= 1f - smooth(own * peakOf + w.BG[i], full, none);
+                                if (g <= 0f) continue;
+                                short h = Half.fromFloat(g * d);
+                                if (h == 0 || h == (short) 0x8000) continue;
+                                ds[y * cw + x] = h;
+                                m++;
+                            }
+                        }
+                    }
+                    synchronized (moved) {
+                        moved[0] += m;
+                    }
+                    done(w);
+                }
+            });
+            res.ds = ds;
+            res.sharpSigma = sd;
+            res.sharpShare = moved[0] / (float) ((long) cw * ch);
+        }
+
+        /**
          * Each 4 x 4 block's sky mean where half of it or more is sky, the rest filled from the blocks around (B3
          * smoothing renormalised, the finest level that reaches); what's still empty takes the mean of all the sky.
          */
@@ -1088,11 +1238,13 @@ public final class Denoise {
         final boolean[] F;
         /** The crop's column and row of each buffer column and row (mirrored outside it). */
         final int[] xs, ys;
+        /** A row of the noise map, for the sharpening. */
+        float[] NR;
         int x0, y0, x1, y1, bx0, by0, bw, bh;
 
         Work(Job j) {
             this.j = j;
-            side = j.tile + 2 * (R_LAYERS + R_FILL);
+            side = j.tile + 2 * (Math.max(R_LAYERS, R_SHARP) + R_FILL);
             cap = side * side;
             Y = new float[cap];
             BG = new float[cap];
@@ -1242,6 +1394,166 @@ public final class Denoise {
                 }
             }
             return n;
+        }
+
+        /** Whether the buffer holds a star pixel at all (after {@link #load} with the stars). */
+        boolean anyStar() {
+            for (int i = 0, n = bw * bh; i < n; i++) if (F[i]) return true;
+            return false;
+        }
+
+        /**
+         * Counts the sizes of the core's star images into {@code hist} (after {@link #layers} of Y and {@link #matched}):
+         * at each pixel that stands PSF_SNR times the noise in the matched filter, is the highest of the 1 px smooth
+         * among its 24 neighbours and isn't clipped or near the clip level, the size is read from how the star's middle
+         * stands over the 8 px smooth in the 1 px smooth against the 2 px smooth ({@link #PSF_RATIO}).
+         */
+        void sizes(float invNoise, int[] hist) {
+            float lim = SHARP_CLIP * j.a.whiteY;
+            RgbImage im = j.img;
+            byte[] clip = im.clip;
+            for (int y = y0; y < y1; y++) {
+                int o = (y - by0) * bw - bx0;
+                int src = (j.a.cy0 + y) * im.width + j.a.cx0;
+                for (int x = x0; x < x1; x++) {
+                    int i = o + x;
+                    if (!((MF[i] - C3[i]) * invNoise >= PSF_SNR)) continue;
+                    float c1 = C1[i];
+                    boolean top = true;
+                    for (int dy = -2; dy <= 2 && top; dy++) {
+                        int q = i + dy * bw;
+                        for (int dx = -2; dx <= 2; dx++) {
+                            if (C1[q + dx] > c1) {
+                                top = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!top || Y[i] >= lim || (clip != null && clip[src + x] != 0)) continue;
+                    float a1 = c1 - C3[i], a2 = C2[i] - C3[i];
+                    if (!(a2 > 0f && a1 > a2)) continue;
+                    hist[sizeBin(a1 / a2)]++;
+                }
+            }
+        }
+
+        /**
+         * After {@link #fill}: the stars' light (what stands {@code floor} times the noise map over the filled-in sky on
+         * the star pixels) sharpened by SHARP_ITER steps of Richardson and Lucy's method with the blur {@code k}. Leaves
+         * in CW each star's own brightness: the highest blurred light among the pixels of that light that hang together
+         * with the pixel, as far as SHARP_OWN px, or infinity when one of them clipped in some frame or stands at
+         * {@code none} or more; and in CV what the sharpening adds to each pixel. Only the stars that get some of it
+         * take part (their own brightness {@code least} times the noise map or more, and their peak, {@code peakOf}
+         * times that over the sky, under {@code none}): what's left as it is gives no light and takes none. Right in the
+         * core when the buffer reaches R_SHARP + R_FILL around it.
+         */
+        void sharpen(float[] k, float floor, float least, float peakOf, float none) {
+            int n = bw * bh;
+            float[] S = C1, E = C2, D = C3;
+            if (NR == null || NR.length != j.ncx) NR = new float[j.ncx];
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                j.mapRow(ys[y], NR);
+                for (int x = 0; x < bw; x++) {
+                    int i = o + x;
+                    float v = F[i] ? Y[i] - BG[i] - floor * j.cellAt(NR, xs[x]) : 0f;
+                    S[i] = v > 0f ? v : 0f;
+                }
+            }
+            // each star's own brightness: its blurred light where it has light, no star's where a pixel can't be trusted
+            spread(S, CW, k);
+            RgbImage im = j.img;
+            byte[] clip = im.clip;
+            for (int y = 0; y < bh; y++) {
+                int src = (j.a.cy0 + ys[y]) * im.width + j.a.cx0;
+                int o = y * bw;
+                for (int x = 0; x < bw; x++) {
+                    int i = o + x;
+                    if (!(S[i] > 0f)) CW[i] = 0f;
+                    else if (Y[i] >= none || (clip != null && clip[src + xs[x]] != 0)) CW[i] = Float.POSITIVE_INFINITY;
+                }
+            }
+            float[] from = CW, to = D;
+            for (int it = 0; it < SHARP_OWN; it++) {
+                own(S, from, to);
+                float[] t = from;
+                from = to;
+                to = t;
+            }
+            if (from != CW) System.arraycopy(from, 0, CW, 0, n);
+            // the stars that take part
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                j.mapRow(ys[y], NR);
+                for (int x = 0; x < bw; x++) {
+                    int i = o + x;
+                    if (S[i] > 0f) {
+                        float own = CW[i];
+                        if (!(own >= least * j.cellAt(NR, xs[x])) || !(own * peakOf + BG[i] < none)) S[i] = 0f;
+                    }
+                    E[i] = S[i];
+                }
+            }
+            for (int it = 0; it < SHARP_ITER; it++) {
+                // the estimate blurred as the lens blurs; what was seen against that, blurred back; the estimate times that
+                spread(E, D, k);
+                for (int i = 0; i < n; i++) {
+                    float sv = S[i], d = D[i];
+                    D[i] = sv > 0f && d > 1e-20f ? sv / d : 0f;
+                }
+                spread(D, CV, k);
+                for (int i = 0; i < n; i++) if (E[i] != 0f) E[i] *= CV[i];
+            }
+            for (int i = 0; i < n; i++) CV[i] = E[i] - S[i];
+        }
+
+        /** dst: where s holds something, the highest of src among the pixel and its 8 neighbours; 0 elsewhere. */
+        void own(float[] s, float[] src, float[] dst) {
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                int ya = y > 0 ? -bw : 0, yb = y < bh - 1 ? bw : 0;
+                for (int x = 0; x < bw; x++) {
+                    int i = o + x;
+                    if (!(s[i] > 0f)) {
+                        dst[i] = 0f;
+                        continue;
+                    }
+                    int xa = x > 0 ? -1 : 0, xb = x < bw - 1 ? 1 : 0;
+                    float m = src[i];
+                    for (int q = i + ya; q <= i + yb; q += bw) {
+                        for (int e = q + xa; e <= q + xb; e++) if (src[e] > m) m = src[e];
+                    }
+                    dst[i] = m;
+                }
+            }
+        }
+
+        /**
+         * src blurred with the taps k (the same either way round) each way into dst (not src); nothing lies beyond the
+         * buffer's edges. src is mostly nothing (stars' light), so each pixel that holds something is spread over its
+         * neighbours, in the order that adds up as taking each neighbour in turn would.
+         */
+        void spread(float[] src, float[] dst, float[] k) {
+            int r = (k.length - 1) / 2, n = bw * bh;
+            java.util.Arrays.fill(T, 0, n, 0f);
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                for (int x = 0; x < bw; x++) {
+                    float v = src[o + x];
+                    if (v == 0f) continue;
+                    for (int t = Math.max(-r, -x), te = Math.min(r, bw - 1 - x); t <= te; t++) T[o + x + t] += k[t + r] * v;
+                }
+            }
+            java.util.Arrays.fill(dst, 0, n, 0f);
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                int ta = Math.max(-r, -y), tb = Math.min(r, bh - 1 - y);
+                for (int x = 0; x < bw; x++) {
+                    float v = T[o + x];
+                    if (v == 0f) continue;
+                    for (int t = ta; t <= tb; t++) dst[o + t * bw + x] += k[t + r] * v;
+                }
+            }
         }
 
         /** B3-spline smoothing with taps step apart over the buffer (src may be dst); the edges are clamped. */
@@ -1443,6 +1755,58 @@ public final class Denoise {
                 }
             }
         });
+    }
+
+    /**
+     * A round star image of sigma PSF_FROM + k PSF_STEP px, smoothed as the layers are: how its middle stands over the
+     * 8 px smooth in the 1 px smooth against the same in the 2 px smooth (the star anywhere within its middle pixel).
+     * The wider the star, the lower: that's how a star's size is read from the two.
+     */
+    static final float[] PSF_RATIO = psfRatios();
+
+    private static float[] psfRatios() {
+        float[] out = new float[PSF_BINS + 1];
+        double[] w = {1 / 16.0, 4 / 16.0, 6 / 16.0, 4 / 16.0, 1 / 16.0};
+        int phases = 8;
+        for (int k = 0; k <= PSF_BINS; k++) {
+            double s = PSF_FROM + k * (double) PSF_STEP;
+            // along one axis: the star's light in the 1, 2 and 8 px smooths at its middle pixel, over where in the pixel it sits
+            double m1 = 0, m2 = 0, m3 = 0;
+            for (int p = 0; p < phases; p++) {
+                double ph = (p + 0.5) / phases - 0.5;
+                double x1 = 0, x2 = 0, x3 = 0;
+                for (int i = -2; i <= 2; i++) {
+                    x1 += w[i + 2] * star(i - ph, s);
+                    for (int j = -2; j <= 2; j++) {
+                        x2 += w[i + 2] * w[j + 2] * star(2 * j + i - ph, s);
+                        for (int l = -2; l <= 2; l++) x3 += w[i + 2] * w[j + 2] * w[l + 2] * star(4 * l + 2 * j + i - ph, s);
+                    }
+                }
+                m1 += x1;
+                m2 += x2;
+                m3 += x3;
+            }
+            // both axes: the products
+            out[k] = (float) ((m1 * m1 - m3 * m3) / (m2 * m2 - m3 * m3));
+        }
+        return out;
+    }
+
+    private static double star(double t, double s) {
+        return Math.exp(-t * t / (2 * s * s));
+    }
+
+    /** The bin (of PSF_BINS) of the star size that gives this ratio ({@link #PSF_RATIO}). */
+    static int sizeBin(float ratio) {
+        if (ratio >= PSF_RATIO[0]) return 0;
+        if (ratio <= PSF_RATIO[PSF_BINS]) return PSF_BINS - 1;
+        int lo = 0, hi = PSF_BINS;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (PSF_RATIO[mid] >= ratio) lo = mid;
+            else hi = mid;
+        }
+        return lo;
     }
 
     /** Whole-sample mirror of an index into [0, n). */

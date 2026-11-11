@@ -20,10 +20,10 @@ public final class Renderer {
 
     /**
      * The rendering's version: raised whenever a change makes the same stack give a different photo (2: the sky's noise
-     * taken out with the stars set aside, 1.4; 3: the sky's detail brought out, 1.9). Saved with every recipe (G3), so a
-     * photo rendered by an older version can be rendered again from its kept stack with this one.
+     * taken out with the stars set aside, 1.4; 3: the sky's detail brought out, 1.9; 4: sharper stars, 2.0). Saved with
+     * every recipe (G3), so a photo rendered by an older version can be rendered again from its kept stack with this one.
      */
-    public static final int VERSION = 3;
+    public static final int VERSION = 4;
 
     public static final class Params {
         /** 0 = dark sky, 1 = bright sky; 0.5 puts the background near 12% grey. */
@@ -43,10 +43,18 @@ public final class Renderer {
         public float detail = DETAIL;
         public static final float DETAIL = 0.7f;
         /**
-         * Star glow (1.10): how much of a soft glow the brightest stars get, so the constellations stand out ({@link StarGlow});
+         * Star glow (2.0): how much of a soft glow the brightest stars get, so the constellations stand out ({@link StarGlow});
          * 0 (the develop step's) none, 1 a clear glow, 2 a strong one. For deep-sky photos (a star trail isn't a star).
          */
         public float glow;
+        /**
+         * Sharper stars (2.0): how much of the blur {@link Denoise} can take out of the stars is taken out, 0 (none: the
+         * stars as the lens drew them) to 1 (all of it); {@link #SHARP} is the develop step's. Each star's light is drawn
+         * back in towards its middle; the sky, faint stars and clipped ones are left as they are. Full-size renders,
+         * photos saved smaller and the photo's preview; not star trails.
+         */
+        public float sharp = SHARP;
+        public static final float SHARP = 0.7f;
         public boolean removeGradient = true;
         /**
          * Strength of the stretch, 1 (gentle) to 10 (strong): how far faint light is lifted above the sky background,
@@ -99,6 +107,8 @@ public final class Renderer {
          * stars, longer for star trails, whose colour flickers along the trail with the sampling phase.
          */
         public float colorSigma = 1.2f;
+        /** Star trails: the stars are arcs, which aren't sharpened as star images are (2.0). */
+        public boolean trails;
         /**
          * 1 / clip level per channel on a CGX x CGY grid of nodes spanning the crop (lens shading raises the
          * clip level towards the corners): [(c * CGY + j) * CGX + i].
@@ -113,11 +123,11 @@ public final class Renderer {
          */
         Denoise.Result previewDenoise, previewFrom;
         RgbImage previewDenoised;
-        /** The lights that glow (1.10), found in the picture {@link #glowFrom} (the full-size one or a binned copy of it). */
+        /** The lights that glow (2.0), found in the picture {@link #glowFrom} (the full-size one or a binned copy of it). */
         StarGlow glow;
         RgbImage glowFrom;
         /**
-         * The catalogue's bright stars and the planets where the plate solution puts them in the crop (1.10; null when
+         * The catalogue's bright stars and the planets where the plate solution puts them in the crop (2.0; null when
          * the photo isn't solved), brightest first, {@link StarGlow#SKY_STRIDE} floats each ({@link StarGlow#sky}): the
          * star glow takes the brightness and colour of a star the photo clips from them.
          */
@@ -140,7 +150,7 @@ public final class Renderer {
             return denoise;
         }
 
-        /** Which lights glow (1.10), for the log; "" until a picture has been rendered with a glow. */
+        /** Which lights glow (2.0), for the log; "" until a picture has been rendered with a glow. */
         public synchronized String glowNote() {
             return glow != null ? glow.describe() : "";
         }
@@ -737,7 +747,7 @@ public final class Renderer {
     /** Full-resolution render of the crop area, delivered in bands of rows to the sink. */
     public static void render(final RgbImage img, final Analysis a, final Params p, final RowSink sink, final Progress progress) {
         final Curve curve = Curve.make(a, p);
-        final Denoise.Result dn = p.lumaNr > 0 ? denoise(img, a) : null;
+        final Denoise.Result dn = p.lumaNr > 0 || p.sharp > 0 ? denoise(img, a) : null;
         final StarGlow.Field glow = p.glow > 0 ? glow(img, a, a, 1).field(p.glow, 1, a.cw, a.ch) : null;
         final int bandRows = 32;
         final int bands = (a.ch + bandRows - 1) / bandRows;
@@ -777,7 +787,7 @@ public final class Renderer {
     }
 
     /**
-     * The lights that glow (1.10) in {@code img}, a picture {@code scale} times the full size each way analysed by
+     * The lights that glow (2.0) in {@code img}, a picture {@code scale} times the full size each way analysed by
      * {@code ia} ({@code a} itself, or its copy for a binned picture): found the first time and kept with {@code a}, for the
      * picture and the copies binned from it (or the picture a kept copy was binned from). A binned copy's are found in the
      * full-size picture it was binned from while that's still about, so the preview's glow is the saved photo's.
@@ -844,10 +854,11 @@ public final class Renderer {
         Curve curve = Curve.make(a, p);
         Analysis sa = smallAnalysis(small, a, factor);
         Denoise.Result dn = null;
-        if (p.lumaNr > 0 && nr == PHOTO) {
+        boolean wanted = p.lumaNr > 0 || p.sharp > 0;
+        if (wanted && nr == PHOTO) {
             dn = Denoise.run(small, sa, 1f / factor);
             if (dn != null) a.noted(dn, factor + "x smaller: ");
-        } else if (p.lumaNr > 0 && nr == PREVIEW) {
+        } else if (wanted && nr == PREVIEW) {
             synchronized (a) {
                 Denoise.Result full = a.denoise != null && small.isBinned(a.denoised, factor, a.cx0, a.cy0)
                         && small.width == a.cw / factor && small.height == a.ch / factor ? a.denoise : null;
@@ -882,7 +893,7 @@ public final class Renderer {
     public static int[] renderScaled(final RgbImage img, Analysis a, final Params p, float factor, final float noiseScale) {
         final Curve curve = Curve.make(a, p);
         final Analysis sa = smallAnalysis(img, a, factor);
-        // the photo's glow (1.10), from the lights its render found
+        // the photo's glow (2.0), from the lights its render found
         StarGlow lights;
         synchronized (a) {
             lights = a.glow;
@@ -923,6 +934,7 @@ public final class Renderer {
         sa.clipInv = a.clipInv;
         sa.sky = a.sky;
         sa.colorSigma = a.colorSigma / factor;
+        sa.trails = a.trails;
         sa.whiteY = a.whiteY;
         sa.clip = a.clip;
         sa.cx0 = 0;
@@ -985,8 +997,8 @@ public final class Renderer {
 
         /**
          * {@code noiseScale}: the image's noise relative to the analysed full-resolution image; {@code dn}: the sky's noise
-         * to take out of the luminance ({@link Params#lumaNr} of it), or null; {@code glow}: the stars' glow to add (1.10),
-         * or null.
+         * to take out of the luminance ({@link Params#lumaNr} of it) and the stars' sharpening ({@link Params#sharp} of
+         * it), or null; {@code glow}: the stars' glow to add (2.0), or null.
          */
         void process(RgbImage img, Analysis a, Params p, Curve curve, int y0, int y1, float noiseScale, Denoise.Result dn,
                      StarGlow.Field glow, int[] argb) {
@@ -1061,7 +1073,7 @@ public final class Renderer {
                 CB[i] *= hw;
                 YC[i] = hw * Y[i];
             }
-            // the stars' glow (1.10): light in the star's colour, never clipped
+            // the stars' glow (2.0): light in the star's colour, never clipped
             if (glow != null) glow.add(rs, re, Y, CR, CB, YC);
             // Colour of the neighbourhood: window-weighted sums of chroma and of luminance, i.e. a star's
             // colour from its whole image. Per-pixel colour is unreliable at star scale: each CFA plane is
@@ -1070,11 +1082,14 @@ public final class Renderer {
             gaussBlur(CB, T2, n);
             gaussBlur(YC, T3, n);
             gaussBlur(HW, TH, n);
-            short[] dy = dn != null ? dn.dy : null;
+            short[] dy = dn != null && p.lumaNr > 0 ? dn.dy : null;
             float nrAmt = p.lumaNr;
             // the sky's detail brought out (1.9), along each row
-            boolean detail = dn != null && dn.dd != null && p.detail != 0f;
+            boolean detail = dy != null && dn.dd != null && p.detail != 0f;
             float detAmt = p.detail;
+            // sharper stars (2.0): each star's light drawn back in towards its middle
+            short[] ds = dn != null && p.sharp > 0 ? dn.ds : null;
+            float shAmt = Math.min(1f, p.sharp);
 
             float inv = 1f / noise;
             float axR = a.axisR, axB = a.axisB;
@@ -1094,6 +1109,7 @@ public final class Renderer {
                     // the sky's noise taken out (the stars keep their light: the correction is the starless sky's)
                     if (dy != null) l += nrAmt * Half.toFloat(dy[y * w + x]);
                     if (detail) l += detAmt * DR[x];
+                    if (ds != null) l += shAmt * Half.toFloat(ds[y * w + x]);
                     // Colour as ratios to the luminance (never absolute chroma, which would spill a star's
                     // colour onto dark neighbours), from the window; clipped samples carry no weight.
                     float th = TH[i];

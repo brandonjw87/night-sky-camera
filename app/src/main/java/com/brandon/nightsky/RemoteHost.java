@@ -416,7 +416,7 @@ final class RemoteHost implements RemoteServer.Backend {
 
     private static byte[] compress(Bitmap b, int quality) {
         ByteArrayOutputStream bo = new ByteArrayOutputStream(256 * 1024);
-        b.compress(Bitmap.CompressFormat.JPEG, quality, bo);
+        HdrScreen.compressPlain(b, quality, bo);
         return bo.toByteArray();
     }
 
