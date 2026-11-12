@@ -96,7 +96,7 @@
   the wrong catalogue entry can't be made more than 30 times brighter; at 0% the photo is exactly as it was; and
   the edit screen's preview glows with the same stars as the saved photo. The photo's video glows as the photo
   does (its last picture within 3 levels of the glowing photo).
-- **The whole app:** every automatic check of the processing (31 test programs) passes on the finished code, and
+- **The whole app:** every automatic check of the processing (30 test programs) passes on the finished code, and
   a whole simulated night was run through the app off the phone, from Start to the saved photo.
 
 ### Install the update (Windows, USB cable)
