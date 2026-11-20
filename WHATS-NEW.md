@@ -50,8 +50,8 @@ app with a simulated camera lying covered on a table:
   where the stars were drawn sharpest at 0.827 ("spot on"); the sky check read 19.51 magnitudes a square
   arcsecond where 19.53 was expected (the Moon was up); 561 stars recognised, pointing 4 arcseconds from where the
   sky was drawn; the frames lined up within 0.02 px; the stack 4.3 times smoother than one frame; the photo, its
-  HDR brightness, its video and the DNG all saved. Drawing took at most 0.1 s a frame, developing 85 s, and memory
-  at most 627 MB of the 5,120 MB the app may use.
+  HDR brightness, its video and the DNG all saved. Drawing the sky took at most 0.1 s a frame there; how long it
+  takes on your phone, how long developing takes and how much memory it needs are in your own rehearsal's check.
 - **The drawn sky against the physics.** The sky check read 20.35 where 20.37 was expected; the focus sweep
   landed within one step of where the sky was drawn sharpest; 568 stars were matched; a full-size frame
   (4080 x 3072) was drawn in 188 ms; and light leaking onto the sensor is caught and named.
@@ -63,8 +63,8 @@ app with a simulated camera lying covered on a table:
 - **Everything else as in 2.0:** the 31 simulator tests, and the six simulated nights, which came out the same
   as 2.0's line for line except for the timings; a normal night, Stop, Star trails, a hazy first night then a
   clear one (still learned from), the edit screen, the opening film (121 checks), every way of opening the app,
-  every screen drawn, and the tap-everything test (41 screens, 957 taps, no problems), which found an older snag, now fixed: a plan
-  made after dark refused its first session.
+  every screen drawn, and the tap-everything test (41 screens, 957 taps, no problems), which found an older
+  snag, now fixed: a plan made after dark refused its first session.
 
 ### Install the update (Windows, USB cable)
 
