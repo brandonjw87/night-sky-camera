@@ -4,7 +4,7 @@ A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.0.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.1.
 
 ## What it does
 
@@ -15,6 +15,12 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.0.
   is better: 20 or 30 minutes.
 - **Camera check.** Up to three minutes indoors, before your first night: what this phone's camera really does
   with long exposures, frame after frame and in the dark. Sessions plan with what it finds.
+- **Rehearse a night.** About ten minutes indoors, at any time of day: the phone lies screen-up on a table and a
+  clear night's sky is drawn into its camera's own RAW frames, so the whole night runs for real (the focus, the sky
+  check, the frames, the stacking, the HDR photo and its video) and every step is checked against the sky it was
+  given. "Rehearsal check: all 11 passed" means the phone is ready for a night.
+- **Stop recorder.** If the app is ever stopped in the middle of something (a crash, Android closing it for memory
+  or battery, a force stop), the next time it opens it says why and what it was doing, with the details to share.
 - **Screen-down start.** Tap Start and lay the phone down. Once it's still it focuses on the stars, checks the
   sky (a smudged lens, trees, clouds, haze, the Moon), counts down and starts. The screen goes dark while it works.
 - **Haze from the first night.** How much haze dims the stars is measured against how bright they'd be on a clear
@@ -106,6 +112,36 @@ Install it with Google's USB tool instead:
    ```
 
    It prints `Success` when it's done.
+
+## Rehearse a night (before your first one)
+
+Everything a night does, done indoors in about ten minutes, at any time of day. The stars over where you are, as a
+clear dark night would show them that minute (with the Milky Way, and the Moon if it's up), are drawn into the
+camera's own RAW frames: their brightness for this phone's lens and sensor, their colours, the sky's glow, the sky
+turning through each exposure and the blur where the lens is out of focus. So the phone's real camera, the focus,
+the sky check, the stacking, the saving and the memory all get a full run, and each step is checked against the
+sky the app drew.
+
+1. Open Night Sky and tap **Rehearse** on the home screen's card (or **Rehearse a night indoors** at the bottom of
+   the home screen), then **Rehearse**.
+2. Lay the phone **screen-up** on a table, its camera flat against the table: wood, cloth or a closed book, not
+   glass. A dim room helps but isn't needed.
+3. Leave it. You can watch the screen: it focuses, checks the drawn sky and says what it found, counts down, takes
+   five minutes of frames with your settings, and develops the photo.
+4. The result screen says how it went: **Rehearsal check: all 11 passed**, or what to look at, or what failed.
+   Tap it to see every step (what failed first, then what to look at, then what passed). **Share the check** sends
+   it as text: paste it into the Claude chat and Claude can tell what went wrong.
+
+It checks that the camera gave every frame, as long as asked; that the camera was in the dark; that the focus sweep
+found where the stars were drawn sharpest; that the sky check read the drawn sky's brightness; that the stars were
+recognised where the phone pointed; that the frames were stacked and lined up to a fraction of a pixel; the colours;
+the noise; that the photo, its HDR brightness, its video and the DNG were saved; and how fast it drew the sky,
+how long developing took and how much memory it needed.
+
+The rehearsal's photo is saved like any other, with `_rehearsal` in its name and "Rehearsal, a drawn sky" in its
+description, so it's easy to tell apart and delete. It's kept on the **Sessions** page, labelled **Rehearsal**,
+and never merged with a real night. Nothing about its drawn sky (the focus, how dark the sky was, haze, the battery
+with the screen on) is kept for real nights; what it finds about the camera itself is real, and kept.
 
 ## Taking a photo
 
@@ -305,6 +341,11 @@ tap **Stop the viewer** on the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
   the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
   couldn't run ends on).
+- If the app is ever stopped in the middle of something (a crash, Android closing it to free memory or save
+  battery, a force stop, a freeze), the next time it opens the home screen says why, when and what it was doing,
+  with **Share the details**: where in the code it went wrong, or Android's own record of how it ended. The
+  session it stopped gets the same line in its log. Endings that are part of normal life (an update, Android
+  tidying away the app while it wasn't doing anything) aren't shown.
 
 ## Credits
 
@@ -353,6 +394,7 @@ app/src/main/java/com/brandon/nightsky/
     SensorSpecFactory   camera calibration from Camera2 metadata
     FocusCalibrator     daylight focus calibration
     CameraCheck         the camera check: long exposures, frame after frame, the sensor in the dark
+    StopRecorder        why the app last stopped: crashes written down, Android's record of how it ended (NightSkyApp)
     PlanRunner, Plans   the night plan: alarms, only-if-clear starts, the morning summary
     PlanReceiver        restarts and updates while a plan is armed
     NightTileService    the Quick Settings tile
@@ -389,6 +431,8 @@ app/src/main/java/com/brandon/nightsky/
         MeteorShowers   the shower calendar: radiants, their drift, rates, and which shower a meteor came from
         MeteorLog       the meteors caught: when, how bright, where, and the table of them
         Preflight       the pre-flight check
+        RehearsalSky    a rehearsal's clear night, drawn into the camera's own RAW frames as this camera would see it
+        RehearsalCheck  every step of a rehearsal checked against the sky it was given
         ClearSky        how bright a clear night's stars are for this camera (from its lens and sensor), for haze
         CameraFacts, DarkFrames  what the camera check found; dark frames measured
         Focus*          focus on the stars and its temperature model
@@ -448,7 +492,9 @@ output folder;
 `ReportTest`, `SatSessionTest`, `MeteorSessionTest`, `LibraryTest`, `MergeTest` and `G3Test` take an output folder,
 for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 16`. `PhotoVideoTest` takes an
 output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the path, also writes its videos as MP4.
-`MeteorLimit` (an output folder, then the scale) measures how faint a meteor the camera catches.
+`MeteorLimit` (an output folder, then the scale) measures how faint a meteor the camera catches. `RehearsalTest`
+(2.1) draws a rehearsal's sky into dark frames and runs the app's own measurements on it: the sky check, the star
+solve, the focus sweep, a whole session and its check.
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -458,5 +504,7 @@ another version's.
 desktop JVM with Robolectric, without Gradle or Google's Maven repository. `robo/setup.sh` fetches what it needs
 from Maven Central once; then `robo/run.sh Night base,stall` runs whole sessions through the real capture code
 with a simulated camera that renders the real stars and can stop, stall, fail or be taken away, and
-`robo/run.sh Monkey` taps every control on every screen, and `robo/run.sh Intro` checks the opening film.
+`robo/run.sh Monkey` taps every control on every screen, `robo/run.sh Intro` checks the opening film,
+`robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, and `robo/run.sh Stops` checks
+the stop recorder.
 [robo/README.md](robo/README.md) lists every scenario.

@@ -360,6 +360,8 @@ final class SessionController {
     private long advMaxNs;
     private boolean realtimeClock;
     private SessionStore store;
+    /** The session a develop job works on (for the stop recorder; the job's thread owns it). */
+    private volatile SessionStore jobStore;
     private UnitProcessor up;
     private Phase phase = Phase.IDLE;
     /** Bumped to stop the tick loop. */
@@ -1807,6 +1809,7 @@ final class SessionController {
         if (up != null) up.abort();
         up = null;
         store = null;
+        jobStore = null;
         if (s.rehearsal) rehearsalSettings(s);
         settings = s;
         if (!s.fromViewer) muted = false;
@@ -4976,6 +4979,7 @@ final class SessionController {
         final String verb = merging ? "Merging" : job == JOB_EDIT ? "Stacking the edit" : job == JOB_AGAIN ? "Making it again" : "Developing";
         final String what = merging ? "merging" : job == JOB_EDIT ? "stacking the edit" : job == JOB_AGAIN ? "making a render again" : "developing";
         final long t0 = SystemClock.elapsedRealtime();
+        jobStore = st;
         post(Phase.DEVELOPING, verb, firstStage, 0f);
         Progress progress = new Progress() {
             long last;
@@ -6118,6 +6122,51 @@ final class SessionController {
         s.version = ++statusVersion;
         status = s;
         host.onStatus(s);
+        noteState(s);
+    }
+
+    /**
+     * What the stop recorder keeps with the process (2.1), so that if Android ends it, the next launch says what was
+     * running: a few words that change with each step (and each frame while capturing), and the session's folder.
+     */
+    private void noteState(Status s) {
+        String what;
+        switch (s.phase) {
+            case IDLE:
+            case DONE:
+            case FAILED:
+                StopRecorder.session("idle", null);
+                return;
+            case CAPTURING:
+                what = s.planned > 0 ? String.format(Locale.US, "capturing frame %d of %d", Math.min(s.done + 1, s.planned), s.planned)
+                        : "capturing";
+                break;
+            case PAUSED:
+                what = String.format(Locale.US, "paused at frame %d of %d", s.done, s.planned);
+                break;
+            case FINISHING:
+                what = "finishing the capture";
+                break;
+            case DEVELOPING:
+                // "developing", "merging", "stacking the edit", "making it again", "saving"
+                what = s.headline.isEmpty() ? "developing" : s.headline.toLowerCase(Locale.US);
+                break;
+            case FOCUS:
+                what = "focusing";
+                break;
+            case PREFLIGHT:
+                what = "checking the sky";
+                break;
+            case COUNTDOWN:
+                what = "counting down to the start";
+                break;
+            default:
+                what = "getting ready";
+                break;
+        }
+        if (s.rehearsal) what = "a rehearsal, " + what;
+        SessionStore st = store != null ? store : s.phase == Phase.DEVELOPING || s.phase == Phase.FINISHING ? jobStore : null;
+        StopRecorder.session(st != null ? what + "|" + st.dir.getName() : what, st);
     }
 
     /** Unfinished sessions (frames on disk, never developed), newest first. */

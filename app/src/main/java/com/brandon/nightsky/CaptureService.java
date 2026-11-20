@@ -274,6 +274,8 @@ public final class CaptureService extends Service implements SessionController.H
 
     /** The plan waits for its next start: the notification says what and when, with a Cancel button. */
     void showPlanWaiting(String next, String wakeTime) {
+        // for the stop recorder: a plan killed while it waits says so on the next launch
+        StopRecorder.plan("a night plan armed, waiting to start " + next + " at " + wakeTime);
         if (!foreground) return;
         Intent cancel = new Intent(this, CaptureService.class).setAction(ACTION_CANCEL_PLAN);
         PendingIntent pc = PendingIntent.getService(this, 3, cancel, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -294,6 +296,7 @@ public final class CaptureService extends Service implements SessionController.H
 
     /** After the plan changed: if it's over and nothing runs, let go as at the end of a session. */
     private void afterPlan() {
+        if (!plans.armed()) StopRecorder.plan("");
         if (plans.armed() || !sessionOver()) return;
         RemoteHost r = remote;
         if (r != null && r.running() && r.watching() && foreground) {

@@ -134,6 +134,9 @@ public final class MainActivity extends Activity {
     private long shownVersion = -1;
     private int shownPreview = -1;
     private boolean pendingStart, askedNotifications;
+    /** Why the app last stopped (2.1; null if nothing to show), looked up once per screen. */
+    private StopRecorder.Stop stopShown;
+    private boolean stopChecked;
     /** When the session waiting on a permission should start (Unix ms; 0 for at once). */
     private long pendingStartAt;
     /** The home screen's satellite card; a counter that drops stale results; the last outlook, reused for a while. */
@@ -568,6 +571,49 @@ public final class MainActivity extends Activity {
         nightBox.setOrientation(LinearLayout.VERTICAL);
         col.addView(nightBox, gap(16));
         fillNightBox();
+
+        // why the app last stopped, when nobody chose to stop it (2.1): shown until put away, with the details to share
+        if (!stopChecked) {
+            stopChecked = true;
+            stopShown = StopRecorder.pending(this);
+        }
+        final StopRecorder.Stop stop = stopShown;
+        if (stop != null) {
+            final LinearLayout card = card();
+            card.addView(text("Last time, Night Sky stopped unexpectedly", 16, RED, true));
+            card.addView(text(stop.line(), 14, RED, false), gap(4));
+            if (!stop.hint.isEmpty()) card.addView(text(stop.hint, 13, RED_DIM, false), gap(4));
+            LinearLayout row = row();
+            Button share = button("Share the details", true);
+            share.setTextSize(15);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, stop.details)
+                            .putExtra(Intent.EXTRA_SUBJECT, "Why Night Sky stopped");
+                    try {
+                        startActivity(Intent.createChooser(i, "Share the details"));
+                    } catch (RuntimeException e) {
+                        toastish("Nothing on the phone can share it");
+                    }
+                }
+            });
+            Button ok = button("Dismiss", false);
+            ok.setTextSize(15);
+            ok.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    StopRecorder.dismiss(MainActivity.this, stop);
+                    stopShown = null;
+                    ViewGroup parent = (ViewGroup) card.getParent();
+                    if (parent != null) parent.removeView(card);
+                }
+            });
+            row.addView(share, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+            row.addView(ok, weight());
+            card.addView(row, gap(10));
+            col.addView(card, gap(16));
+        }
 
         // unfinished session from a crash or a flat battery
         List<File> unfinished = SessionController.unfinished(this);

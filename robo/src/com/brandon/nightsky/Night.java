@@ -87,6 +87,8 @@ public class Night {
     static Sensor gravity, gyro, accel, rotation;
     /** The phone lies screen-down (else it's held), and how much it shakes (rad/s). */
     static volatile boolean down;
+    /** Down means screen-up on a table (a rehearsal, 2.1), not screen-down to the sky. */
+    static volatile boolean screenUp;
     static volatile double shake = 0.3;
     static double headingMag;
     static Locator.Place place;
@@ -134,6 +136,88 @@ public class Night {
         hdrCheck(true);
         hdrFallbackCheck();
         namesCheck();
+    }
+
+    /**
+     * A rehearsal (2.1): started from the home screen's button, the phone laid screen-up on a table with its camera
+     * covered, a clear night drawn into the dark frames. The whole session runs, and every step of its check must pass;
+     * the check opens over the photo and shares as text; nothing of it is offered as a night (repeated, minutes added).
+     */
+    static void rehearsal() throws Exception {
+        begin("a rehearsal: screen-up on a table, the camera covered, a clear night drawn into its frames");
+        SimCamera.get().covered = true;
+        press("Rehearse a night indoors");
+        hold(2500);
+        screenUp = true;
+        down = true;
+        shake = 0.0015;
+        Monkey.say(String.format(Locale.US, "  %s: put down screen-up, the camera against the table", clock()));
+        String during = "";
+        long end = SystemClock.elapsedRealtime() + 15 * 60_000L;
+        while (SystemClock.elapsedRealtime() < end) {
+            step();
+            SessionController.Status st = Monkey.svc.controller().status();
+            if (st.phase == SessionController.Phase.CAPTURING && st.done >= 2) {
+                during = StopRecorder.current();
+                break;
+            }
+            if (st.phase == SessionController.Phase.FAILED || st.phase == SessionController.Phase.DONE) break;
+        }
+        Monkey.say("  capturing screen: " + labels());
+        Monkey.say("  the stop recorder, while capturing: " + during);
+        if (!during.startsWith("a rehearsal, capturing frame ") || !during.contains("|session_")) {
+            Monkey.problem(scenario + ": while capturing, the stop recorder says " + during);
+        }
+        follow(25 * 60_000L);
+        screenUp = false;
+        SimCamera.get().covered = false;
+        report();
+        Monkey.say("  result screen: " + labels());
+        SessionController.Status st = Monkey.svc.controller().status();
+        SessionController.Result r = st.result;
+        com.brandon.nightsky.processing.RehearsalCheck c = r != null ? r.rehearsal : null;
+        if (c == null) {
+            Monkey.problem(scenario + ": no rehearsal check on the result: " + outcome());
+            return;
+        }
+        Monkey.say("  " + c.describe().replace("\n", "\n  "));
+        if (c.failed > 0 || c.notes > 0) Monkey.problem(scenario + ": " + c.headline);
+        if (!"Rehearsal done".equals(st.headline)) Monkey.problem(scenario + ": the result says " + st.headline);
+        if (!r.fromRehearsal || !r.name.endsWith("_rehearsal")) Monkey.problem(scenario + ": the photo isn't marked a rehearsal's: " + r.name);
+        if (!r.summary.startsWith(SessionController.REHEARSAL_PHOTO)) Monkey.problem(scenario + ": its summary doesn't say so: " + r.summary);
+        for (String no : new String[]{"Repeat tomorrow", "Add 5 minutes", "Merge"}) {
+            if (findLabel(no) != null) Monkey.problem(scenario + ": a rehearsal is offered " + no);
+        }
+        String log = new com.brandon.nightsky.processing.SessionStore(new File(Monkey.root, r.session)).readLog();
+        for (String want : new String[]{"rehearsal: the sky drawn on", "focus: not saved for next time", "rehearsal check:"}) {
+            if (!log.contains(want)) Monkey.problem(scenario + ": the log has no \"" + want + "\"");
+        }
+        // the check over the photo, and shared as text
+        press(c.headline);
+        shot("check");
+        Monkey.say("  check: " + labels());
+        Shadows.shadowOf(Monkey.a).getNextStartedActivity();
+        Monkey.drainActivities();
+        press("Share the check");
+        Intent i = Shadows.shadowOf(Monkey.a).getNextStartedActivity();
+        Intent inner = i != null ? (Intent) i.getParcelableExtra(Intent.EXTRA_INTENT) : null;
+        String text = inner != null ? inner.getStringExtra(Intent.EXTRA_TEXT) : null;
+        Monkey.say("  shared: " + (text == null ? "nothing" : text.replace("\n", "\n          ")));
+        if (text == null || !text.contains("Night Sky " + BuildInfo.VERSION + " rehearsal") || !text.contains(c.headline)) {
+            Monkey.problem(scenario + ": Share the check shared " + text);
+        }
+        press("Close");
+        // back home: it says how the last one went
+        press("New photo");
+        run(800);
+        shot("home after");
+        StringBuilder home = new StringBuilder();
+        Monkey.texts(Monkey.a.findViewById(android.R.id.content), home);
+        String want = "Last rehearsal, ";
+        int k = home.indexOf(want);
+        Monkey.say("  home: " + (k < 0 ? "no last rehearsal line" : home.substring(k, Math.min(home.length(), home.indexOf(" | ", k) < 0
+                ? home.length() : home.indexOf(" | ", k)))));
+        if (k < 0) Monkey.problem(scenario + ": the home screen doesn't say how the last rehearsal went");
     }
 
     /** Stopped from the phone after a few frames: what there is is developed. */
@@ -1825,6 +1909,7 @@ public class Night {
         Monkey.say("");
         Monkey.say("######## " + scenario + ": " + what);
         down = false;
+        screenUp = false;
         shake = 0.3;
         problemsBefore = Monkey.problems.size();
         Monkey.idle();
@@ -2070,7 +2155,7 @@ public class Night {
     /** The motion sensors' readings from t0 to t1 (ns): screen-down and still, or held and moving. */
     static void feed(long t0, long t1) {
         int n = 4;
-        float[] g = down ? new float[]{0f, 0f, -9.81f} : new float[]{0.4f, 6.9f, 6.9f};
+        float[] g = down ? new float[]{0f, 0f, screenUp ? 9.81f : -9.81f} : new float[]{0.4f, 6.9f, 6.9f};
         for (int k = 1; k <= n; k++) {
             long t = t0 + (t1 - t0) * k / n;
             double s = shake * (0.5 + rnd.nextDouble());
@@ -2080,7 +2165,11 @@ public class Night {
             send(accel, t, g[0] + jit * (float) rnd.nextGaussian(), g[1] + jit * (float) rnd.nextGaussian(), g[2] + jit * (float) rnd.nextGaussian());
         }
         send(gravity, t1, g[0], g[1], g[2]);
-        if (down) {
+        if (down && screenUp) {
+            // screen-up with the top edge toward headingMag: a turn about the vertical
+            double h = Math.toRadians(headingMag) / 2;
+            send(rotation, t1, 0f, 0f, (float) -Math.sin(h), (float) Math.cos(h), (float) Math.toRadians(8));
+        } else if (down) {
             // screen-down with the top edge toward headingMag: a half-turn about a level axis
             double h = Math.toRadians(headingMag) / 2;
             send(rotation, t1, (float) Math.sin(h), (float) Math.cos(h), 0f, 0f, (float) Math.toRadians(8));

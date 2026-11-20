@@ -1,5 +1,90 @@
 # Night Sky Camera: what's new
 
+## Version 2.1: rehearse a night before you go out
+
+### What's new
+
+- **Rehearse a night, indoors, in about ten minutes.** Nothing in this app has run under a real sky on your Pixel
+  yet, and a dark field at midnight is a bad place to find out that something doesn't work. Now the home screen
+  has **Rehearse a night indoors**: lay the phone screen-up on a table, its camera against the table, and the app
+  runs a whole night's session on the phone's real camera, with a clear night's sky drawn into every RAW frame the
+  camera takes. It focuses, checks the sky and says what it found, counts down, takes five minutes of frames with
+  your settings, lines them up, stacks them and saves the HDR photo with its video, exactly as it will outside.
+- **A real sky, drawn as this camera would see it.** The stars over where you are, as a clear dark night would
+  show them that minute: each as bright as this phone's lens and sensor would record it (the same physics the haze
+  measurement uses), in its own colour, with the sky's glow (darker overhead, brighter low down), the Milky Way,
+  the Moon if it's up, the sky turning through each exposure, and the blur where the lens is out of focus, so the
+  focus sweep has something real to find. All of it goes into the camera's own frames, with their own noise and
+  dark, with the light's own grain on top, in a fraction of a second a frame.
+- **The rehearsal check.** The app knows exactly what it drew, so at the end it checks every step against it:
+  whether every frame came, as long as asked; whether the camera was in the dark; whether the focus sweep found
+  where the stars were drawn sharpest; whether the sky check read the drawn sky's brightness; whether the stars
+  were recognised where the phone was pointing; whether the frames lined up to a fraction of a pixel; the colours;
+  the noise; whether the photo, its HDR brightness, its video and the DNG were saved; and how fast it drew,
+  how long developing took and how much memory it needed. **Rehearsal check: all 11 passed** means the phone is
+  ready for a night. Tap it for every step, what failed first; **Share the check** sends it as text, ready to
+  paste into the Claude chat. The home screen then says how the last rehearsal went.
+- **Kept apart from real nights.** A rehearsal's photo has `_rehearsal` in its name and "Rehearsal, a drawn sky" in
+  its description, it's labelled on the **Sessions** page, and it's never merged with a night, repeated or added
+  to. Nothing it finds about its drawn sky (the focus, how dark the sky is, haze, the battery with the screen on)
+  is learned for real nights; what it finds about the camera itself is real, and kept.
+- **The stop recorder.** If the app is ever stopped in the middle of something (a crash, Android closing it to
+  free memory or save battery, a freeze, a force stop), the next time it opens, the home screen says why, when
+  and what it was doing ("Android closed it to free memory, while developing"), with **Share the details**: where
+  in the code it went wrong, or Android's own record of how it ended. The session it stopped gets the same line in
+  its log. Until now, a night that ended that way left only an unfinished session and no reason.
+- **In the log:** a rehearsal's log says what it drew (`rehearsal: a clear sky drawn over the camera's own
+  frames, seen from ...`), the sky check's reading against the drawn sky, how long drawing took on each frame, and
+  the whole check (`rehearsal check: ...`).
+
+ROBO_RESULTS
+
+### Install the update (Windows, USB cable)
+
+It installs over version 2.0 and keeps your settings and sessions.
+
+1. Download `NightSky.apk` from the chat to your PC.
+2. Plug the phone into the PC. On the phone, tap the USB notification and choose **File transfer**.
+3. In File Explorer, open the phone, then its **Download** folder, and copy `NightSky.apk` into it (replace the
+   old one if Windows asks).
+4. On the phone, open the **Files** app, then **Downloads**, tap `NightSky.apk`, then tap **Update**.
+
+### Defaults
+
+- The home screen offers the rehearsal once, on a card (after the camera check's card, if that's still showing);
+  **Not now** puts it away, and **Rehearse a night indoors** stays at the bottom of the home screen.
+- A rehearsal runs your saved settings for five minutes, deep sky. The sky check always runs in a rehearsal (it's
+  part of what it rehearses), and the place is the one the app knows (else your time zone's).
+- The stop recorder is always on. It keeps nothing but a few words about what's running, and the details of a
+  crash on the phone; nothing leaves the phone unless you tap **Share the details**.
+- Developing and photos are exactly as in 2.0.
+
+### Try today
+
+1. Tap **Rehearse a night indoors**, then **Rehearse**, and lay the phone screen-up on a table, camera down.
+2. Watch it: the focus frames, the sky check ("Ready"), the countdown, then the stack building up out of a dark
+   table. It ends on **Rehearsal done**.
+3. Tap **Rehearsal check** and **Share the check**, and paste it into the Claude chat, whatever it says. That's the
+   first time this app's whole night has run on your Pixel's own camera, and its numbers (how long each frame
+   took, how fast it drew, how much memory developing took) are real.
+
+### Try tonight
+
+Go out as before, if the check passed. If the app ever stops on you out there, open it again: the home screen says
+why. Tap **Share the details** and send it.
+
+### Not working yet, or not tested
+
+- The rehearsal has been run off the phone only, through the real app with a simulated camera. Your Pixel's own
+  camera is the real test, which is the point of it.
+- A rehearsal can't check what only a real sky has: real haze and clouds, dew on the lens, the real stars' sharpness
+  through this lens, and satellites (none are drawn). Its focus is checked against where it drew the stars
+  sharpest, not where this lens focuses on the real stars.
+- With the phone screen-up, the screen stays on (dimmed) all the way through, so a rehearsal uses more battery than
+  a night of the same length would.
+- The stop recorder reads Android's record of how the app ended, which this phone keeps for a few days; a stop
+  older than 14 days isn't shown.
+
 ## Version 2.0: sharper stars, HDR photos and a new opening
 
 ### What's new
