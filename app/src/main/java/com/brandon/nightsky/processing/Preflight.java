@@ -89,6 +89,8 @@ public final class Preflight {
         /** From the test frame to the session's start (ms): the summary, the countdown and settling. */
         public long startDelayMs = 15000;
         public TimeZone zone = TimeZone.getDefault();
+        /** A rehearsal (2.1): the sky in the frame is drawn as at night, so the Sun's height doesn't count. */
+        public boolean rehearsal;
     }
 
     public static final class Report {
@@ -425,7 +427,11 @@ public final class Preflight {
 
         // checks, most important first in the summary (PRIORITY), in this order on screen
         checkStorage(in, rep);
-        checkSun(rep, utcMs, lat, lon, located);
+        if (in.rehearsal) {
+            rep.items.add(new Item("sun", Level.OK, "A rehearsal: the sky is drawn as on a dark night, whatever the time", ""));
+        } else {
+            checkSun(rep, utcMs, lat, lon, located);
+        }
         checkLens(in, rep, stars, black, noise);
         checkClouds(in, rep, stars, model, ob, camToEnu);
         measureSky(in, rep, rep.solution != null && rep.solution.model != null ? rep.solution.model : model, black);
