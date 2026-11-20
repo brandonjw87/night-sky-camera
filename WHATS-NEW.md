@@ -41,7 +41,30 @@
   tonight". Planned when it's dark already, a new session now starts at a set time: the next ten-minute mark at
   least five minutes away.
 
-ROBO_RESULTS
+### Checked off the phone
+
+Nothing in this version has run on your Pixel yet: the rehearsal is how it will. Off the phone, through the real
+app with a simulated camera lying covered on a table:
+
+- **A whole rehearsal, three times, every step passed.** On the finished version: the focus sweep found 0.830
+  where the stars were drawn sharpest at 0.827 ("spot on"); the sky check read 19.51 magnitudes a square
+  arcsecond where 19.53 was expected (the Moon was up); 561 stars recognised, pointing 4 arcseconds from where the
+  sky was drawn; the frames lined up within 0.02 px; the stack 4.3 times smoother than one frame; the photo, its
+  HDR brightness, its video and the DNG all saved. Drawing took at most 0.1 s a frame, developing 85 s, and memory
+  at most 627 MB of the 5,120 MB the app may use.
+- **The drawn sky against the physics.** The sky check read 20.35 where 20.37 was expected; the focus sweep
+  landed within one step of where the sky was drawn sharpest; 568 stars were matched; a full-size frame
+  (4080 x 3072) was drawn in 188 ms; and light leaking onto the sensor is caught and named.
+- **The stop recorder, 35 checks:** a crash written down as it happens and shown once with where it went wrong;
+  Android's own records (closed for memory while developing, a freeze with its trace, a stop from a version that
+  said nothing) shown with what the app was doing; and the endings that are part of normal life (an update, an
+  idle app tidied away, the app closing itself) left out. It caught one thing before you got it: a crash put
+  away came back the next time from Android's own record of it.
+- **Everything else as in 2.0:** the 31 simulator tests, and the six simulated nights, which came out the same
+  as 2.0's line for line except for the timings; a normal night, Stop, Star trails, a hazy first night then a
+  clear one (still learned from), the edit screen, the opening film (121 checks), every way of opening the app,
+  every screen drawn, and the tap-everything test (41 screens, 957 taps, no problems), which found an older snag, now fixed: a plan
+  made after dark refused its first session.
 
 ### Install the update (Windows, USB cable)
 
