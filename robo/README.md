@@ -12,6 +12,7 @@ what it does when the camera misbehaves.
 | `Shots` | Draws each screen to a PNG. | PNGs |
 | `Launches` | Opens the app every way Android can: the launcher, shortcuts, the widget, the quick settings tile, notifications. | `launches/` |
 | `EditFlow` | Edits a kept session through the session controller, on the session `sim/G3Test` makes: an edit that changes nothing, edits of how it's rendered and ones that stack it again, a kept stack reused, a render whose stack was deleted made again, a re-stack cancelled, and the new processing for older renders (stacked again for an older stack, only rendered again for a render from before 1.4). The photo's video (1.8): an edit stacked again is saved as a Motion Photo with its own video, a render made again keeps it, and an edit of the look only has none. | `EditFlow.out`: each check, then the session's log |
+| `Stops` | The stop recorder (2.1): a crash written down as it happens (and in its session's log), Android's own records of the process ending (memory while developing a rehearsal, a freeze with its trace, a kill from a version that said nothing, and the endings that are part of normal life: an idle app tidied away, an update, the app closing itself), the home screen's card for each, Share the details, and Dismiss putting them away for good. | `stops/stops.log`: each check, with the details shared |
 | `Intro` | The opening film (2.0) around Robolectric's stand-in for the phone's video player: when it plays and when it doesn't (once, from the icon only, never over a session), that it never stands in the app's way (a tap, a film that can't be played, a player that never shows a picture, the app left or closed while it plays), its sound, its night-red look, how it fills screens of other shapes, and its setting with Play it now. | `Intro.out`: each check |
 
 ## Set up (once)
@@ -30,6 +31,7 @@ newer, curl, and the Android build tools and jars that `tools/build_apk.sh` uses
     SESSIONS=/path/to/sessions robo/run.sh Shots
     SESSIONS=/path/to/g3/sessions robo/run.sh EditFlow    # after: java ... sim.G3Test /path/to/g3 2 16
     robo/run.sh Intro
+    robo/run.sh Stops
 
 Each run compiles the app and the tests from this tree first. `Night` runs its fake clock at twice the real one
 (`SPEED`), so a 5-minute session takes a few minutes; the whole list takes hours. A run ends with a summary: each
@@ -41,6 +43,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | Scenario | What happens |
 |---|---|
 | `base` | 5 minutes with the settings as they come, phone put down, left alone. Then the photo's video (1.8), as `trails` checks it too: the photo is in the gallery as a Motion Photo (name.MP.jpg) with the session's video inside, after the photo, where Google Photos looks; the photo still decodes with its EXIF block; the video is H.264 in the photo's shape with the frames its timeline gives, and ends on the photo (code for code, as the Pixel's own Motion Photos' videos match their photos); Play its video plays it where the photo is, and the photo comes back when it ends, on a tap, and after an error; opened again from the sessions page, it's still there to play. |
+| `rehearsal` | A rehearsal (2.1): Rehearse a night indoors on the home screen, the phone laid screen-up with its camera covered, a clear night drawn into the dark frames. The whole session runs and every step of its check must pass; while it captures, the stop recorder says "a rehearsal, capturing frame N of M" and the session; the photo is marked a rehearsal's (its name, its summary), isn't offered Repeat tomorrow, Add 5 minutes or Merge; the check opens over the photo and Share the check shares it as text; the home screen then says how the last rehearsal went. |
 | `stop` | Stopped from the phone after a few frames: what there is is developed, and the photo's video is made of those frames. |
 | `pickup` | Picked up for a few seconds mid-session, then put back. |
 | `knock` | Knocked mid-session: the view shifts a quarter of a degree. |

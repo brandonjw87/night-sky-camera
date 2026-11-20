@@ -56,7 +56,7 @@ public final class CaptureService extends Service implements SessionController.H
      */
     static final String EXTRA_TRAILS = "trails", EXTRA_DURATION = "durationSec", EXTRA_DNG = "dng", EXTRA_PRESET = "preset",
             EXTRA_DIR = "dir", EXTRA_VIEWER = "viewer", EXTRA_START_AT = "startAt", EXTRA_READING = "reading", EXTRA_ORIGIN = "origin",
-            EXTRA_CONTINUE = "continue";
+            EXTRA_CONTINUE = "continue", EXTRA_REHEARSAL = "rehearsal";
 
     private static final String CHANNEL = "capture";
     private static final int NOTIF_ID = 7;
@@ -173,6 +173,8 @@ public final class CaptureService extends Service implements SessionController.H
             }
             s.startAtMs = intent.getLongExtra(EXTRA_START_AT, 0L);
             s.readingOnly = intent.getBooleanExtra(EXTRA_READING, false);
+            // a rehearsal (2.1): the saved settings, run indoors with a clear night drawn in (never added minutes)
+            s.rehearsal = cont == null && intent.getBooleanExtra(EXTRA_REHEARSAL, false);
             String origin = intent.getStringExtra(EXTRA_ORIGIN);
             // minutes added keep their own origin (which session they add to)
             if (origin != null && cont == null) s.origin = origin;
@@ -272,6 +274,8 @@ public final class CaptureService extends Service implements SessionController.H
 
     /** The plan waits for its next start: the notification says what and when, with a Cancel button. */
     void showPlanWaiting(String next, String wakeTime) {
+        // for the stop recorder: a plan killed while it waits says so on the next launch
+        StopRecorder.plan("a night plan armed, waiting to start " + next + " at " + wakeTime);
         if (!foreground) return;
         Intent cancel = new Intent(this, CaptureService.class).setAction(ACTION_CANCEL_PLAN);
         PendingIntent pc = PendingIntent.getService(this, 3, cancel, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -292,6 +296,7 @@ public final class CaptureService extends Service implements SessionController.H
 
     /** After the plan changed: if it's over and nothing runs, let go as at the end of a session. */
     private void afterPlan() {
+        if (!plans.armed()) StopRecorder.plan("");
         if (plans.armed() || !sessionOver()) return;
         RemoteHost r = remote;
         if (r != null && r.running() && r.watching() && foreground) {

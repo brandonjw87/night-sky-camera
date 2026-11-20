@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.brandon.nightsky"
-    android:versionCode="12"
-    android:versionName="2.0">
+    android:versionCode="13"
+    android:versionName="2.1">
 
     <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="36" />
 
@@ -33,6 +33,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
+        android:name=".NightSkyApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"

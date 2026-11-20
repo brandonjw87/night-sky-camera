@@ -145,6 +145,41 @@ public final class ColorMath {
     }
 
     /**
+     * What this camera's raw pixels record from a blackbody at {@code t} kelvin, as ratios to green {R/G, 1, B/G}: its
+     * calibration matrices for that temperature, the way {@link #compute} works out the neutral (2.1, the rehearsal's
+     * sky). A typical phone camera's response if the camera gives no matrices.
+     */
+    public static double[] cameraRgb(SensorSpec spec, double t) {
+        double[] cm1 = toD(spec.colorMatrix1), cm2 = toD(spec.colorMatrix2);
+        double[] white = whiteXyz(t);
+        if (cm1 == null && cm2 == null) {
+            // a generic sensor: sRGB primaries seen through broad, overlapping filters
+            double[] v = Rot.mulVec(XYZ_D65_TO_SRGB, white);
+            double[] a = {0.70, 0.25, 0.05, 0.18, 0.72, 0.10, 0.04, 0.24, 0.72};
+            double[] k = {0.48, 1.0, 0.66};
+            double[] c = new double[3];
+            for (int r = 0; r < 3; r++) {
+                c[r] = k[r] * (a[r * 3] * Math.max(0, v[0]) + a[r * 3 + 1] * Math.max(0, v[1]) + a[r * 3 + 2] * Math.max(0, v[2]));
+            }
+            // the generic response's own white (D65) at (0.48, 1, 0.66), like the fixed balance without matrices
+            double g = c[1] > 0 ? c[1] : 1;
+            return new double[]{Math.max(1e-3, c[0] / g), 1, Math.max(1e-3, c[2] / g)};
+        }
+        double t1 = illuminantCct(spec.illuminant1), t2 = illuminantCct(spec.illuminant2);
+        double g;
+        if (cm1 == null) g = 0;
+        else if (cm2 == null) g = 1;
+        else if (Math.abs(1 / t1 - 1 / t2) < 1e-9) g = 0.5;
+        else g = Stats.clamp((1 / t - 1 / t2) / (1 / t1 - 1 / t2), 0, 1);
+        double[] cm = mix(cm1, cm2, g);
+        double[] cc = mix(toD(spec.calibration1), toD(spec.calibration2), g);
+        if (cc == null) cc = Rot.identity();
+        double[] n = Rot.mulVec(Rot.mul(cc, cm), white);
+        if (!(n[1] > 0)) return new double[]{0.5, 1, 0.65};
+        return new double[]{Math.max(1e-3, n[0] / n[1]), 1, Math.max(1e-3, n[2] / n[1])};
+    }
+
+    /**
      * Linear sRGB (white-balanced so that {@code wbCct} is (1, 1, 1)) of a blackbody at {@code t} kelvin,
      * as a well-calibrated camera would render it.
      */

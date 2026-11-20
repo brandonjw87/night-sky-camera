@@ -43,6 +43,19 @@ public final class UnitProcessor {
         public float gyroMax;
         public boolean disturbed;
         public float focus;
+        /** When its exposure started (UTC, ms; NaN if not known), and electrons a raw level from its noise profile (NaN if none). */
+        public double utcStartMs = Double.NaN, electronsPerLevel = Double.NaN;
+    }
+
+    /**
+     * Work done on each frame before it is stored and measured, on the processing thread (2.1: a rehearsal's sky drawn
+     * into the camera's own frame). A hook that fails leaves the frame as the camera took it.
+     */
+    public interface FrameHook {
+        void before(short[] raw, FrameInfo info);
+
+        /** It failed on a frame (said once per kind of failure in the session's log by the caller). */
+        void failed(FrameInfo info, Throwable t);
     }
 
     private final SessionStore store;
@@ -56,6 +69,7 @@ public final class UnitProcessor {
     private final ExecutorService exec;
     private final BlockingQueue<short[]> pool;
     private final Listener listener;
+    private volatile FrameHook hook;
 
     // unit being assembled (exec thread only)
     private short[] unitBuf;
@@ -109,6 +123,11 @@ public final class UnitProcessor {
         return failed;
     }
 
+    /** Work to do on each frame before it is stored (null: none). */
+    public void setHook(FrameHook h) {
+        hook = h;
+    }
+
     /** Whether to keep a preview-size copy of each unit (only while someone may look at it). */
     public void setKeepLatest(boolean keep) {
         keepLatest = keep;
@@ -139,7 +158,17 @@ public final class UnitProcessor {
             @Override
             public void run() {
                 try {
-                    if (!failed) addFrame(raw, info);
+                    if (!failed) {
+                        FrameHook hk = hook;
+                        if (hk != null) {
+                            try {
+                                hk.before(raw, info);
+                            } catch (RuntimeException | OutOfMemoryError e) {
+                                hk.failed(info, e);
+                            }
+                        }
+                        addFrame(raw, info);
+                    }
                 } catch (Throwable t) {
                     failed = true;
                     store.log("unit processing failed: " + t);

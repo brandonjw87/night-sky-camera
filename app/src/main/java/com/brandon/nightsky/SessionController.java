@@ -16,6 +16,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
+import android.util.Pair;
 import android.util.Range;
 import android.util.Size;
 
@@ -44,6 +45,8 @@ import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.Recipe;
+import com.brandon.nightsky.processing.RehearsalCheck;
+import com.brandon.nightsky.processing.RehearsalSky;
 import com.brandon.nightsky.processing.Rejection;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.Renderer;
@@ -81,6 +84,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.SplittableRandom;
 import java.util.TimeZone;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -105,6 +109,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * </ol>
  * A sky reading ({@link Settings#readingOnly}) takes three test frames and stops: how dark the sky is, said aloud
  * and added to the readings' log, and no photo.
+ * A rehearsal ({@link Settings#rehearsal}) runs a whole session indoors: the phone screen-up on a table, its camera in
+ * the dark, a clear night's sky drawn into every frame it takes ({@link RehearsalSky}), and at the end a check of every
+ * step against the sky it was given ({@link RehearsalCheck}).
  * Everything except developing runs on one thread, the camera's callbacks included.
  */
 final class SessionController {
@@ -175,6 +182,12 @@ final class SessionController {
         float continueFocus = Float.NaN;
         /** "Repeat tomorrow" (E2): the folder of the session this one repeats ("" if none), offered for merging after. */
         String repeatOf = "";
+        /**
+         * A rehearsal (2.1): the phone lies screen-up on a table, its camera in the dark, and a clear night's sky is drawn
+         * into every frame the camera takes, so that the whole session runs on the real phone by day and is checked
+         * against the sky it was given. Nothing it finds is learned as this camera's or this site's.
+         */
+        boolean rehearsal;
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -185,6 +198,8 @@ final class SessionController {
         long elapsedMs, remainingMs = -1;
         float progress = -1f;
         boolean trails;
+        /** A rehearsal (2.1): the phone lies screen-up, a clear night drawn into its frames. */
+        boolean rehearsal;
         int previewVersion;
         Result result;
         long version;
@@ -252,6 +267,9 @@ final class SessionController {
         MergeProcessor.Result merge;
         /** The session a "Repeat tomorrow" session repeats (its folder's name; "" if none): offered for merging. */
         String repeatOf = "";
+        /** A rehearsal's check (2.1; null if this wasn't one, or it couldn't be made), and whether the photo is a rehearsal's. */
+        RehearsalCheck rehearsal;
+        boolean fromRehearsal;
     }
 
     /** What to draw over a saved photo. */
@@ -342,6 +360,8 @@ final class SessionController {
     private long advMaxNs;
     private boolean realtimeClock;
     private SessionStore store;
+    /** The session a develop job works on (for the stop recorder; the job's thread owns it). */
+    private volatile SessionStore jobStore;
     private UnitProcessor up;
     private Phase phase = Phase.IDLE;
     /** Bumped to stop the tick loop. */
@@ -384,6 +404,8 @@ final class SessionController {
     private float focusValue;
     private String focusHow = "";
     private double focusTempC = Double.NaN, focusPredicted = Double.NaN;
+    /** Why the focus wasn't swept, or the sweep was cut short ("" if it ran its course). */
+    private String focusWhyNot = "";
     private FocusSweep.Result focusResult;
     /** The focus decisions made before the session folder exists, for its log. */
     private String focusLog = "";
@@ -476,6 +498,24 @@ final class SessionController {
     private volatile Renderer.Analysis liveAnalysis;
     private volatile SensorSpec liveSpec;
     private volatile int latestVersion = -1;
+
+    // a rehearsal (2.1): a clear night drawn into the covered camera's frames
+    /** The sky drawn (null unless a rehearsal, until the phone lies still where it will rehearse). */
+    private volatile RehearsalSky rehearsalSky;
+    /** What it drew on the capture's frames: {their own light, the sky drawn (electrons a second), ms to draw}. */
+    private final List<double[]> rehearsalDrawn = new ArrayList<double[]>();
+    /** Frames it couldn't draw on, and why the first couldn't be (said once in the log). */
+    private volatile int rehearsalFailures;
+    private volatile String rehearsalFailed = "";
+    /** The sky check's reading of the drawn sky: {read, expected, drawn} (magnitudes a square arcsecond), or null. */
+    private volatile double[] rehearsalPf;
+    /** The sky drawn, for the session's log. */
+    private String rehearsalLog = "";
+    /** The most heap developing has taken (bytes), for the rehearsal's check. */
+    private volatile long heapPeak;
+    /** How the photo was saved, for the rehearsal's check: as an HDR photo or not (and why), and why without its video. */
+    private volatile boolean photoHdrWanted, photoHdrSaved;
+    private volatile String photoHdrWhy = "", photoVideoWhy = "";
 
     // developed result, kept for brightness changes
     private PostProcessor.Output output;
@@ -607,7 +647,7 @@ final class SessionController {
     boolean canAddAfter() {
         Status s = status;
         Result r = s.result;
-        if (s.phase != Phase.DONE || r == null || r.trails || r.endedMs <= 0 || (r.merge != null && r.recipe != null
+        if (s.phase != Phase.DONE || r == null || r.trails || r.fromRehearsal || r.endedMs <= 0 || (r.merge != null && r.recipe != null
                 && "merged".equals(r.recipe.note))) {
             return false;
         }
@@ -828,6 +868,8 @@ final class SessionController {
         r.master = l.meta;
         r.north = north;
         r.repeatOf = props.getProperty("repeatOf", "");
+        r.rehearsal = RehearsalCheck.fromProperties(props);
+        r.fromRehearsal = isRehearsal(props);
         Opened op = new Opened();
         op.o = o;
         op.spec = sp;
@@ -1389,7 +1431,7 @@ final class SessionController {
      */
     private void renderEdit(SessionStore st, Recipe e, Opened op, boolean shown, int backTo) {
         try {
-            String name = editName(st, e.trails);
+            String name = editName(st, e.trails, op.r != null && op.r.fromRehearsal);
             String[] hash = new String[1];
             Renderer.Params p = paramsOf(e, Float.NaN);
             int factor = e.quick ? 2 : 1;
@@ -1449,6 +1491,8 @@ final class SessionController {
         r.master = was.master;
         r.north = was.north;
         r.merge = was.merge;
+        r.rehearsal = was.rehearsal;
+        r.fromRehearsal = was.fromRehearsal;
         return r;
     }
 
@@ -1508,15 +1552,15 @@ final class SessionController {
         m.quick = e.quick;
         m.recipe = e;
         m.edit = true;
-        m.name = editName(st, e.trails);
+        m.name = editName(st, e.trails, isRehearsal(props));
         return m;
     }
 
     /** An edit's photo's name: the session's, then the render's number ("NightSky_20261022_2315_r4"). */
-    private static String editName(SessionStore st, boolean trails) {
+    private static String editName(SessionStore st, boolean trails, boolean rehearsal) {
         int n = 1;
         for (Recipe x : Recipe.list(st.dir)) n = Math.max(n, x.number + 1);
-        return "NightSky_" + st.id() + (trails ? "_trails" : "") + "_r" + n;
+        return "NightSky_" + st.id() + (trails ? "_trails" : rehearsal ? "_rehearsal" : "") + "_r" + n;
     }
 
     /** Forget the developed result (frees memory). */
@@ -1765,15 +1809,18 @@ final class SessionController {
         if (up != null) up.abort();
         up = null;
         store = null;
+        jobStore = null;
+        if (s.rehearsal) rehearsalSettings(s);
         settings = s;
         if (!s.fromViewer) muted = false;
         token++;
         resetCapture();
+        resetRehearsal();
         outcome = null;
         outcomeDetail = "";
         phase = Phase.STARTING;
         publish(s.scheduled ? "Scheduled session: getting the camera ready" : s.readingOnly ? "Sky reading: getting the camera ready"
-                : "Getting the camera ready", "", -1);
+                : s.rehearsal ? "Rehearsal: getting the camera ready" : "Getting the camera ready", "", -1);
         if (s.scheduled) {
             BatteryInfo b = BatteryInfo.read(ctx);
             if (!b.charging && b.pct >= 0 && b.pct < s.minBatteryPct) {
@@ -1860,7 +1907,10 @@ final class SessionController {
             satDataLog = "";
             if (!s.trails && !s.readingOnly) loadSatellites(tk);
             motion = new MotionMonitor(ctx);
+            // a rehearsal lies screen-up, its camera against the table: taken as turned over, as on a night
+            motion.setScreenUp(s.rehearsal);
             motion.start();
+            if (s.rehearsal) preloadCatalogue();
             sounds = new Sounds(ctx, s.sounds);
             sounds.setMuted(muted);
             // a recent fix that finds a saved site settles it straight away (else the fresh fix will)
@@ -2045,6 +2095,7 @@ final class SessionController {
         focusMeasuring = false;
         focusDone = false;
         focusResult = null;
+        focusWhyNot = "";
         focusPredicted = Double.NaN;
         focusLog = "";
         startLog.setLength(0);
@@ -2137,6 +2188,8 @@ final class SessionController {
                     placeSinceMs = 0;
                     // the settings are used from here on: the saved site, with whatever place there is
                     checkSite("when the phone was put down", true);
+                    // a rehearsal's sky, seen the way the phone lies now
+                    if (!ensureRehearsal()) break;
                     if (wantsFocus()) startFocus(now);
                     else afterSteady(now);
                 } else if (settings.scheduled) {
@@ -2352,6 +2405,11 @@ final class SessionController {
     }
 
     private void publishPlace() {
+        if (settings.rehearsal) {
+            publish("Lay the phone screen-up on a table", "Its camera against the table, in the dark: a clear night's sky is drawn "
+                    + "into its frames. Once it's still it focuses, checks the sky, then starts by itself.", -1);
+            return;
+        }
         if (settings.scheduled) {
             publish("Scheduled session: lay the phone screen-down", "The back camera must face the sky. It starts once the phone is "
                     + "still" + (settings.placeTimeoutMs > 0 ? ", or tries again later." : "."), -1);
@@ -2759,6 +2817,18 @@ final class SessionController {
         in.satellites = satCatalog;
         in.keepSatellites = settings.keepSatellites;
         in.zone = TimeZone.getDefault();
+        Float fdT = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        final RehearsalSky.Frame drawn = rehearsalFrame(res, r, exp, fdT != null ? fdT : focusValue, in.black);
+        if (drawn != null) {
+            // a rehearsal: the drawn sky is night whatever the hour, has no satellites in it, and is checked against what
+            // the camera's specs say a clear sky and a clean lens give (not what real nights taught it)
+            in.rehearsal = true;
+            in.satellites = null;
+            in.haloBaseline = Double.NaN;
+            in.haloSpread = Double.NaN;
+            in.clearZeroPoint = Double.NaN;
+            in.clearZeroPoints = null;
+        }
         // from the middle of the test frame to the first exposure: reading it, the summary, the countdown
         in.startDelayMs = exp / 2_000_000L + 8000L + countdownLeadMs();
         long middle = System.currentTimeMillis() - exp / 2_000_000L;
@@ -2773,8 +2843,14 @@ final class SessionController {
                 Preflight.Report rep = null;
                 Throwable err = null;
                 try {
+                    RehearsalSky.Drawn d = drawRehearsal(in.raw, drawn, "the test frame");
                     in.catalog = SkyCatalog.get(ctx);
                     rep = Preflight.run(in);
+                    RehearsalSky rs = rehearsalSky;
+                    if (d != null && rs != null) {
+                        double[] want = rs.skyReading(drawn.utcStartMs + 500 * drawn.exposureS, d.leakPerSec, d.electronsPerLevel);
+                        rehearsalPf = new double[]{rep.skyMag, want[1], want[0]};
+                    }
                 } catch (Throwable t) {
                     err = t;
                 }
@@ -2803,8 +2879,10 @@ final class SessionController {
             readingFrame(rep);
             return;
         }
-        // the saved site learns what blocks its sky and how bright the sky is there
-        if (!settings.siteId.isEmpty()) Sites.learnCheck(prefs, settings.siteId, rep, prefs.sqmOffset(), System.currentTimeMillis());
+        // the saved site learns what blocks its sky and how bright the sky is there (not from a rehearsal's drawn sky)
+        if (!settings.siteId.isEmpty() && !settings.rehearsal) {
+            Sites.learnCheck(prefs, settings.siteId, rep, prefs.sqmOffset(), System.currentTimeMillis());
+        }
         if (settings.onlyIfClear) {
             Preflight.Clear c = Preflight.clearEnough(rep, settings.clearBaseline);
             String line = "only if clear: " + c.seen + (c.clear ? ": clear enough, starting" : ": not clear enough");
@@ -2876,6 +2954,261 @@ final class SessionController {
     }
 
     // ------------------------------------------------------------------------------------------------
+    // A rehearsal (2.1): a clear night drawn into the covered camera's frames
+    // ------------------------------------------------------------------------------------------------
+
+    /** A rehearsal is a deep-sky session that starts as soon as it's ready and runs its planned length, whatever the hour. */
+    static void rehearsalSettings(Settings s) {
+        s.trails = false;
+        s.readingOnly = false;
+        s.scheduled = false;
+        s.onlyIfClear = false;
+        s.stopAtDawn = false;
+        s.endAtMs = 0;
+        s.startAtMs = 0;
+        s.startWhy = "";
+        s.placeTimeoutMs = 0;
+        s.clearTargetSec = 0;
+        s.continuesFrom = "";
+        s.continueFocus = Float.NaN;
+        s.repeatOf = "";
+        // the sky check is part of what it rehearses
+        s.preflight = true;
+    }
+
+    private void resetRehearsal() {
+        rehearsalSky = null;
+        synchronized (rehearsalDrawn) {
+            rehearsalDrawn.clear();
+        }
+        rehearsalFailures = 0;
+        rehearsalFailed = "";
+        rehearsalPf = null;
+        rehearsalLog = "";
+        heapPeak = 0;
+    }
+
+    /** The star catalogue read while the phone is put down, so that drawing the sky doesn't wait for it. */
+    private void preloadCatalogue() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                SkyCatalog.get(ctx);
+            }
+        }, "catalogue").start();
+    }
+
+    /**
+     * A rehearsal's sky, once the phone lies still where it will rehearse (again if it's put down elsewhere before the
+     * capture; from then on it stays): the real sky now, at the place the session knows (else the time zone's), seen the
+     * way the phone lies. False if it can't be drawn: the session fails, as a rehearsal without its sky would only
+     * photograph a table.
+     */
+    private boolean ensureRehearsal() {
+        if (!settings.rehearsal || phase.ordinal() >= Phase.CAPTURING.ordinal() && rehearsalSky != null) return true;
+        try {
+            RehearsalSky.Setup su = new RehearsalSky.Setup();
+            su.spec = spec;
+            su.model = spec.model;
+            su.catalog = SkyCatalog.get(ctx);
+            if (place != null) {
+                su.latDeg = place.latDeg;
+                su.lonDeg = place.lonDeg;
+                su.altM = Double.isNaN(place.altM) ? 100 : place.altM;
+                su.placeSource = place.source;
+            } else {
+                // no fix: the time zone's longitude, a mid-northern latitude
+                su.latDeg = 40;
+                su.lonDeg = Stats.clamp(TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 3.6e6 * 15, -180, 180);
+                su.placeSource = "the time zone";
+            }
+            double head = motion.headingTopDeg();
+            if (!Double.isNaN(head)) head = ((head + (place != null ? Locator.declination(place) : 0)) % 360 + 360) % 360;
+            su.camToEnu = RehearsalSky.attitude(Double.isNaN(head) ? 0 : head, motion.up());
+            su.startUtcMs = System.currentTimeMillis();
+            su.seed = su.startUtcMs;
+            su.headingDeg = head;
+            su.tiltDeg = motion.tiltDeg();
+            su.screenUp = motion.screenUp();
+            su.hours = settings.durationSec / 3600.0 + 0.1;
+            if (lens != null) {
+                su.bestFocus = rehearsalFocus();
+                su.blurPerUnit = lens.blurPerUnit;
+            }
+            RehearsalSky rs = RehearsalSky.build(su);
+            rehearsalSky = rs;
+            rehearsalLog = rs.describe();
+            android.util.Log.i("NightSky", rehearsalLog);
+            return true;
+        } catch (RuntimeException | OutOfMemoryError e) {
+            fail("The rehearsal's sky couldn't be drawn: " + e);
+            return false;
+        }
+    }
+
+    /**
+     * Where a rehearsal draws the stars sharpest: a sweep step or two from where this lens focused before (so that the
+     * check or the sweep around it has something to find), else where a first night's full sweep has to search for it.
+     */
+    private double rehearsalFocus() {
+        SplittableRandom r = new SplittableRandom(System.nanoTime());
+        double off = (1 + r.nextDouble()) * lens.fine * (r.nextBoolean() ? 1 : -1);
+        FocusModel.Line line = focusModel != null ? focusModel.line() : null;
+        FocusModel.Cal last = focusModel != null ? focusModel.lastNight() : null;
+        FocusModel.Cal day = focusModel != null ? focusModel.closestDay(focusTempC) : null;
+        double f;
+        if (line != null && !Double.isNaN(focusTempC)) f = line.predict(focusTempC) + off;
+        else if (last != null) f = last.focus + off;
+        else if (day != null) f = day.focus + off;
+        else f = lens.max * (0.15 + 0.45 * r.nextDouble());
+        return Stats.clamp(f, lens.fine, Math.max(lens.fine, lens.max - 2 * lens.fine));
+    }
+
+    /** When a frame's exposure began (UTC, ms): on the session's clock, or from when its result came if it has none yet. */
+    private double frameUtcMs(CaptureResult res, Req r, long expNs) {
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        long tsn = ts != null ? ts : r.startNs;
+        if (sky.clockValid && tsn > 0) return sky.utcMs(tsn);
+        double sinceMs = (SystemClock.elapsedRealtimeNanos() - r.arrivalNs) / 1e6;
+        return System.currentTimeMillis() - sinceMs - expNs / 1e6;
+    }
+
+    /**
+     * Electrons a raw level of a frame, from the noise profile it came with (its green sites): its shot noise is one
+     * electron's. NaN if it has none, or none believable (300 to 300 000 electrons at full scale at ISO 100).
+     */
+    private double electronsPerLevel(CaptureResult res) {
+        Pair<Double, Double>[] np = res.get(CaptureResult.SENSOR_NOISE_PROFILE);
+        if (np == null || np.length < 4 || geo == null) return Double.NaN;
+        double sum = 0;
+        int n = 0;
+        for (int p = 0; p < 4; p++) {
+            if (spec.cfa[p] != 1) continue;
+            Pair<Double, Double> q = np[geo.channel(p)];
+            if (q == null || q.first == null || !(q.first > 0)) continue;
+            sum += q.first;
+            n++;
+        }
+        float range = spec.range();
+        if (n == 0 || !(range > 0)) return Double.NaN;
+        double epl = 1 / (sum / n * range);
+        Integer iso = res.get(CaptureResult.SENSOR_SENSITIVITY);
+        double full100 = epl * range * (iso != null && iso > 0 ? iso : 100) / 100.0;
+        return full100 >= 300 && full100 <= 300_000 ? epl : Double.NaN;
+    }
+
+    /** What a rehearsal draws into a frame the camera took (null if this isn't a rehearsal). */
+    private RehearsalSky.Frame rehearsalFrame(CaptureResult res, Req r, long expNs, float focus, float[] black) {
+        if (rehearsalSky == null) return null;
+        RehearsalSky.Frame f = new RehearsalSky.Frame();
+        f.utcStartMs = frameUtcMs(res, r, expNs);
+        f.exposureS = expNs / 1e9;
+        Integer iso = res.get(CaptureResult.SENSOR_SENSITIVITY);
+        f.iso = iso != null ? iso : plan.iso;
+        f.focus = lens != null ? focus : Double.NaN;
+        System.arraycopy(black, 0, f.black, 0, 4);
+        f.electronsPerLevel = electronsPerLevel(res);
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        f.noiseSeed = ts != null ? ts : r.seq;
+        f.shading = spec.shading;
+        return f;
+    }
+
+    /** Draws the rehearsal's sky into a frame (any thread); if it fails, the frame stays as the camera took it. */
+    private RehearsalSky.Drawn drawRehearsal(short[] buf, RehearsalSky.Frame f, String what) {
+        RehearsalSky rs = rehearsalSky;
+        if (rs == null || f == null) return null;
+        try {
+            return rs.draw(buf, f);
+        } catch (RuntimeException | OutOfMemoryError e) {
+            rehearsalFailed(what, e);
+            return null;
+        }
+    }
+
+    private void rehearsalFailed(String what, Throwable e) {
+        rehearsalFailures++;
+        if (!rehearsalFailed.isEmpty()) return;
+        rehearsalFailed = what + ": " + e;
+        android.util.Log.w("NightSky", "rehearsal: the sky couldn't be drawn on " + rehearsalFailed);
+        SessionStore st = store;
+        if (st != null) st.log("rehearsal: the sky couldn't be drawn on " + rehearsalFailed);
+    }
+
+    /** The capture's frames get the sky on the processing thread, just before each is stored and measured. */
+    private final UnitProcessor.FrameHook rehearsalHook = new UnitProcessor.FrameHook() {
+        @Override
+        public void before(short[] raw, UnitProcessor.FrameInfo info) {
+            RehearsalSky rs = rehearsalSky;
+            if (rs == null) return;
+            RehearsalSky.Frame f = new RehearsalSky.Frame();
+            f.utcStartMs = info.utcStartMs;
+            f.exposureS = info.exposureNs / 1e9;
+            f.iso = info.iso;
+            f.focus = lens != null ? info.focus : Double.NaN;
+            System.arraycopy(info.black, 0, f.black, 0, 4);
+            f.electronsPerLevel = info.electronsPerLevel;
+            f.noiseSeed = info.timestampNs;
+            SensorSpec ls = liveSpec;
+            f.shading = ls != null ? ls.shading : null;
+            RehearsalSky.Drawn d = rs.draw(raw, f);
+            synchronized (rehearsalDrawn) {
+                rehearsalDrawn.add(new double[]{d.leakPerSec * d.electronsPerLevel, d.skyLevels * d.electronsPerLevel / f.exposureS, d.millis});
+            }
+        }
+
+        @Override
+        public void failed(UnitProcessor.FrameInfo info, Throwable t) {
+            rehearsalFailed("a frame", t);
+        }
+    };
+
+    /** What the capture's frames got, into the session's settings for the check (once the last frame is drawn). */
+    private void noteRehearsal(SessionStore st) {
+        double[] leak, skyE, ms;
+        synchronized (rehearsalDrawn) {
+            int n = rehearsalDrawn.size();
+            leak = new double[n];
+            skyE = new double[n];
+            ms = new double[n];
+            for (int i = 0; i < n; i++) {
+                double[] d = rehearsalDrawn.get(i);
+                leak[i] = d[0];
+                skyE[i] = d[1];
+                ms[i] = d[2];
+            }
+        }
+        try {
+            Properties p = st.readSettings();
+            if (leak.length > 0) {
+                Arrays.sort(leak);
+                Arrays.sort(skyE);
+                Arrays.sort(ms);
+                p.setProperty("rehearsal.leakElectronsPerSec", Double.toString(leak[leak.length / 2]));
+                p.setProperty("rehearsal.skyElectronsPerSec", Double.toString(skyE[skyE.length / 2]));
+                p.setProperty("rehearsal.drawMsMax", Double.toString(ms[ms.length - 1]));
+                p.setProperty("rehearsal.drawMsMedian", Double.toString(ms[ms.length / 2]));
+                st.log(String.format(Locale.US, "rehearsal: the sky drawn on %d frames, %.0f ms each (at most %.0f ms); the frames' own light "
+                                + "%.2f electrons a second a photosite, the sky drawn %.2f", leak.length, ms[ms.length / 2], ms[ms.length - 1],
+                        leak[leak.length / 2], skyE[skyE.length / 2]));
+            }
+            p.setProperty("rehearsal.drawFailures", Integer.toString(rehearsalFailures));
+            if (!rehearsalFailed.isEmpty()) p.setProperty("rehearsal.drawFailed", rehearsalFailed);
+            st.writeSettings(p);
+        } catch (IOException e) {
+            st.log("rehearsal: could not note what was drawn: " + e.getMessage());
+        }
+    }
+
+    /** What a rehearsal's photo's summary (its description in the file, the sessions page) starts with. */
+    static final String REHEARSAL_PHOTO = "Rehearsal, a drawn sky: ";
+
+    /** True if a session's settings say it was a rehearsal. */
+    static boolean isRehearsal(Properties p) {
+        return p != null && "true".equals(p.getProperty("rehearsal"));
+    }
+
+    // ------------------------------------------------------------------------------------------------
     // Focus on the stars (A5), centred by the daylight calibration (F7), and checked in long sessions
     // ------------------------------------------------------------------------------------------------
 
@@ -2900,6 +3233,7 @@ final class SessionController {
         else if (!settings.continuesFrom.isEmpty()) why = "these minutes add to the session just taken, at its focus";
         if (why == null) return true;
         focusDone = true;
+        focusWhyNot = why;
         noteFocus(String.format(Locale.US, "decision: focus %.3f (%s), not swept: %s", focusValue, howWords(focusHow), why));
         return false;
     }
@@ -3028,10 +3362,12 @@ final class SessionController {
         final SensorSpec sp = spec;
         final int tk = focusToken;
         final float where = at;
+        final RehearsalSky.Frame drawn = rehearsalFrame(res, r, exp, at, bl);
         focusMeasuring = true;
         new Thread(new Runnable() {
             @Override
             public void run() {
+                drawRehearsal(buf, drawn, "a focus frame");
                 final FocusMeter.Reading rd = measureFocus(buf, sp, bl);
                 h.post(new Runnable() {
                     @Override
@@ -3090,7 +3426,10 @@ final class SessionController {
                         res.focus, s.predicted, focusTempC, Math.abs(off) <= lens.fine + 1e-6 ? "within one sweep step of the prediction"
                                 : "more than one sweep step from the prediction", off, lens.fine));
             }
-            if (res.fitted || res.check != null && res.check.holds) {
+            if (settings.rehearsal) {
+                noteFocus("focus: not saved for next time: a rehearsal's stars are drawn sharpest where it chose, not where this lens "
+                        + "focuses on the real sky");
+            } else if (res.fitted || res.check != null && res.check.holds) {
                 // A5's "custom infinity" for this camera, and a night point for F7
                 FocusModel.Cal c = new FocusModel.Cal();
                 c.focus = res.focus;
@@ -3128,6 +3467,7 @@ final class SessionController {
             focusPredicted = s.predicted;
             noteSweep(s);
         }
+        focusWhyNot = "the sweep was cut short: " + why;
         if (res != null && res.ok && res.fitted) {
             focusResult = res;
             focusValue = (float) res.focus;
@@ -3265,9 +3605,11 @@ final class SessionController {
         final short[] buf = r.buf;
         final SensorSpec sp = spec;
         final int tk = focusToken, step = focusCheckStep;
+        final RehearsalSky.Frame drawn = rehearsalFrame(res, r, exp, at, bl);
         new Thread(new Runnable() {
             @Override
             public void run() {
+                drawRehearsal(buf, drawn, "a focus check frame");
                 final FocusMeter.Reading rd = measureFocus(buf, sp, bl);
                 h.post(new Runnable() {
                     @Override
@@ -3454,6 +3796,13 @@ final class SessionController {
             }
         }
         double bgPerSec = Double.NaN;
+        RehearsalSky rs = rehearsalSky;
+        if (rs != null && !Double.isNaN(probeBg) && del > 0) {
+            // a rehearsal: the drawn sky's glow on top of what the covered camera saw (its median, as the probe samples it)
+            double drawn = rs.greenLevelsPerSec(frameUtcMs(res, r, del) + del / 2e6, iso != null ? iso : isoStart, electronsPerLevel(res),
+                    spec.shading) * (del / 1e9);
+            probeBg += drawn;
+        }
         if (!Double.isNaN(probeBg) && del > 0) bgPerSec = Math.max(0, probeBg - spec.black[greenPlane]) / (del / 1e9);
         if (del < r.expNs * 0.93) prefs.noteExposureClamped(cameraId, r.expNs, del);
         plan.adjust(Double.isNaN(bgPerSec) ? -1 : bgPerSec, iso != null ? iso : isoStart, spec.range(), r.expNs, del,
@@ -3538,6 +3887,18 @@ final class SessionController {
         sky.toProperties(p);
         p.setProperty("focus.value", Float.toString(focusValue));
         p.setProperty("focus.how", focusHow);
+        if (!focusWhyNot.isEmpty()) p.setProperty("focus.whyNot", focusWhyNot);
+        RehearsalSky rsk = rehearsalSky;
+        if (rsk != null) {
+            // what was drawn, for the check at the end (and for anyone reading the session later)
+            rsk.toProperties(p);
+            double[] pfr = rehearsalPf;
+            if (pfr != null) {
+                p.setProperty("rehearsal.pfRead", Double.toString(pfr[0]));
+                p.setProperty("rehearsal.pfExpected", Double.toString(pfr[1]));
+                p.setProperty("rehearsal.pfDrawn", Double.toString(pfr[2]));
+            }
+        }
         if (!Double.isNaN(focusTempC)) p.setProperty("focus.tempC", Double.toString(focusTempC));
         if (!Double.isNaN(focusPredicted)) p.setProperty("focus.predicted", Double.toString(focusPredicted));
         FocusSweep.Result fres = focusResult;
@@ -3581,6 +3942,15 @@ final class SessionController {
         for (String l : startLog.toString().split("\n")) if (!l.isEmpty()) store.log(l);
         startLog.setLength(0);
         store.log("plan: " + plan.describe());
+        if (rsk != null) {
+            store.log(rehearsalLog);
+            if (!rehearsalFailed.isEmpty()) store.log("rehearsal: the sky couldn't be drawn on " + rehearsalFailed);
+            double[] pfr = rehearsalPf;
+            if (pfr != null) {
+                store.log(String.format(Locale.US, "rehearsal: the sky check read %.2f magnitudes a square arcsecond; %.2f expected of the "
+                        + "sky drawn at %.2f", pfr[0], pfr[1], pfr[2]));
+            }
+        }
         float tilt = motion.tiltDeg();
         if (!Float.isNaN(tilt)) store.log(String.format(Locale.US, "tilt from vertical %.1f deg", tilt));
         store.log("sky: " + sky.describe() + (place != null ? "; place " + place.describe() : "; no place known"));
@@ -3612,7 +3982,7 @@ final class SessionController {
         store.log("settings: " + (settings.presetName.isEmpty() ? "set by hand" : "the " + settings.presetName + " preset")
                 + (settings.usesSaved ? "" : ", asked for this session"));
         if (!siteLog.isEmpty()) store.log(siteLog);
-        if (!settings.siteId.isEmpty()) Sites.noteSession(prefs, settings.siteId, System.currentTimeMillis());
+        if (!settings.siteId.isEmpty() && !settings.rehearsal) Sites.noteSession(prefs, settings.siteId, System.currentTimeMillis());
         String migrated = prefs.settingsMigrated();
         if (!migrated.isEmpty()) {
             store.log("settings: brought up to date " + migrated + " (none reset)");
@@ -3633,6 +4003,7 @@ final class SessionController {
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
         liveSpec = spec;
+        if (rsk != null) up.setHook(rehearsalHook);
     }
 
     private void submitNext() {
@@ -3708,6 +4079,11 @@ final class SessionController {
         info.disturbed = rate > DISTURBED_RAD_S;
         Float fd = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
         info.focus = fd != null ? fd : 0f;
+        if (rehearsalSky != null) {
+            // what the rehearsal's hook draws with: when the frame was exposed, and its electrons a raw level
+            info.utcStartMs = frameUtcMs(res, r, exp);
+            info.electronsPerLevel = electronsPerLevel(res);
+        }
         up.submit(r.buf, info);
         framesDone++;
         if (framesDone >= plan.frames && !moreForClearSky()) finishCapture(null, null);
@@ -4250,6 +4626,11 @@ final class SessionController {
                 u[0].finish();
                 u[0] = null; // its buffers are big: let them go before developing
                 latest = null; // the viewer keeps its last picture; developing needs the memory
+                if (se.rehearsal) {
+                    // every frame is drawn: what they got goes to the check, and the sky's memory to developing
+                    noteRehearsal(st);
+                    rehearsalSky = null;
+                }
                 try {
                     st.setState("captured");
                 } catch (IOException ignored) {
@@ -4319,8 +4700,10 @@ final class SessionController {
         if (b.charging || b.pct < 0 || hours < 0.05) return;
         if (drop >= 2) {
             double rate = drop / hours;
-            prefs.learnDrain(rate, hours);
-            log(String.format(Locale.US, "battery: %d%% used in %.0f min (%.0f%% an hour)", drop, hours * 60, rate));
+            // a rehearsal's screen stays on, face up: not how a night drains the battery
+            if (!settings.rehearsal) prefs.learnDrain(rate, hours);
+            log(String.format(Locale.US, "battery: %d%% used in %.0f min (%.0f%% an hour)%s", drop, hours * 60, rate,
+                    settings.rehearsal ? "; not learned, as a rehearsal keeps the screen on" : ""));
         }
     }
 
@@ -4464,7 +4847,7 @@ final class SessionController {
         m.trails = trails;
         m.quick = quick;
         m.recipe = developRecipe(st, props, trails, brightness);
-        m.name = "NightSky_" + st.id() + (trails ? "_trails" : "");
+        m.name = "NightSky_" + st.id() + (trails ? "_trails" : isRehearsal(props) ? "_rehearsal" : "");
         return m;
     }
 
@@ -4477,7 +4860,9 @@ final class SessionController {
         sk.catalog = SkyCatalog.get(ctx);
         pp.sky = sk;
         if (!trails) {
-            if (!prefs.satelliteData()) {
+            if (isRehearsal(props)) {
+                pp.satellitesMissing = "a rehearsal's sky is drawn without satellites";
+            } else if (!prefs.satelliteData()) {
                 pp.satellitesMissing = "satellite data is off in the settings";
             } else {
                 try {
@@ -4594,12 +4979,14 @@ final class SessionController {
         final String verb = merging ? "Merging" : job == JOB_EDIT ? "Stacking the edit" : job == JOB_AGAIN ? "Making it again" : "Developing";
         final String what = merging ? "merging" : job == JOB_EDIT ? "stacking the edit" : job == JOB_AGAIN ? "making a render again" : "developing";
         final long t0 = SystemClock.elapsedRealtime();
+        jobStore = st;
         post(Phase.DEVELOPING, verb, firstStage, 0f);
         Progress progress = new Progress() {
             long last;
 
             @Override
             public void update(String stage, float fraction) {
+                noteHeap();
                 long now = SystemClock.elapsedRealtime();
                 if (now - last < 300 && fraction < 1f) return;
                 last = now;
@@ -4663,6 +5050,15 @@ final class SessionController {
      */
     private void finishDevelop(final Made m, final float brightness, boolean saveDng, final Sounds snd, long t0) throws IOException {
         final PostProcessor.Output o = m.o;
+        if (m.merge == null && isRehearsal(m.props) && !o.summary.startsWith(REHEARSAL_PHOTO)) {
+            // its photo says what it is wherever it goes (the gallery, a share, the sessions page): a drawn sky
+            o.summary = REHEARSAL_PHOTO + o.summary;
+        }
+        noteHeap();
+        photoHdrWanted = false;
+        photoHdrSaved = false;
+        photoHdrWhy = "";
+        photoVideoWhy = "";
         final SensorSpec sp = m.spec;
         SessionStore st = m.session, home = m.home;
         // the stack as its master keeps it (half floats), so the photo saved below is the one the master gives again
@@ -4670,7 +5066,8 @@ final class SessionController {
         Master.Meta master = saveMaster(home, o, sp, m.recipe, m.props, !m.nights && !m.edit, m.merge);
         if (!m.trails) placeSky(o, o.solution, o.solutionJd, st);
         if (m.edit && master != null) pruneMasters(home, master.key);
-        if (m.merge == null && !m.edit) learnFromSession(m.props, o, sp, st);
+        // a rehearsal's drawn sky teaches nothing about this camera's lens or a clear night's stars
+        if (m.merge == null && !m.edit && !isRehearsal(m.props)) learnFromSession(m.props, o, sp, st);
         // a merge of nights isn't one session: its own summary and coverage map stand for the report card; an edit's is
         // kept with its stack, the session's own stays the develop step's
         ReportCard card = m.nights ? null : report(o, m.sky, m.props, st, !m.edit);
@@ -4754,6 +5151,10 @@ final class SessionController {
         st.log(String.format(Locale.US, "%s in %.1f s: %s", m.again != null ? "render made again" : m.edit ? "edit stacked"
                 : m.merge == null ? "developed" : m.nights ? "merged" : "stacked with the session it adds to",
                 (SystemClock.elapsedRealtime() - t0) / 1000.0, o.summary));
+        RehearsalCheck check = null;
+        if (isRehearsal(m.props) && m.merge == null && !m.edit && m.again == null) {
+            check = rehearsalCheck(m, o, jpeg, dng, saveDng, motion, (SystemClock.elapsedRealtime() - t0) / 1000.0);
+        }
         if (home != st) home.log(String.format(Locale.US, "%s: %s", m.recipe.note, o.summary));
         Uri log = null;
         if (!m.edit) {
@@ -4815,6 +5216,8 @@ final class SessionController {
         r.merge = m.merge;
         r.north = north;
         r.repeatOf = m.merge == null && !m.edit ? m.props.getProperty("repeatOf", "") : "";
+        r.rehearsal = check != null ? check : RehearsalCheck.fromProperties(m.props);
+        r.fromRehearsal = m.merge == null && isRehearsal(m.props);
         if (jpeg != null) prefs.setLastResultUri(jpeg.toString());
         // what's said: an edit by its render's number, a render made again by how it came out
         final String headline, detail;
@@ -4830,6 +5233,9 @@ final class SessionController {
         } else if (m.edit) {
             headline = recipe != null ? String.format(Locale.US, "Saved as render %d", recipe.number) : "Your edit is ready";
             detail = r.summary;
+        } else if (check != null) {
+            headline = "Rehearsal done";
+            detail = check.headline;
         } else {
             headline = m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
                     : m.trails ? "Your star trails are ready" : "Your photo is ready";
@@ -4854,7 +5260,8 @@ final class SessionController {
                 outcomeDetail = doneWords(r, o);
                 publish(headline, detail, -1);
                 if (snd != null) {
-                    snd.say(m.merge != null ? (m.nights ? "The merged photo is ready: " : "The longer photo is ready: ") + m.merge.total
+                    snd.say(r.rehearsal != null && m.merge == null && !m.edit ? rehearsalSpoken(r.rehearsal)
+                            : m.merge != null ? (m.nights ? "The merged photo is ready: " : "The longer photo is ready: ") + m.merge.total
                             : r.report != null ? r.report.spoken : spoken(o), new Runnable() {
                         @Override
                         public void run() {
@@ -5121,6 +5528,14 @@ final class SessionController {
         boolean withVideo = mo != null && finishVideo(st, mo, bmp);
         boolean hdr = plain && prefs.hdrPhotos();
         Uri u = MediaSaver.saveJpeg(ctx, bmp, name, ex, withVideo ? mo.mp4 : null, withVideo ? mo.pv.stillUs() : 0, hdr);
+        noteHeap();
+        if (plain) {
+            // for a rehearsal's check: how the photo itself was saved
+            photoHdrWanted = hdr;
+            photoHdrSaved = ex.hdr != null;
+            photoHdrWhy = ex.hdr == null && ex.hdrFailed != null ? ex.hdrFailed : "";
+            if (mo != null && ex.videoFailed != null) photoVideoWhy = ex.videoFailed;
+        }
         String file = name + (withVideo && ex.videoFailed == null ? ".MP.jpg" : ".jpg");
         if (ex.hdr != null) {
             if (st != null) st.log(String.format(Locale.US, "decision: %s saved as an HDR photo: a screen with the headroom (this phone's, "
@@ -5181,6 +5596,7 @@ final class SessionController {
         if (o.video == null) {
             st.log("decision: the photo saved without its video: " + (merged ? "sessions stacked together don't make one yet"
                     : "developing kept nothing to make it from"));
+            photoVideoWhy = merged ? "sessions stacked together don't make one yet" : "developing kept nothing to make it from";
             return null;
         }
         if (!prefs.photoVideo()) {
@@ -5211,6 +5627,7 @@ final class SessionController {
         }
         if (pv == null) {
             st.log("decision: the photo saved without its video: " + why);
+            photoVideoWhy = why;
             return null;
         }
         Motion mo = new Motion();
@@ -5267,8 +5684,65 @@ final class SessionController {
             //noinspection ResultOfMethodCallIgnored
             mo.mp4.delete();
             if (st != null) st.log("decision: the photo saved without its video, as ending it on the photo failed: " + e);
+            photoVideoWhy = "ending it on the photo failed: " + e;
             return false;
         }
+    }
+
+    /** The most heap developing has taken so far (for a rehearsal's check): what's allocated, garbage not yet collected included. */
+    private void noteHeap() {
+        Runtime rt = Runtime.getRuntime();
+        long used = rt.totalMemory() - rt.freeMemory();
+        if (used > heapPeak) heapPeak = used;
+    }
+
+    /**
+     * A rehearsal's check (2.1): every step against the sky it was given, into the session's log and settings (so the
+     * photo opened again later shows it too). Null if it couldn't be made.
+     */
+    private RehearsalCheck rehearsalCheck(Made m, PostProcessor.Output o, Uri jpeg, Uri dng, boolean saveDng, boolean motion, double seconds) {
+        SessionStore st = m.session;
+        try {
+            Properties p = st.readSettings();
+            RehearsalCheck.Input in = new RehearsalCheck.Input();
+            in.props = p;
+            in.out = o;
+            in.sky = m.sky;
+            in.photoSaved = jpeg != null;
+            in.hdrWanted = photoHdrWanted;
+            in.hdrSaved = photoHdrSaved;
+            in.hdrWhy = photoHdrWhy;
+            in.videoWanted = prefs.photoVideo();
+            in.videoSaved = motion;
+            in.videoWhy = photoVideoWhy;
+            in.dngWanted = saveDng;
+            in.dngSaved = dng != null;
+            in.developSeconds = seconds;
+            noteHeap();
+            in.heapPeak = heapPeak;
+            in.heapMax = Runtime.getRuntime().maxMemory();
+            RehearsalCheck c = RehearsalCheck.build(in);
+            st.log("rehearsal check:\n" + c.describe());
+            c.toProperties(p);
+            st.writeSettings(p);
+            // the home screen says how the last one went
+            prefs.setLastRehearsal(System.currentTimeMillis(), c.headline);
+            return c;
+        } catch (IOException | RuntimeException e) {
+            st.log("rehearsal check: couldn't be made: " + e);
+            return null;
+        }
+    }
+
+    /** What's said when a rehearsal is done. */
+    static String rehearsalSpoken(RehearsalCheck c) {
+        int n = c.items.size();
+        if (c.failed > 0) {
+            return String.format(Locale.US, "Rehearsal done. %d of %d checks passed and %d failed: the check on the screen says what went wrong.",
+                    c.passed, n, c.failed);
+        }
+        if (c.notes > 0) return String.format(Locale.US, "Rehearsal done. %d of %d checks passed, and %d to look at.", c.passed, n, c.notes);
+        return String.format(Locale.US, "Rehearsal done. All %d checks passed: the phone is ready for a real night.", n);
     }
 
     /** Memory the app can still take (bytes); {@code collect}: after a collection, for a figure without garbage. */
@@ -5620,6 +6094,7 @@ final class SessionController {
         Status s = new Status();
         s.phase = phase;
         s.trails = settings != null && settings.trails;
+        s.rehearsal = settings != null && settings.rehearsal;
         s.previewVersion = previewVersion;
         s.result = result;
         if (plan != null) {
@@ -5647,6 +6122,51 @@ final class SessionController {
         s.version = ++statusVersion;
         status = s;
         host.onStatus(s);
+        noteState(s);
+    }
+
+    /**
+     * What the stop recorder keeps with the process (2.1), so that if Android ends it, the next launch says what was
+     * running: a few words that change with each step (and each frame while capturing), and the session's folder.
+     */
+    private void noteState(Status s) {
+        String what;
+        switch (s.phase) {
+            case IDLE:
+            case DONE:
+            case FAILED:
+                StopRecorder.session("idle", null);
+                return;
+            case CAPTURING:
+                what = s.planned > 0 ? String.format(Locale.US, "capturing frame %d of %d", Math.min(s.done + 1, s.planned), s.planned)
+                        : "capturing";
+                break;
+            case PAUSED:
+                what = String.format(Locale.US, "paused at frame %d of %d", s.done, s.planned);
+                break;
+            case FINISHING:
+                what = "finishing the capture";
+                break;
+            case DEVELOPING:
+                // "developing", "merging", "stacking the edit", "making it again", "saving"
+                what = s.headline.isEmpty() ? "developing" : s.headline.toLowerCase(Locale.US);
+                break;
+            case FOCUS:
+                what = "focusing";
+                break;
+            case PREFLIGHT:
+                what = "checking the sky";
+                break;
+            case COUNTDOWN:
+                what = "counting down to the start";
+                break;
+            default:
+                what = "getting ready";
+                break;
+        }
+        if (s.rehearsal) what = "a rehearsal, " + what;
+        SessionStore st = store != null ? store : s.phase == Phase.DEVELOPING || s.phase == Phase.FINISHING ? jobStore : null;
+        StopRecorder.session(st != null ? what + "|" + st.dir.getName() : what, st);
     }
 
     /** Unfinished sessions (frames on disk, never developed), newest first. */

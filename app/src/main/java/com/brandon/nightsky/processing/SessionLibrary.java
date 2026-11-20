@@ -46,6 +46,8 @@ public final class SessionLibrary {
         public List<Master.Meta> masters = new ArrayList<Master.Meta>();
         /** The folder of the session this one adds to ("Add 5 minutes"; "" if none). */
         public String continuesFrom = "";
+        /** A rehearsal (2.1): its frames carry a drawn sky, so it's never merged with a night, nor a night with it. */
+        public boolean rehearsal;
         public double lat = Double.NaN, lon = Double.NaN;
         public String siteId = "", siteName = "", presetName = "";
         /** The develop step's summary ("" if not developed). */
@@ -97,6 +99,7 @@ public final class SessionLibrary {
         e.durationSec = (int) parseLong(p.getProperty("capture.durationSec", p.getProperty("durationSec")));
         e.trails = "trails".equals(p.getProperty("mode"));
         e.continuesFrom = p.getProperty("continuesFrom", "");
+        e.rehearsal = "true".equals(p.getProperty("rehearsal"));
         e.lat = parseDouble(p.getProperty("lat"));
         e.lon = parseDouble(p.getProperty("lon"));
         e.siteId = p.getProperty("site.id", "");
@@ -128,13 +131,13 @@ public final class SessionLibrary {
     /**
      * Sessions that could be merged with {@code base}: developed, of the same sky (centres within
      * {@link MergeProcessor#MAX_CENTRE_DEG}) from the same place (within {@link MergeProcessor#MAX_SITE_KM}), the same
-     * kind (not star trails), and with their frames still kept. Nearest in time first.
+     * kind (not star trails, nor a rehearsal's drawn sky), and with their frames still kept. Nearest in time first.
      */
     public static List<Entry> mergeCandidates(Entry base, List<Entry> all) {
         List<Entry> out = new ArrayList<Entry>();
-        if (base.trails || base.centre == null) return out;
+        if (base.trails || base.rehearsal || base.centre == null) return out;
         for (Entry e : all) {
-            if (e == base || e.id.equals(base.id) || e.trails || !e.developed() || !e.hasFrames || e.centre == null) continue;
+            if (e == base || e.id.equals(base.id) || e.trails || e.rehearsal || !e.developed() || !e.hasFrames || e.centre == null) continue;
             if (MergeProcessor.close(base.centre, base.lat, base.lon, e.centre, e.lat, e.lon)) out.add(e);
         }
         final long t = base.startMs;

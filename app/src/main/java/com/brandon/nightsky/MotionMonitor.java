@@ -44,6 +44,12 @@ final class MotionMonitor implements SensorEventListener {
     private volatile boolean haveHeading;
     private volatile float headingAccDeg = Float.NaN;
     private final float[] rot = new float[9];
+    /**
+     * A rehearsal (2.1): the phone lies screen-up, its camera against the table, and is taken as turned over about its
+     * long side, so that everything that asks whether it is screen-down, which way is up and how it tilts is answered
+     * as on a night. Its top edge (the compass) is the same either way.
+     */
+    private volatile boolean screenUp;
 
     MotionMonitor(Context c) {
         sm = (SensorManager) c.getSystemService(Context.SENSOR_SERVICE);
@@ -55,6 +61,15 @@ final class MotionMonitor implements SensorEventListener {
 
     boolean hasGyro() {
         return gyro != null;
+    }
+
+    /** See {@link #screenUp}: set before {@link #start}. */
+    void setScreenUp(boolean up) {
+        screenUp = up;
+    }
+
+    boolean screenUp() {
+        return screenUp;
     }
 
     void start() {
@@ -98,9 +113,11 @@ final class MotionMonitor implements SensorEventListener {
                 lastMotionNs = t;
             }
         } else if (type == Sensor.TYPE_GRAVITY) {
-            g[0] = e.values[0];
+            // screen-up for a rehearsal: as if turned over about the long side (x and z change sign)
+            float f = screenUp ? -1f : 1f;
+            g[0] = f * e.values[0];
             g[1] = e.values[1];
-            g[2] = e.values[2];
+            g[2] = f * e.values[2];
             haveGravity = true;
             if (g[2] > FACE_DOWN_Z) lastDisturbNs = t;
         } else if (type == Sensor.TYPE_ROTATION_VECTOR) {
@@ -125,7 +142,8 @@ final class MotionMonitor implements SensorEventListener {
             haveHeading = true;
             if (e.values.length > 4 && e.values[4] >= 0) headingAccDeg = (float) Math.toDegrees(e.values[4]);
         } else if (type == Sensor.TYPE_ACCELEROMETER) {
-            float x = e.values[0], y = e.values[1], z = e.values[2];
+            float f = screenUp ? -1f : 1f;
+            float x = f * e.values[0], y = e.values[1], z = f * e.values[2];
             if (gravity == null) {
                 // no fused gravity sensor: low-pass the accelerometer
                 float a = haveGravity ? 0.1f : 1f;
@@ -154,7 +172,7 @@ final class MotionMonitor implements SensorEventListener {
         return haveGravity;
     }
 
-    /** Screen facing the ground, back camera facing the sky. */
+    /** Screen facing the ground, back camera facing the sky (in a rehearsal: screen-up, camera against the table). */
     boolean faceDown() {
         return haveGravity && g[2] < FACE_DOWN_Z;
     }

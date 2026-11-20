@@ -67,6 +67,7 @@ import com.brandon.nightsky.processing.Preflight;
 import com.brandon.nightsky.processing.Preset;
 import com.brandon.nightsky.processing.Recipe;
 import com.brandon.nightsky.processing.Rejection;
+import com.brandon.nightsky.processing.RehearsalCheck;
 import com.brandon.nightsky.processing.ReportCard;
 import com.brandon.nightsky.processing.SatCatalog;
 import com.brandon.nightsky.processing.SatPlanner;
@@ -133,6 +134,9 @@ public final class MainActivity extends Activity {
     private long shownVersion = -1;
     private int shownPreview = -1;
     private boolean pendingStart, askedNotifications;
+    /** Why the app last stopped (2.1; null if nothing to show), looked up once per screen. */
+    private StopRecorder.Stop stopShown;
+    private boolean stopChecked;
     /** When the session waiting on a permission should start (Unix ms; 0 for at once). */
     private long pendingStartAt;
     /** The home screen's satellite card; a counter that drops stale results; the last outlook, reused for a while. */
@@ -418,6 +422,10 @@ public final class MainActivity extends Activity {
         shownPhase = p;
         if (headline != null) headline.setText(s.headline);
         if (detail != null) detail.setText(s.detail);
+        if (detail != null && screenOf(p) == 4 && s.result != null && s.result.rehearsal != null) {
+            // a rehearsal's check is on its own card just below: not said twice
+            detail.setVisibility(s.detail.equals(s.result.rehearsal.headline) ? View.GONE : View.VISIBLE);
+        }
         if (siteView != null) {
             siteView.setText(s.siteLine);
             siteView.setVisibility(s.siteLine.isEmpty() ? View.GONE : View.VISIBLE);
@@ -568,6 +576,49 @@ public final class MainActivity extends Activity {
         col.addView(nightBox, gap(16));
         fillNightBox();
 
+        // why the app last stopped, when nobody chose to stop it (2.1): shown until put away, with the details to share
+        if (!stopChecked) {
+            stopChecked = true;
+            stopShown = StopRecorder.pending(this);
+        }
+        final StopRecorder.Stop stop = stopShown;
+        if (stop != null) {
+            final LinearLayout card = card();
+            card.addView(text("Last time, Night Sky stopped unexpectedly", 16, RED, true));
+            card.addView(text(stop.line(), 14, RED, false), gap(4));
+            if (!stop.hint.isEmpty()) card.addView(text(stop.hint, 13, RED_DIM, false), gap(4));
+            LinearLayout row = row();
+            Button share = button("Share the details", true);
+            share.setTextSize(15);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, stop.details)
+                            .putExtra(Intent.EXTRA_SUBJECT, "Why Night Sky stopped");
+                    try {
+                        startActivity(Intent.createChooser(i, "Share the details"));
+                    } catch (RuntimeException e) {
+                        toastish("Nothing on the phone can share it");
+                    }
+                }
+            });
+            Button ok = button("Dismiss", false);
+            ok.setTextSize(15);
+            ok.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    StopRecorder.dismiss(MainActivity.this, stop);
+                    stopShown = null;
+                    ViewGroup parent = (ViewGroup) card.getParent();
+                    if (parent != null) parent.removeView(card);
+                }
+            });
+            row.addView(share, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+            row.addView(ok, weight());
+            card.addView(row, gap(10));
+            col.addView(card, gap(16));
+        }
+
         // unfinished session from a crash or a flat battery
         List<File> unfinished = SessionController.unfinished(this);
         if (!unfinished.isEmpty()) {
@@ -624,7 +675,8 @@ public final class MainActivity extends Activity {
 
         // before the first night: the camera check, offered until it's done or put off
         final String checkCam = focusCameraId();
-        if (checkCam != null && !prefs.checkOffered() && prefs.cameraFacts(checkCam).isEmpty()) {
+        final boolean offerCheck = checkCam != null && !prefs.checkOffered() && prefs.cameraFacts(checkCam).isEmpty();
+        if (offerCheck) {
             final LinearLayout card = card();
             card.addView(text("Before your first night: check the camera", 16, RED, true));
             card.addView(text("Up to three minutes, indoors, with the camera against a table. It finds whether this phone's camera "
@@ -648,6 +700,40 @@ public final class MainActivity extends Activity {
                     ViewGroup parent = (ViewGroup) card.getParent();
                     if (parent != null) parent.removeView(card);
                     toastish("It's in Advanced settings whenever you want it");
+                }
+            });
+            row.addView(go, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
+            row.addView(later, weight());
+            card.addView(row, gap(10));
+            col.addView(card, gap(16));
+        }
+
+        // then (2.1): a whole night rehearsed indoors, offered until one is done or put off
+        if (!offerCheck && !prefs.rehearsalOffered()) {
+            final LinearLayout card = card();
+            card.addView(text("Before your first night: rehearse it", 16, RED, true));
+            card.addView(text("About ten minutes, indoors, by day. The phone lies screen-up on a table and a clear night's sky is drawn "
+                    + "into its camera's own frames. It focuses, checks the sky, takes the frames and makes the photo just as it will "
+                    + "under the stars, then checks every step. Anything that would spoil a night shows up here instead.", 13, RED_DIM,
+                    false), gap(4));
+            LinearLayout row = row();
+            Button go = button("Rehearse", true);
+            go.setTextSize(15);
+            go.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    askRehearsal();
+                }
+            });
+            Button later = button("Not now", false);
+            later.setTextSize(15);
+            later.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setRehearsalOffered();
+                    ViewGroup parent = (ViewGroup) card.getParent();
+                    if (parent != null) parent.removeView(card);
+                    toastish("It's at the bottom of this screen whenever you want it");
                 }
             });
             row.addView(go, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f));
@@ -824,7 +910,48 @@ public final class MainActivity extends Activity {
             }
         });
         col.addView(reading, gap(10));
+        Button rehearse = button("Rehearse a night indoors (about 10 minutes)", false);
+        rehearse.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                askRehearsal();
+            }
+        });
+        col.addView(rehearse, gap(10));
+        String lastCheck = lastRehearsalLine();
+        if (!lastCheck.isEmpty()) col.addView(text(lastCheck, 12, RED_DIM, false), gap(4));
         col.addView(text("Version " + BuildInfo.VERSION + " · photos are saved in Pictures/NightSky", 12, RED_DIM, false), gap(24));
+    }
+
+    /**
+     * A rehearsal (2.1): how to lay the phone and what it does, then it starts. It runs the saved settings for five
+     * minutes, with a clear night's sky drawn into the camera's frames.
+     */
+    private void askRehearsal() {
+        new AlertDialog.Builder(this).setTitle("Rehearse a night")
+                .setMessage("1. Tap Rehearse.\n"
+                        + "2. Lay the phone screen-up on a table, its camera flat against the table (wood or cloth, not glass), and "
+                        + "leave it alone.\n"
+                        + "3. In about ten minutes it says how every step went.\n\n"
+                        + "The stars over where you are, as a clear dark night would show them this minute, are drawn into the "
+                        + "camera's own frames, so it works by day and indoors; a dim room helps. It uses your settings, for five minutes. Its photo, of the drawn sky, is saved with "
+                        + "\"rehearsal\" in its name, and nothing about that sky is kept for real nights.")
+                .setPositiveButton("Rehearse", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        prefs.setRehearsalOffered();
+                        startSession(0, Launch.of("rehearsal"));
+                    }
+                }).setNegativeButton("Not now", null).show();
+    }
+
+    /** "Last rehearsal, Thu 20 Nov: all 12 passed" ("" if there hasn't been one). */
+    private String lastRehearsalLine() {
+        String h = prefs.lastRehearsal();
+        long at = prefs.lastRehearsalMs();
+        if (h.isEmpty() || at <= 0) return "";
+        String what = h.startsWith("Rehearsal check: ") ? h.substring("Rehearsal check: ".length()) : h;
+        return "Last rehearsal, " + new SimpleDateFormat("EEE d MMM", Locale.US).format(new Date(at)) + ": " + what;
     }
 
     /**
@@ -1343,6 +1470,8 @@ public final class MainActivity extends Activity {
         Integer durationMin;
         /** A sky reading: the check only, no photo. */
         boolean reading;
+        /** A rehearsal (2.1): the whole session indoors, screen-up, with a clear night drawn into the camera's frames. */
+        boolean rehearsal;
         /** For the session's log: "shortcut: Star trails 30 min". */
         String origin = "";
         /** "Add 5 minutes" after a session (G1): the folder of the session they add to (null: a session of its own). */
@@ -1380,6 +1509,13 @@ public final class MainActivity extends Activity {
                     l.durationMin = 1;
                     l.saveDng = false;
                     l.origin = "shortcut: Sky reading";
+                    return l;
+                case "rehearsal":
+                    // five minutes of the saved settings: long enough for every step a night takes
+                    l.rehearsal = true;
+                    l.trails = false;
+                    l.durationMin = 5;
+                    l.origin = "Rehearsal";
                     return l;
                 default:
                     return null;
@@ -1468,6 +1604,7 @@ public final class MainActivity extends Activity {
                 .putExtra(CaptureService.EXTRA_VIEWER, prefs.remoteViewer() && !reading)
                 .putExtra(CaptureService.EXTRA_START_AT, startAtMs)
                 .putExtra(CaptureService.EXTRA_READING, reading)
+                .putExtra(CaptureService.EXTRA_REHEARSAL, l != null && l.rehearsal)
                 .putExtra(CaptureService.EXTRA_ORIGIN, l != null ? l.origin : "");
         if (l != null) {
             if (l.preset != null) i.putExtra(CaptureService.EXTRA_PRESET, l.preset);
@@ -2006,6 +2143,18 @@ public final class MainActivity extends Activity {
             it.clockMs = (dusk + 599_999L) / 600_000L * 600_000L;
         }
         it.endMs = 0;
+        if (t != null && t.darkNow) {
+            // planned when it's dark already: full darkness (or an hour after the last session) may have gone by, and
+            // "Add to the plan" would only say that time has passed. The first ten-minute mark at least five minutes
+            // away instead, by the clock, if the session still ends before dawn
+            long now = System.currentTimeMillis();
+            long soonest = (now + 5 * 60_000L + 599_999L) / 600_000L * 600_000L;
+            long start = p.previewStart(it, t);
+            if (start > 0 && start < soonest && (t.dawnMs == 0 || soonest + it.durationSec * 1000L <= t.dawnMs)) {
+                it.rule = NightPlan.Rule.CLOCK;
+                it.clockMs = soonest;
+            }
+        }
         return it;
     }
 
@@ -2240,7 +2389,7 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 if (start < now - 5 * 60_000L && !(it.endMs > now)) {
-                    toastish("That time has passed tonight");
+                    toastish("That time has passed tonight: choose A set time to start later");
                     return;
                 }
                 p.add(it);
@@ -2553,7 +2702,10 @@ public final class MainActivity extends Activity {
         col.addView(detail, gap(6));
         col.addView(bar, gap(10));
         col.addView(live, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        col.addView(text("Live view of the stack so far. Leave the phone face-down; lifting it pauses the capture.", 13, RED_DIM, false), gap(8));
+        boolean rehearsal = service != null && service.controller().status().rehearsal;
+        col.addView(text(rehearsal ? "Live view of the stack so far: the night drawn into the camera's frames. Leave the phone lying "
+                + "screen-up; lifting it pauses the capture, as it would on a night." : "Live view of the stack so far. Leave the phone "
+                + "face-down; lifting it pauses the capture.", 13, RED_DIM, false), gap(8));
         viewerBox = new LinearLayout(this);
         viewerBox.setOrientation(LinearLayout.VERTICAL);
         viewerCompact = true;
@@ -2654,7 +2806,32 @@ public final class MainActivity extends Activity {
         col.addView(headline, gap(8));
         col.addView(detail, gap(2));
         final SessionController.Result r = s.result;
-        if (r != null && r.report != null) {
+        if (r != null && r.rehearsal != null) {
+            // a rehearsal (2.1): its check stands for the report card, which opens from it
+            final RehearsalCheck rc = r.rehearsal;
+            RehearsalCheck.Item first = null;
+            for (RehearsalCheck.Item it : rc.items) {
+                if (it.level == RehearsalCheck.Level.FAIL) {
+                    first = it;
+                    break;
+                }
+                if (first == null && it.level == RehearsalCheck.Level.NOTE) first = it;
+            }
+            int more = rc.failed + rc.notes - 1;
+            LinearLayout link = card();
+            link.setPadding(dp(12), dp(8), dp(12), dp(8));
+            link.addView(text(rc.headline, 14, RED, false));
+            link.addView(text(first == null ? "Every step went as it would on a clear night \u203a"
+                    : (first.level == RehearsalCheck.Level.FAIL ? "Failed: " : "To look at: ") + first.title.toLowerCase(Locale.US)
+                    + (more > 0 ? " and more" : "") + " \u203a", 13, RED_DIM, true));
+            link.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showRehearsalCheck(rc, r);
+                }
+            });
+            col.addView(link, gap(6));
+        } else if (r != null && r.report != null) {
             final ReportCard rc = r.report;
             LinearLayout link = card();
             link.setPadding(dp(12), dp(8), dp(12), dp(8));
@@ -2849,7 +3026,7 @@ public final class MainActivity extends Activity {
                 more.add(nb);
             }
         }
-        if (r != null && r.startedMs > 0 && r.endedMs > 0 && !s.scheduled && !fromLibrary) {
+        if (r != null && r.startedMs > 0 && r.endedMs > 0 && !s.scheduled && !fromLibrary && !r.fromRehearsal) {
             // the same stars at the same height tomorrow night: 3 min 56 s earlier by the clock
             final Button rep = smallButton("Repeat tomorrow", false);
             rep.setOnClickListener(new View.OnClickListener() {
@@ -4128,6 +4305,108 @@ public final class MainActivity extends Activity {
         }
         col.addView(bottom, gap(20));
         openOverlay(ov);
+    }
+
+    /**
+     * A rehearsal's check (2.1): every step against the sky it was given, what failed first, then what to look at, then
+     * what passed; and what to do next. Shared as text, the check reads the same anywhere it's pasted.
+     */
+    private void showRehearsalCheck(final RehearsalCheck rc, final SessionController.Result r) {
+        if (rc == null || reportOverlay != null) return;
+        FrameLayout ov = new FrameLayout(this);
+        ov.setBackgroundColor(BG);
+        ov.setClickable(true);
+        ScrollView sv = new ScrollView(this);
+        LinearLayout col = column();
+        sv.addView(col);
+        ov.addView(sv, match());
+        col.addView(label("Rehearsal check"));
+        col.addView(text(rc.headline.startsWith("Rehearsal check: ") ? capital(rc.headline.substring("Rehearsal check: ".length()))
+                : rc.headline, 18, RED, true), gap(6));
+        col.addView(text(rc.failed > 0 ? "Something here would spoil a real night too. Fix what failed, then rehearse again."
+                : rc.notes > 0 ? "It would work on a night; the points to look at may cost some of the photo."
+                : "The phone is ready for a real night: tap Start under a clear sky, lay it screen-down, and it does the rest.",
+                15, RED, false), gap(6));
+        col.addView(text("A clear night's sky was drawn into the camera's own frames; each step is checked against that sky.", 13,
+                RED_DIM, false), gap(4));
+        RehearsalCheck.Level[] order = {RehearsalCheck.Level.FAIL, RehearsalCheck.Level.NOTE, RehearsalCheck.Level.PASS};
+        String[] heads = {"Failed", "To look at", "Passed"};
+        for (int k = 0; k < order.length; k++) {
+            boolean any = false;
+            for (RehearsalCheck.Item it : rc.items) {
+                if (it.level != order[k]) continue;
+                if (!any) col.addView(label(heads[k]), gap(18));
+                any = true;
+                LinearLayout c = card();
+                String mark = it.level == RehearsalCheck.Level.PASS ? "\u2713 " : it.level == RehearsalCheck.Level.NOTE ? "\u2022 " : "\u2717 ";
+                c.addView(text(mark + it.title, 16, RED, true));
+                c.addView(text(capital(it.text) + (it.text.endsWith(".") ? "" : "."), 14, it.level == RehearsalCheck.Level.PASS ? RED_DIM : RED,
+                        false), gap(4));
+                col.addView(c, gap(8));
+            }
+        }
+        LinearLayout row1 = row();
+        Button close = button("Close", true);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeReport();
+            }
+        });
+        Button share = button("Share the check", false);
+        share.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shareRehearsalCheck(rc, r);
+            }
+        });
+        row1.addView(close, weight());
+        row1.addView(share, weight());
+        col.addView(row1, gap(20));
+        LinearLayout row2 = row();
+        if (r != null && r.report != null) {
+            final ReportCard card = r.report;
+            Button rep = button("Session report", false);
+            rep.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    closeReport();
+                    showReport(card, r.merge, r.log, r.session);
+                }
+            });
+            row2.addView(rep, weight());
+        }
+        if (r != null && (r.log != null || !r.session.isEmpty())) {
+            Button log = button("Share the log", false);
+            log.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    shareLog(r.log, r.session);
+                }
+            });
+            row2.addView(log, weight());
+        }
+        if (row2.getChildCount() > 0) col.addView(row2, gap(8));
+        openOverlay(ov);
+    }
+
+    /** The check as text, to paste anywhere: the version, when, and every step. */
+    private void shareRehearsalCheck(RehearsalCheck rc, SessionController.Result r) {
+        String when = r != null && r.startedMs > 0 ? new SimpleDateFormat("EEE d MMM yyyy, HH:mm", Locale.US).format(new Date(r.startedMs)) : "";
+        String body = "Night Sky " + BuildInfo.VERSION + " rehearsal" + (when.isEmpty() ? "" : ", " + when) + " (" + Build.MODEL + ")\n"
+                + rc.describe();
+        Intent i = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body)
+                .putExtra(Intent.EXTRA_SUBJECT, "Night Sky rehearsal check");
+        try {
+            startActivity(Intent.createChooser(i, "Share the rehearsal check"));
+        } catch (RuntimeException e) {
+            toastish("Nothing on the phone can share it");
+        }
+    }
+
+    /** The text with a capital first letter. */
+    private static String capital(String s) {
+        return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
     /**
@@ -5572,6 +5851,10 @@ public final class MainActivity extends Activity {
      */
     private static String when(SessionLibrary.Entry e) {
         if (e.startMs <= 0) return e.id;
+        if (e.rehearsal) {
+            // by day as often as not: its date, not a night's
+            return "Rehearsal \u00b7 " + new SimpleDateFormat("EEE d MMM \u00b7 HH:mm", Locale.US).format(new Date(e.startMs));
+        }
         return "Night of " + new SimpleDateFormat("EEE d MMM", Locale.US).format(new Date(e.startMs - 12 * 3600_000L)) + " \u00b7 "
                 + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(e.startMs));
     }
@@ -5602,7 +5885,7 @@ public final class MainActivity extends Activity {
         int minutes = Math.round(e.durationSec / 60f);
         for (SessionLibrary.Entry a : added) minutes += Math.round(a.durationSec / 60f);
         words.addView(text(when(e), 16, RED, true));
-        words.addView(text((e.trails ? "Star trails" : "Deep sky") + (minutes > 0 ? " · " + minutes + " min" : "")
+        words.addView(text((e.trails ? "Star trails" : e.rehearsal ? "A drawn sky" : "Deep sky") + (minutes > 0 ? " · " + minutes + " min" : "")
                 + (added.isEmpty() ? "" : " · " + (added.size() == 1 ? "5 minutes added" : added.size() + " times 5 minutes added"))
                 + (e.siteName.isEmpty() ? "" : " · " + e.siteName), 13, RED_DIM, false), gap(2));
         c.addView(top);

@@ -280,7 +280,9 @@ public class Monkey {
             public void open() throws Exception {
                 String t = trailsFolder();
                 if (t == null) throw new IllegalStateException("no trails session");
-                openSession(t);
+                // never developed (sim/LibraryTest's): developed as Develop it on the home screen does, which shows its photo
+                if (count(new File(new File(root, t), "renders")) == 0) developSession(t);
+                else openSession(t);
             }
         });
         starts.put("made-merged", new Start() {
@@ -463,6 +465,27 @@ public class Monkey {
             if (st.phase == SessionController.Phase.FAILED) throw new IllegalStateException("open failed: " + st.headline + " " + st.detail);
         }
         if (svc.controller().status().phase != SessionController.Phase.DONE) throw new IllegalStateException("open timed out");
+        pump(500);
+    }
+
+    /** An unfinished session developed (the home screen's Develop it), to its photo. */
+    static void developSession(String folder) throws Exception {
+        SessionController.Status st = svc.controller().status();
+        if (st.phase == SessionController.Phase.DONE && st.result != null && folder.equals(st.result.session)) {
+            pump(300);
+            return;
+        }
+        fresh();
+        svc.onStartCommand(new Intent(app, CaptureService.class).setAction(CaptureService.ACTION_RECOVER)
+                .putExtra(CaptureService.EXTRA_DIR, new File(root, folder).getAbsolutePath()), 0, ++startId);
+        long end = System.currentTimeMillis() + 300_000L;
+        while (System.currentTimeMillis() < end) {
+            pump(200);
+            st = svc.controller().status();
+            if (st.phase == SessionController.Phase.DONE && st.result != null) break;
+            if (st.phase == SessionController.Phase.FAILED) throw new IllegalStateException("develop failed: " + st.headline + " " + st.detail);
+        }
+        if (svc.controller().status().phase != SessionController.Phase.DONE) throw new IllegalStateException("develop timed out");
         pump(500);
     }
 
@@ -1094,6 +1117,8 @@ public class Monkey {
 
     /** The session whose frames are kept (the edit screen needs them). */
     static String framesFolder() {
+        // a developed session that kept its frames (one never developed can't be opened, only developed); then any with frames
+        for (File p : pristine) if (count(new File(p, "frames")) > 2 && count(new File(p, "renders")) > 0) return p.getName();
         for (File p : pristine) if (count(new File(p, "frames")) > 2) return p.getName();
         return folders().get(0);
     }
