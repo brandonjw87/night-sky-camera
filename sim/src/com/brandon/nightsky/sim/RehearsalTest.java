@@ -510,7 +510,7 @@ public final class RehearsalTest {
         p.setProperty("capture.renewals", "0");
         p.setProperty("capture.thermalMax", "0");
         p.setProperty("focus.final", Double.toString(focus));
-        p.setProperty("rehearsal.focusHow", "swept");
+        p.setProperty("focus.how", "swept");
         p.setProperty("preflight.summary", pf.spoken());
         StringBuilder w = new StringBuilder();
         for (Preflight.Item it : pf.items) {
@@ -524,13 +524,16 @@ public final class RehearsalTest {
         p.setProperty("rehearsal.pfExpected", Double.toString(reading[1]));
         p.setProperty("rehearsal.pfDrawn", Double.toString(reading[0]));
         double[] leak = new double[drawn.size()];
-        double skyE = 0;
+        double skyE = 0, drawMax = 0;
         for (int i = 0; i < leak.length; i++) {
             RehearsalSky.Drawn d = drawn.get(i);
             leak[i] = d.leakPerSec * d.electronsPerLevel;
             skyE += d.skyLevels * d.electronsPerLevel / t / leak.length;
+            drawMax = Math.max(drawMax, d.millis);
         }
         Arrays.sort(leak);
+        p.setProperty("rehearsal.drawMsMax", Double.toString(drawMax));
+        p.setProperty("rehearsal.drawFailures", Integer.toString(hookFailures[0]));
         p.setProperty("rehearsal.leakElectronsPerSec", Double.toString(leak[leak.length / 2]));
         p.setProperty("rehearsal.skyElectronsPerSec", Double.toString(skyE));
 
@@ -539,7 +542,6 @@ public final class RehearsalTest {
         in.out = o;
         in.sky = sky;
         in.photoSaved = true;
-        in.logSaved = true;
         in.developSeconds = developS;
         Runtime rt = Runtime.getRuntime();
         in.heapPeak = rt.totalMemory() - rt.freeMemory();

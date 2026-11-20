@@ -39,8 +39,8 @@ public final class RehearsalCheck {
         public PostProcessor.Output out;
         /** The session's clock (camera timestamps to UTC). */
         public SessionSky sky;
-        /** What was saved: the photo, its HDR brightness map (if asked for), its video inside (Motion Photo), the DNG, the log. */
-        public boolean photoSaved, hdrWanted, hdrSaved, videoWanted, videoSaved, dngWanted, dngSaved, logSaved;
+        /** What was saved: the photo, its HDR brightness map (if asked for), its video inside (Motion Photo), the DNG. */
+        public boolean photoSaved, hdrWanted, hdrSaved, videoWanted, videoSaved, dngWanted, dngSaved;
         /** Why the HDR map or the video wasn't saved ("" if it was, or wasn't asked for). */
         public String hdrWhy = "", videoWhy = "";
         /** How long developing took (s), and the most memory it used of what the app may use (bytes; -1 if unknown). */
@@ -58,6 +58,7 @@ public final class RehearsalCheck {
         RehearsalCheck c = new RehearsalCheck();
         Properties p = in.props;
         Truth t = Truth.of(p);
+        c.drawing(p);
         c.camera(p);
         c.dark(p);
         c.focus(p, t);
@@ -93,6 +94,15 @@ public final class RehearsalCheck {
         if (failed > 0) headline = String.format(Locale.US, "Rehearsal check: %d of %d passed, %d failed", passed, n, failed);
         else if (notes > 0) headline = String.format(Locale.US, "Rehearsal check: %d of %d passed, %d to look at", passed, n, notes);
         else headline = String.format(Locale.US, "Rehearsal check: all %d passed", n);
+    }
+
+    /** Frames the sky couldn't be drawn on (they were stacked as the covered camera took them). */
+    private void drawing(Properties p) {
+        int n = intOf(p, "rehearsal.drawFailures");
+        if (n <= 0) return;
+        String why = p.getProperty("rehearsal.drawFailed", "");
+        add("drawing", Level.FAIL, "Drawing the sky", String.format(Locale.US, "it couldn't be drawn on %d frame%s%s, so the rest of the check "
+                + "is of a darker sky than it says", n, n == 1 ? "" : "s", why.isEmpty() ? "" : " (" + why + ")"));
     }
 
     /** The frames the camera gave: all asked for, as long as asked, without stopping. */
@@ -146,7 +156,7 @@ public final class RehearsalCheck {
     /** The focus found against the focus the stars were drawn sharpest at. */
     private void focus(Properties p, Truth t) {
         double found = num(p, "focus.final");
-        String how = p.getProperty("rehearsal.focusHow", "");
+        String how = p.getProperty("focus.how", "");
         if (Double.isNaN(t.bestFocus)) {
             add("focus", Level.NOTE, "Focusing", "this lens has a fixed focus: nothing to find");
             return;
@@ -160,7 +170,7 @@ public final class RehearsalCheck {
                 blur < 0.05 ? "spot on" : String.format(Locale.US, "a blur of %.1f px", blur));
         boolean swept = "swept".equals(how) || "checked".equals(how);
         if (!swept) {
-            String why = p.getProperty("rehearsal.focusWhy", "");
+            String why = p.getProperty("focus.whyNot", "");
             add("focus", blur <= 1.0 ? Level.PASS : Level.NOTE, "Focusing", what + " (not swept" + (why.isEmpty() ? "" : ": " + why) + ")");
             return;
         }
@@ -200,8 +210,13 @@ public final class RehearsalCheck {
 
     /** Where the stars say the camera pointed, against where it was drawn pointing. */
     private void solve(PostProcessor.Output o, Truth t) {
-        if (o.solution == null || Double.isNaN(o.solutionJd)) {
+        if (o.solution == null) {
             add("solve", Level.FAIL, "Finding where it pointed", "the stars weren't matched to the catalogue");
+            return;
+        }
+        if (Double.isNaN(o.solutionJd) || t.camToEnu == null) {
+            add("solve", Level.NOTE, "Finding where it pointed", String.format(Locale.US, "%d stars matched, but the session's clock "
+                    + "isn't known, so where it pointed can't be compared with where it was drawn", o.solution.matched));
             return;
         }
         double[] T = t.atJd(o.solutionJd);
@@ -316,8 +331,6 @@ public final class RehearsalCheck {
             if (in.dngSaved) ok.add("the RAW (DNG) copy");
             else missing.add("no DNG");
         }
-        if (in.logSaved) ok.add("the log");
-        else missing.add("no log");
         String what = "saved " + join(ok) + (missing.isEmpty() ? "" : "; " + join(missing));
         add("saving", missing.isEmpty() ? Level.PASS : Level.NOTE, "Saving", what);
     }
@@ -325,6 +338,8 @@ public final class RehearsalCheck {
     private void phone(Input in, Properties p) {
         List<String> parts = new ArrayList<String>();
         boolean ok = true;
+        double draw = num(p, "rehearsal.drawMsMax");
+        if (draw >= 0) parts.add(String.format(Locale.US, "drew the sky in at most %s a frame", seconds(draw / 1000)));
         if (!Double.isNaN(in.developSeconds)) parts.add(String.format(Locale.US, "developed in %s", seconds(in.developSeconds)));
         if (in.heapPeak > 0 && in.heapMax > 0) {
             double share = in.heapPeak / (double) in.heapMax;

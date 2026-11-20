@@ -67,6 +67,8 @@ public final class RehearsalSky {
         /** How the phone lay: screen-up (turned over for the sky), its top edge's heading, its tilt (degrees). */
         public boolean screenUp;
         public double headingDeg = Double.NaN, tiltDeg = Double.NaN;
+        /** How long the session may run (hours): the random stars cover the field as the sky turns through it. */
+        public double hours = 1;
     }
 
     /** One frame to draw on. */
@@ -83,6 +85,8 @@ public final class RehearsalSky {
         public double electronsPerLevel = Double.NaN;
         /** Seeds the frame's noise. */
         public long noiseSeed;
+        /** The lens's shading as the camera reported it with this frame (null: as when the sky was built). */
+        public ShadingMap shading;
     }
 
     /** What one frame got. */
@@ -174,7 +178,8 @@ public final class RehearsalSky {
             model.unproject(c[0], c[1], c1);
             half = Math.max(half, Astro.sep(c0, c1));
         }
-        double radius = Math.min(Math.PI / 2, half + 16 * Astro.DEG);
+        // the sky turns 15 degrees an hour: room for that (and a margin) on every side
+        double radius = Math.min(Math.PI / 2, half + (6 + 15 * Stats.clamp(s.hours, 0.1, 3)) * Astro.DEG);
         int[] real = s.catalog != null ? s.catalog.within(axis, radius, CATALOGUE_MAG) : new int[0];
         double cosR = Math.cos(radius), sr = 2 * Math.PI * (1 - cosR);
         // stars fainter than the catalogue: N(< m) grows as 10^(0.42 m), some 26 000 a steradian to magnitude 10
@@ -354,11 +359,12 @@ public final class RehearsalSky {
      * The sky's green light at the frame's middle part (the median over the green photosites the camera's probe
      * samples, vignetting in), in raw levels a second at an ISO: what a short probe of the sky would read.
      */
-    public double greenLevelsPerSec(double utcMs, int iso, double electronsPerLevel) {
+    public double greenLevelsPerSec(double utcMs, int iso, double electronsPerLevel, ShadingMap sh) {
         Frame f = new Frame();
         f.iso = iso;
         f.electronsPerLevel = electronsPerLevel;
         double epl = electronsPerLevel(f);
+        if (sh == null) sh = shading;
         float[] g = skyGrid(utcMs)[1];
         int gw = width / GRID + 2;
         int gp = greenPlane();
@@ -367,7 +373,7 @@ public final class RehearsalSky {
         for (int y = height / 10; y < height - height / 10; y += 64) {
             for (int x = width / 10; x < width - width / 10; x += 64) {
                 double s = interp(g, gw, x + 0.5, y + 0.5);
-                double vg = shading != null ? 1 / Math.max(1e-3, shading.gain(gp, x, y)) : 1;
+                double vg = sh != null ? 1 / Math.max(1e-3, sh.gain(gp, x, y)) : 1;
                 v[n++] = (float) (s * vg / epl);
             }
         }
@@ -443,6 +449,7 @@ public final class RehearsalSky {
         d.leakLevels = realLight(raw, f.black[gp], gp);
         d.leakPerSec = d.leakLevels / t;
         final double mid = f.utcStartMs + 500 * t;
+        final ShadingMap shading = f.shading != null ? f.shading : this.shading;
 
         // the sky's light per colour and site, vignetting in, per second (on the GRID points)
         float[][] sky = skyGrid(mid);
@@ -460,8 +467,12 @@ public final class RehearsalSky {
         d.skyLevels = interp(sky[1], gw, model.cx, model.cy) * t / epl;
 
         // the stars: where each is through the exposure, in sub-steps short enough that it moves under half a pixel
+        // (two for the faint ones, lost in the sky's noise, so that the frame's list of spots stays small)
         double trail = 7.2921159e-5 * t * model.fx;
         final int steps = (int) Math.max(1, Math.min(12, Math.ceil(trail / 0.5)));
+        final int faintSteps = Math.min(steps, 2);
+        double[][] faint = new double[faintSteps][];
+        for (int k = 0; k < faintSteps; k++) faint[k] = j2000ToCam(f.utcStartMs + 1000 * t * (k + 0.5) / faintSteps);
         double[][] Cs = new double[steps][];
         for (int k = 0; k < steps; k++) Cs[k] = j2000ToCam(f.utcStartMs + 1000 * t * (k + 0.5) / steps);
         double[] Cm = j2000ToCam(mid);
@@ -494,7 +505,9 @@ public final class RehearsalSky {
             }
             boolean halo = smag[i] < HALO_MAG;
             double core = halo ? 1 - HALO_SHARE : 1;
-            int need = steps + (halo ? 1 : 0);
+            int n = electrons < FAINT_ELECTRONS ? faintSteps : steps;
+            double[][] path = n == steps ? Cs : faint;
+            int need = n + (halo ? 1 : 0);
             if (ns + need > cap) {
                 cap = Math.max(cap * 2, ns + need);
                 sx = Arrays.copyOf(sx, cap);
@@ -506,14 +519,14 @@ public final class RehearsalSky {
                 sg = Arrays.copyOf(sg, 4 * cap);
             }
             boolean any = false;
-            for (int k = 0; k < steps; k++) {
-                Rot.apply(Cs[k], x0, y0, z0, b);
+            for (int k = 0; k < n; k++) {
+                Rot.apply(path[k], x0, y0, z0, b);
                 if (b[2] < 0.2 || !model.project(b[0], b[1], b[2], p)) continue;
                 if (p[0] < -8 || p[1] < -8 || p[0] > W + 8 || p[1] > H + 8) continue;
                 sx[ns] = p[0];
                 sy[ns] = p[1];
                 ss[ns] = sig;
-                se[ns] = electrons * core / steps;
+                se[ns] = electrons * core / n;
                 sr[ns] = scr[i];
                 sb[ns] = scb[i];
                 System.arraycopy(vg, 0, sg, 4 * ns, 4);
@@ -658,6 +671,9 @@ public final class RehearsalSky {
         d.millis = (System.nanoTime() - t0) / 1_000_000L;
         return d;
     }
+
+    /** Below this many electrons in a frame a star is drawn in two sub-steps of its trail (or one, if it barely moves). */
+    static final double FAINT_ELECTRONS = 400;
 
     /** A star's light (or its glow's) as a pixel-integrated Gaussian on the photosites of one band, each in its own colour. */
     private void spot(float[] lam, int W, int y0, int y1, double px, double py, double sgm, int r, double electrons, float red,

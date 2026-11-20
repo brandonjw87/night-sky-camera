@@ -145,7 +145,8 @@ final class Glance {
             boolean capturing = s.phase == SessionController.Phase.CAPTURING || s.phase == SessionController.Phase.PAUSED;
             boolean developing = s.phase == SessionController.Phase.FINISHING || s.phase == SessionController.Phase.DEVELOPING;
             g.next = capturing ? (s.remainingMs >= 0 ? "Capturing: " + Math.max(1, Math.round(s.remainingMs / 60_000f)) + " min left" : "Capturing")
-                    : developing ? "Developing the photo" : "Getting ready: lay the phone screen-down";
+                    : developing ? "Developing the photo"
+                    : s.rehearsal ? "Rehearsal: lay the phone screen-up on a table" : "Getting ready: lay the phone screen-down";
             g.tile = capturing ? "Capturing" : developing ? "Developing" : "Getting ready";
             return g;
         }

@@ -367,6 +367,28 @@ final class Prefs {
         sp.edit().putBoolean("checkOffered", true).apply();
     }
 
+    /** The home screen has offered a rehearsal (2.1; it does once, until one is done or put off). */
+    boolean rehearsalOffered() {
+        return sp.getBoolean("rehearsalOffered", false);
+    }
+
+    void setRehearsalOffered() {
+        sp.edit().putBoolean("rehearsalOffered", true).apply();
+    }
+
+    /** When the last rehearsal's check was made (Unix ms; 0 if none) and its headline ("" if none). */
+    long lastRehearsalMs() {
+        return sp.getLong("lastRehearsalMs", 0L);
+    }
+
+    String lastRehearsal() {
+        return sp.getString("lastRehearsal", "");
+    }
+
+    void setLastRehearsal(long ms, String headline) {
+        sp.edit().putLong("lastRehearsalMs", ms).putString("lastRehearsal", headline).putBoolean("rehearsalOffered", true).apply();
+    }
+
     /** Focus on the stars before each session (A5): a few frames, about 30 seconds the first time. */
     boolean focusAssist() {
         return sp.getBoolean("focusAssist", true);
