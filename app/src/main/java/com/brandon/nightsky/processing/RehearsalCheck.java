@@ -442,14 +442,20 @@ public final class RehearsalCheck {
     // ------------------------------------------------------------------------------------------------
 
     static String seconds(double s) {
-        if (s >= 100) return String.format(Locale.US, "%d min %d s", (int) (s / 60), (int) Math.round(s % 60));
+        if (s >= 100) {
+            // whole seconds first, so that 119.6 s is 2 min 0 s, not 1 min 60 s
+            long t = Math.round(s);
+            return String.format(Locale.US, "%d min %d s", t / 60, t % 60);
+        }
         return s >= 10 || Math.abs(s - Math.round(s)) < 0.05 ? String.format(Locale.US, "%.0f s", s) : String.format(Locale.US, "%.1f s", s);
     }
 
     static String angle(double deg) {
         if (deg >= 1) return String.format(Locale.US, "%.1f degrees", deg);
         double arcmin = deg * 60;
-        return arcmin >= 1 ? String.format(Locale.US, "%.1f arcminutes", arcmin) : String.format(Locale.US, "%.0f arcseconds", arcmin * 60);
+        if (arcmin >= 1) return String.format(Locale.US, "%.1f arcminutes", arcmin);
+        long arcsec = Math.round(arcmin * 60);
+        return arcsec == 1 ? "1 arcsecond" : arcsec + " arcseconds";
     }
 
     private static String lower(String s) {

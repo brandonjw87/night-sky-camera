@@ -422,6 +422,10 @@ public final class MainActivity extends Activity {
         shownPhase = p;
         if (headline != null) headline.setText(s.headline);
         if (detail != null) detail.setText(s.detail);
+        if (detail != null && screenOf(p) == 4 && s.result != null && s.result.rehearsal != null) {
+            // a rehearsal's check is on its own card just below: not said twice
+            detail.setVisibility(s.detail.equals(s.result.rehearsal.headline) ? View.GONE : View.VISIBLE);
+        }
         if (siteView != null) {
             siteView.setText(s.siteLine);
             siteView.setVisibility(s.siteLine.isEmpty() ? View.GONE : View.VISIBLE);
