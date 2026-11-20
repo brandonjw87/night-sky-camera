@@ -238,7 +238,8 @@ processing, **New processing** under an older photo makes it again with it.
 1. On the home screen, under **Tonight**, tap **Plan the night**.
 2. Tap **+ Add a session**: Deep sky or Star trails, when it starts (full darkness, moonset, the best window or a
    set time) and how long. **Only if the sky is clear** (on by default) takes a test frame first and, if
-   clouds hide the stars, tries again every 10 minutes.
+   clouds hide the stars, tries again every 10 minutes. Planned when it's dark already, a new session starts
+   at a set time, the next ten-minute mark at least five minutes away.
 3. Tap **Arm the plan**. Allow it to run in the background when it asks.
 4. Lay the phone screen-down outside, camera to the sky, on a cloth somewhere dry. On a long night, keep it on a
    charger or a power bank.

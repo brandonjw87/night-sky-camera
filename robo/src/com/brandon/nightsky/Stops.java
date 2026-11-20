@@ -64,6 +64,11 @@ public class Stops {
         st.log("capture: frame 12 of 19");
         StopRecorder.session("capturing frame 12 of 19|" + folder, st);
         h.uncaughtException(new Thread("develop"), new OutOfMemoryError("Failed to allocate a 104857616 byte allocation"));
+        // then the process ends, and Android writes its own record of the crash a moment later
+        ShadowActivityManager sam = Shadows.shadowOf((ActivityManager) Monkey.app.getSystemService(ActivityManager.class));
+        sam.addApplicationExitInfo(ShadowActivityManager.ApplicationExitInfoBuilder.newBuilder().setProcessName(Monkey.app.getPackageName())
+                .setReason(ApplicationExitInfo.REASON_CRASH).setImportance(125).setTimestamp(System.currentTimeMillis() + 40L)
+                .setProcessStateSummary(("capturing frame 12 of 19|" + folder).getBytes(UTF8)).setDescription("crash").build());
         StopRecorder.session("idle", null);
         File crash = new File(Monkey.app.getFilesDir(), StopRecorder.CRASH_FILE);
         check(crash.isFile(), "the crash is written down as it happens");
@@ -80,17 +85,18 @@ public class Stops {
         check(shared.contains("Night Sky " + BuildInfo.VERSION + " stopped: it crashed"), "the details say the version and why");
         check(shared.contains("at com.brandon.nightsky.Stops.stops"), "and where it went wrong (the stack)");
         check(shared.contains("Doing: capturing frame 12 of 19 (" + folder + ")"), "and what it was doing, in which session");
+        check(shared.contains("Android's record of it: reason crash (4)"), "Android's record of the same crash is in its details");
+        check(!shared.contains("an earlier stop"), "and isn't a second stop");
         check(st.readLog().contains("stop recorder: the app stopped at"), "the session's log gets the stop");
         open();
         check(card().contains("Last time, Night Sky stopped"), "it's shown again until put away");
         dismiss();
         check(!crash.isFile(), "put away, the crash file goes");
         open();
-        check(card().isEmpty(), "and it isn't shown again");
+        check(card().isEmpty(), "and it isn't shown again, nor Android's record of it");
 
         // Android's records of how the process ended, each after the last one put away
         long now = System.currentTimeMillis() + 10_000L;
-        ShadowActivityManager sam = Shadows.shadowOf((ActivityManager) Monkey.app.getSystemService(ActivityManager.class));
         // not doing anything: tidied away for memory, or ended by an update, is part of normal life
         sam.addApplicationExitInfo(exit(ApplicationExitInfo.REASON_LOW_MEMORY, 400, "idle", now + 1000L));
         sam.addApplicationExitInfo(exit(ApplicationExitInfo.REASON_PACKAGE_UPDATED, 125, "idle", now + 2000L));

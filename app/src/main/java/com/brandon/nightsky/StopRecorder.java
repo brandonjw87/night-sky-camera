@@ -205,8 +205,11 @@ final class StopRecorder {
                         long t = x.getTimestamp();
                         if (t <= seen || now - t > MAX_AGE_MS) continue;
                         if (crash != null && x.getReason() == ApplicationExitInfo.REASON_CRASH && Math.abs(t - crash.whenMs) < 60_000L) {
-                            // the crash written down as it happened: Android's record of it adds to its details
+                            // the crash written down as it happened: Android's record of it adds to its details. Android
+                            // writes it a moment later, as the process ends, so the crash's time moves up to it: put away,
+                            // the crash puts its record away too, or the next launch would show the same crash again
                             crash.details += "\n\nAndroid's record of it: " + record(x);
+                            crash.whenMs = Math.max(crash.whenMs, t);
                             continue;
                         }
                         Stop s = of(x);

@@ -2143,6 +2143,18 @@ public final class MainActivity extends Activity {
             it.clockMs = (dusk + 599_999L) / 600_000L * 600_000L;
         }
         it.endMs = 0;
+        if (t != null && t.darkNow) {
+            // planned when it's dark already: full darkness (or an hour after the last session) may have gone by, and
+            // "Add to the plan" would only say that time has passed. The first ten-minute mark at least five minutes
+            // away instead, by the clock, if the session still ends before dawn
+            long now = System.currentTimeMillis();
+            long soonest = (now + 5 * 60_000L + 599_999L) / 600_000L * 600_000L;
+            long start = p.previewStart(it, t);
+            if (start > 0 && start < soonest && (t.dawnMs == 0 || soonest + it.durationSec * 1000L <= t.dawnMs)) {
+                it.rule = NightPlan.Rule.CLOCK;
+                it.clockMs = soonest;
+            }
+        }
         return it;
     }
 
@@ -2377,7 +2389,7 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 if (start < now - 5 * 60_000L && !(it.endMs > now)) {
-                    toastish("That time has passed tonight");
+                    toastish("That time has passed tonight: choose A set time to start later");
                     return;
                 }
                 p.add(it);

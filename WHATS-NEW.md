@@ -36,6 +36,10 @@
 - **In the log:** a rehearsal's log says what it drew (`rehearsal: a clear sky drawn over the camera's own
   frames, seen from ...`), the sky check's reading against the drawn sky, how long drawing took on each frame, and
   the whole check (`rehearsal check: ...`).
+- **Fixed: a plan made after dark.** Opened once full darkness had come, **Plan the night** offered its first
+  session at full darkness, which had already gone by, so **Add to the plan** only said "That time has passed
+  tonight". Planned when it's dark already, a new session now starts at a set time: the next ten-minute mark at
+  least five minutes away.
 
 ROBO_RESULTS
 
