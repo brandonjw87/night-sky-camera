@@ -942,7 +942,7 @@ section[hidden]{display:none}
   function loadSats() {
     api("/api/sats").then(function (j) {
       if (!j) return;
-      phoneOffset = j.now - Date.now();
+      if (typeof j.now === "number") phoneOffset = j.now - Date.now();
       sats = j;
     }).catch(function () {}).then(function () { setTimeout(loadSats, 10000); });
   }

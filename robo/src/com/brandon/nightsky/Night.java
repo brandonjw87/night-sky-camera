@@ -127,6 +127,9 @@ public class Night {
     static void base() throws Exception {
         begin("a 5-minute deep-sky session, as the app comes");
         tap("Start");
+        // a laptop on the same Wi-Fi with Mission Control open the whole night (2.3)
+        laptop = new Laptop();
+        laptop.start();
         hold(2500);
         putDown();
         follow(20 * 60_000L);
@@ -1871,13 +1874,12 @@ public class Night {
         Shadows.shadowOf(Monkey.a).getNextStartedActivity();
         long t0 = System.currentTimeMillis();
         press("Share the song");
+        // made on a thread of its own; the share sheet is offered once the screen's thread has heard it's done
         long end = t0 + 400_000L;
-        while (r.songVideo == null && System.currentTimeMillis() < end) {
+        while (Monkey.field(Monkey.a, "songJob") != null && System.currentTimeMillis() < end) {
             run(100);
             Thread.sleep(20);
-            if (Monkey.field(Monkey.a, "songJob") == null && r.songVideo == null) break;
         }
-        // the share sheet is offered once the screen's thread has heard
         run(500);
         if (r.songVideo == null) {
             Monkey.problem(scenario + ": Share the song made no video (" + ShadowToast.getTextOfLatestToast() + ")");
@@ -1911,10 +1913,100 @@ public class Night {
      * the mission's story from Mission Control coming online to the mission complete, with its frames, the sky as
      * solved, the photo, its song and the patches.
      */
+    /** The laptop watching the night, while it runs. */
+    static Laptop laptop;
+
+    /**
+     * A laptop with Mission Control open (2.3), polling as its page does: the page once, then every 2 seconds the
+     * status and the story's news since the last event it heard, on a thread of its own while the night goes on.
+     * What it heard, and in which state the phone was when it heard it, is kept for {@link #missionCheck}.
+     */
+    static final class Laptop extends Thread {
+        volatile boolean stop;
+        /** "state: text" of each event, in the order heard. */
+        final List<String> heard = java.util.Collections.synchronizedList(new ArrayList<String>());
+        volatile int polls, mission = -1, last;
+        volatile boolean paged;
+        volatile String problem;
+
+        Laptop() {
+            super("laptop");
+            setDaemon(true);
+        }
+
+        @Override
+        public void run() {
+            while (!stop) {
+                try {
+                    RemoteHost rh = Monkey.svc.remote();
+                    if (rh != null && rh.running()) {
+                        String base = "http://127.0.0.1:" + rh.port(), t = "t=" + rh.token();
+                        if (!paged) paged = new String(get(base + "/mission?" + t), "UTF-8").contains("Mission Control");
+                        get(base + "/api/status?" + t);
+                        org.json.JSONObject j = new org.json.JSONObject(new String(get(base + "/api/events?since=" + last + "&" + t), "UTF-8"));
+                        if (j.getInt("mission") != mission) {
+                            // a new mission: its story from the start, as the page does
+                            if (mission != -1) last = 0;
+                            mission = j.getInt("mission");
+                        }
+                        org.json.JSONObject state = j.optJSONObject("state");
+                        String st = state != null ? state.optString("state", "?") : "?";
+                        org.json.JSONArray es = j.getJSONArray("events");
+                        int seq = last;
+                        for (int i = 0; i < es.length(); i++) {
+                            org.json.JSONObject e = es.getJSONObject(i);
+                            if (e.getInt("seq") <= seq && problem == null) problem = "event " + e.getInt("seq") + " came again after " + seq;
+                            seq = e.getInt("seq");
+                            heard.add(st + ": " + e.getString("text"));
+                        }
+                        last = j.getInt("last");
+                        polls++;
+                    }
+                } catch (Exception e) {
+                    if (problem == null && !stop) problem = String.valueOf(e);
+                }
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }
+
+        /** The state the phone was in when the laptop heard the first event that starts with {@code text}, or null. */
+        String heardWhile(String text) {
+            synchronized (heard) {
+                for (String h : heard) {
+                    int c = h.indexOf(": ");
+                    if (h.startsWith(text, c + 2)) return h.substring(0, c);
+                }
+            }
+            return null;
+        }
+    }
+
     static void missionCheck() throws Exception {
+        Laptop lap = laptop;
+        laptop = null;
+        if (lap != null) {
+            lap.stop = true;
+            lap.interrupt();
+            lap.join(30_000);
+            Monkey.say(String.format(Locale.US, "  the laptop watching: %d polls, %d events heard, Mission Control %s", lap.polls,
+                    lap.heard.size(), lap.paged ? "open" : "never opened"));
+            String[] live = {"Liftoff!", "Frame 1 is in"};
+            for (String w : live) {
+                String st = lap.heardWhile(w);
+                Monkey.say("    heard \"" + w + "\" while " + st);
+                if (!"capturing".equals(st) && !"countdown".equals(st)) Monkey.problem(scenario + ": the laptop didn't hear \"" + w + "\" live: " + st);
+            }
+            if (lap.heardWhile("Mission complete!") == null) Monkey.problem(scenario + ": the laptop never heard \"Mission complete!\"");
+            if (lap.problem != null) Monkey.problem(scenario + ": the laptop watching: " + lap.problem);
+            if (!lap.paged) Monkey.problem(scenario + ": the laptop couldn't open Mission Control");
+        }
         RemoteHost rh = Monkey.svc.remote();
         if (rh == null || !rh.running()) {
-            Monkey.problem(scenario + ": the viewer isn't running, so there's no Mission Control");
+            Monkey.problem(scenario + ": the viewer isn't running" + (lap != null ? " after a night watched from a laptop" : "") + ", so there's no Mission Control");
             return;
         }
         String base = "http://127.0.0.1:" + rh.port(), t = "t=" + rh.token();
@@ -1935,6 +2027,9 @@ public class Night {
         if (photo.length < 1000 || (photo[0] & 0xFF) != 0xFF || (photo[1] & 0xFF) != 0xD8) Monkey.problem(scenario + ": Mission Control's photo isn't a JPEG");
         if (!patches.contains("\"id\":\"first-light\",\"name\":\"First Light\",") || !patches.matches("(?s).*\"id\":\"first-light\"[^}]*\"got\":true.*")) {
             Monkey.problem(scenario + ": no First Light patch earned: " + patches.substring(0, Math.min(300, patches.length())));
+        }
+        if (lap != null && !patches.matches("(?s).*\"id\":\"commander\"[^}]*\"got\":true.*")) {
+            Monkey.problem(scenario + ": a night watched from a laptop earned no Mission Commander patch");
         }
     }
 
