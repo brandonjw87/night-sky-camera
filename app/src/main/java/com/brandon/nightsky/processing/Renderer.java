@@ -918,6 +918,40 @@ public final class Renderer {
         return out;
     }
 
+    /**
+     * The analysis of a picture like {@code a}'s but {@code k} times noisier (one unit of the stack it was made for, 2.3):
+     * the same background and colours, the stretch's foot and the colours' noise further out, so its noise looks like the
+     * stack's does.
+     */
+    public static Analysis noisier(Analysis a, float k) {
+        Analysis c = new Analysis();
+        c.m = a.m;
+        c.poly = a.poly;
+        c.noiseY = a.noiseY * k;
+        c.whiteY = a.whiteY;
+        c.clip = a.clip;
+        c.cx0 = a.cx0;
+        c.cy0 = a.cy0;
+        c.cw = a.cw;
+        c.ch = a.ch;
+        c.skyLevel = a.skyLevel;
+        c.maskedFraction = a.maskedFraction;
+        c.goodCells = a.goodCells;
+        c.ground = a.ground;
+        c.axisR = a.axisR;
+        c.axisB = a.axisB;
+        c.locus = a.locus;
+        c.locusS0 = a.locusS0;
+        c.locusDs = a.locusDs;
+        c.noiseS = a.noiseS * k;
+        c.noiseP = a.noiseP * k;
+        c.colorSigma = a.colorSigma;
+        c.trails = a.trails;
+        c.clipInv = a.clipInv;
+        c.sky = a.sky;
+        return c;
+    }
+
     /** The analysis of {@code a}'s picture, for a copy of it scaled down {@code factor} times (binned, for a whole factor). */
     private static Analysis smallAnalysis(RgbImage small, Analysis a, float factor) {
         Analysis sa = new Analysis();
