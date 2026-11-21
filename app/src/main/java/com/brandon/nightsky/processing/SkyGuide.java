@@ -19,7 +19,7 @@ import java.util.Map;
 public final class SkyGuide {
     /** One thing named, and where it is. */
     public static final class Item {
-        /** "constellation", "star", "planet", "moon", "object" or "milky way". */
+        /** "constellation", "star", "planet", "moon", "object", "milky way", or "mine" (a star named by you, 2.3). */
         public String kind, name;
         /** Where in the picture, as words ("at the top left"); "" when not placed. */
         public String where = "";
@@ -666,6 +666,29 @@ public final class SkyGuide {
             double[] p = sol.pixel(j2000);
             if (p == null) return null;
             return new double[]{(p[0] - x0) / w, (p[1] - y0) / h};
+        }
+    }
+
+    /**
+     * The stars named by you in the picture (2.3), as items of kind "mine", placed as the catalogue's stars are; where the
+     * catalogue names the same star, its label gives way to yours.
+     */
+    public void addNamed(List<NamedStars.Star> named, SkySolver.Solution sol, int x0, int y0, int w, int h) {
+        if (named == null || named.isEmpty() || sol == null || sol.model == null || w <= 0 || h <= 0) return;
+        Frame f = new Frame(sol, x0, y0, w, h);
+        for (NamedStars.Star s : named) {
+            double[] uv = f.near(s.dir());
+            if (uv == null || !inside(uv)) continue;
+            for (java.util.Iterator<Item> i = items.iterator(); i.hasNext(); ) {
+                Item o = i.next();
+                if (("star".equals(o.kind) || "mine".equals(o.kind)) && Math.hypot(o.x - uv[0], (o.y - uv[1]) * h / (double) w) < 0.01) i.remove();
+            }
+            Item it = new Item("mine", s.name);
+            it.mag = s.mag;
+            it.x = uv[0];
+            it.y = uv[1];
+            it.where = where(uv[0], uv[1]);
+            items.add(it);
         }
     }
 

@@ -103,6 +103,8 @@ public final class MissionControl {
         public double seconds;
         /** A session just taken (its story ends and its patches are earned), not one opened again. */
         public boolean fresh;
+        /** A rehearsal's (2.1: a sky drawn into the frames indoors): its story ends, but it earns no patches. */
+        public boolean rehearsal;
         /** The constellations in it (names). */
         public List<String> constellations = new ArrayList<String>();
     }
@@ -137,12 +139,15 @@ public final class MissionControl {
     private final class Session {
         final long startMs = now();
         final SessionSky sky;
-        final BrightStars cat;
-        final SatCatalog sats;
-        final int W, H, plannedUnits;
+        /** The star catalogue (null until it's read: {@link #setCatalogue}). */
+        volatile BrightStars cat;
+        /** The satellites (null until they're read: {@link #satellites}). */
+        volatile SatCatalog sats;
+        final int W, H;
+        volatile int plannedUnits;
         final boolean live;
         /** The units' thread's satellite paths (each unit's, in its own pixels), and the worker's (the live picture's). */
-        LiveSats unitSats, workSats;
+        volatile LiveSats unitSats, workSats;
         StreakWatch watch;
         CameraModel model;
         volatile UnitProcessor.Reference ref;
@@ -259,14 +264,36 @@ public final class MissionControl {
         log.newMission(patches.nextMission());
         if (keep != null) keep.patches(patches.toJson());
         Session n = new Session(sky, cat, sats, W, H, units, live);
-        if (sats != null && n.site() != null) {
-            n.unitSats = new LiveSats(sats, n.site());
-            n.workSats = new LiveSats(sats, n.site());
-        }
         s = n;
+        satellitesFor(n);
         MissionLog.Event e = log.add(MissionLog.PHASE, "Mission Control is online. A new mission begins!",
                 "Mission Control online. A new mission begins!");
         e.name = "online";
+    }
+
+    /**
+     * The satellites, once they're read (the phone reads thousands of them on a thread of its own as the session starts):
+     * for the current session, if it has none yet.
+     */
+    public void satellites(SatCatalog sats) {
+        Session n = s;
+        if (n == null || n.over || sats == null || n.sats != null) return;
+        n.sats = sats;
+        satellitesFor(n);
+    }
+
+    private static void satellitesFor(Session n) {
+        // the place may come a little after the session starts: paths need it
+        if (n.sats != null && n.workSats == null && n.site() != null) {
+            n.unitSats = new LiveSats(n.sats, n.site());
+            n.workSats = new LiveSats(n.sats, n.site());
+        }
+    }
+
+    /** Nothing to tell about (a sky reading, say): the last session's story is over, its photo still shown. */
+    public void standBy() {
+        Session n = s;
+        if (n != null) n.over = true;
     }
 
     /** The capture's first frame is on its way. */
@@ -278,8 +305,16 @@ public final class MissionControl {
 
     /** Looks at each unit for streaks (on the units' thread), or null if nobody watches. */
     public UnitProcessor.UnitWatcher watcher(final UnitProcessor up) {
+        Session n0 = s;
+        return watcher(up, n0 != null ? n0.plannedUnits : 1);
+    }
+
+    /** The same, for a capture of about {@code units} units (the plan may have changed since the session started). */
+    public UnitProcessor.UnitWatcher watcher(final UnitProcessor up, int units) {
         final Session n = s;
-        if (n == null || !n.live) return null;
+        if (n == null || !n.live || n.over) return null;
+        n.plannedUnits = Math.max(1, units);
+        satellitesFor(n);
         n.model = up.model();
         n.watch = new StreakWatch(n.W, n.H, n.model, Math.max(1, n.plannedUnits));
         return new UnitProcessor.UnitWatcher() {
@@ -316,7 +351,9 @@ public final class MissionControl {
             double span = PostProcessor.unitSpan(r, n.t0Ns);
             tracks = n.unitSats.crossing(us, n.W, n.H, jd0, jd0 + span / 86400, PostProcessor.SAT_MAG_LIMIT, 0);
         }
-        StreakWatch.Look look = n.watch.unit(raw, r.invScale, r.black, stars, r.index, live.ok ? live.R : null, tracks,
+        StreakWatch watch = n.watch;
+        if (watch == null) return;
+        StreakWatch.Look look = watch.unit(raw, r.invScale, r.black, stars, r.index, live.ok ? live.R : null, tracks,
                 r.disturbed || !live.ok && live.R == null && n.ref != null);
         n.lookMs += look.ms;
         n.looks++;
@@ -456,6 +493,8 @@ public final class MissionControl {
     private void finishWatch(Session n) {
         StreakWatch w = n.watch;
         if (w == null) return;
+        // its maps (some 13 MB at full size) are let go before the photo is developed
+        n.watch = null;
         List<StreakWatch.Streak> rest = w.finish();
         if (!rest.isEmpty()) report(n, rest, null, 1);
     }
@@ -788,6 +827,7 @@ public final class MissionControl {
         }
         boolean active = !"done".equals(state) && !"failed".equals(state) && !"idle".equals(state);
         if (!active || !n.live) return;
+        satellitesFor(n);
         if (n.liveSol != null && n.workSats != null && n.sky.clockValid && now - n.lastComingMs >= COMING_CHECK_MS) {
             n.lastComingMs = now;
             coming(n, now);
@@ -806,7 +846,9 @@ public final class MissionControl {
         } else if ("focusing".equals(state)) {
             e = log.add(MissionLog.PHASE, "Focusing on the stars: to infinity... and beyond!", "Focusing. To infinity, and beyond!");
         } else if ("checking".equals(state)) {
-            e = log.add(MissionLog.PHASE, "Pre-flight check: looking for clouds, the Moon and a smudged lens.", "Running the pre-flight check.");
+            boolean locked = "focusing".equals(was);
+            e = log.add(MissionLog.PHASE, (locked ? "Focus locked! " : "") + "Pre-flight check: looking for clouds, the Moon and a smudged lens.",
+                    locked ? "Focus locked! Running the pre-flight check." : "Running the pre-flight check.");
         } else if ("countdown".equals(state)) {
             double left = st.countdownLeftS();
             e = log.add(MissionLog.PHASE, "Countdown! Hands off the phone.", "");
@@ -1062,24 +1104,33 @@ public final class MissionControl {
         }
         f.named = n.named;
         f.watched = n.watched;
-        String text = String.format(Locale.US, "Mission complete! The photo is ready: %d frames, %s of starlight", n.frames, duration(n.lightS));
+        String text = String.format(Locale.US, "%s complete! The photo is ready: %d frames, %s of starlight", p.rehearsal ? "Rehearsal" : "Mission",
+                n.frames, duration(n.lightS));
         if (found > 0) text += String.format(Locale.US, ", %,d stars", found);
-        text += ".";
-        MissionLog.Event done = log.add(MissionLog.PHASE, text, "Mission complete! The photo is ready.");
+        text += p.rehearsal ? ". Mission patches wait for the real sky: see you under the stars!" : ".";
+        MissionLog.Event done = log.add(MissionLog.PHASE, text, p.rehearsal ? "Rehearsal complete! The photo is ready." : "Mission complete! The photo is ready.");
         done.big = true;
         done.name = "done";
+        n.over = true;
+        // a rehearsal's sky is drawn into the frames: nothing in it was really caught
+        if (p.rehearsal) return;
         List<Patches.Def> fresh = patches.session(f, now());
         for (int i = 0; i < fresh.size(); i++) {
             Patches.Def d = fresh.get(i);
             // a first night earns a pile of them: said once, shown a few at a time
             String say = fresh.size() <= 2 ? "New mission patch: " + d.name + "!"
                     : i == 0 ? "Wow! You earned " + fresh.size() + " new mission patches!" : "";
-            MissionLog.Event e = log.add(MissionLog.PATCH, "New mission patch: " + d.name + "! " + d.what, say);
-            e.name = d.id;
-            e.detail = d.what;
-            e.big = i < 3;
+            patchEvent(d, say, i < 3);
         }
         if (keep != null) keep.patches(patches.toJson());
+    }
+
+    /** The story's line for a patch just earned. */
+    private void patchEvent(Patches.Def d, String say, boolean big) {
+        MissionLog.Event e = log.add(MissionLog.PATCH, "New mission patch: " + d.name + "! " + d.what, say);
+        e.name = d.id;
+        e.detail = d.what;
+        e.big = big;
     }
 
     /** The catalogue and the session's place for a photo opened again (the session thread sets them). */
@@ -1088,6 +1139,9 @@ public final class MissionControl {
 
     public void setCatalogue(BrightStars cat) {
         catalogue = cat;
+        // the session's, if it started without (the phone reads it on a thread of its own)
+        Session n = s;
+        if (n != null && n.cat == null && cat != null) n.cat = cat;
     }
 
     public void setPhotoSky(SessionSky sky) {
@@ -1213,7 +1267,7 @@ public final class MissionControl {
         SkyMap m = n.photoMap != null ? n.photoMap : n.liveMap;
         int[] crop = n.photoMap != null ? n.photoCrop : n.liveCrop != null ? n.liveCrop : new int[]{0, 0, n.W, n.H};
         if (m == null || crop == null) return null;
-        notes = StarSong.notes(m.things(crop[0], crop[1], crop[2], crop[3], StarSong.MAX_MAG, named.all()), m.milkyShares(crop[0], crop[1], crop[2], crop[3]));
+        notes = StarSong.of(m, crop, named.all());
         n.song = notes;
         return notes;
     }
@@ -1288,7 +1342,7 @@ public final class MissionControl {
         e.big = true;
         Patches.Def d = patches.earn("namer", st.name, now);
         if (d != null) {
-            patchEvent(d);
+            patchEvent(d, "New mission patch: " + d.name + "!", true);
             if (keep != null) keep.patches(patches.toJson());
         }
         Json j = new Json().obj().put("ok", true).put("id", st.id).put("name", st.name).put("real", real);

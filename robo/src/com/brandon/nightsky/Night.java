@@ -136,6 +136,8 @@ public class Night {
         hdrCheck(true);
         hdrFallbackCheck();
         namesCheck();
+        songCheck();
+        missionCheck();
     }
 
     /**
@@ -1801,6 +1803,156 @@ public class Night {
             }
         }
         Monkey.say("  played its video where the photo is: the photo back after it ended, after a tap, and after an error");
+    }
+
+    /**
+     * Hear the Stars (2.3): the photo's song (its stars, the brightest of them named as they play) and its card on the
+     * result screen; the picture at moments of the song, as the screen draws it (each to a PNG); Hear it plays it where
+     * the photo is and a tap brings the photo back; Share the song makes its video, with the song as its sound, puts it
+     * in the gallery and offers to share it.
+     */
+    static void songCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null || r.song == null || r.song.isEmpty()) {
+            Monkey.problem(scenario + ": the photo has no song");
+            return;
+        }
+        int stars = 0, said = 0;
+        for (com.brandon.nightsky.processing.StarSong.Note n : r.song) {
+            if ("star".equals(n.kind)) stars++;
+            if (!SongArt.label(n).isEmpty()) said++;
+        }
+        Monkey.say("  song: " + com.brandon.nightsky.processing.StarSong.describe(r.song) + ", " + said + " of them named as they play");
+        Monkey.say("  its card: " + MainActivity.songWords(r.song));
+        if (stars < 20) Monkey.problem(scenario + ": only " + stars + " stars sing");
+        if (findLabel("Hear it") == null || findLabel("Share the song") == null) {
+            Monkey.problem(scenario + ": no Hear the Stars on the result screen: " + labels());
+            return;
+        }
+        // the picture at moments of the song
+        Bitmap pic = Monkey.svc.controller().songPicture();
+        if (pic == null) {
+            Monkey.problem(scenario + ": no picture for the song");
+            return;
+        }
+        SongArt art = new SongArt(r.song);
+        Bitmap prev = null;
+        for (double t : new double[]{0.5, 8, 16, 25.5}) {
+            Bitmap b = Bitmap.createBitmap(pic.getWidth(), pic.getHeight(), Bitmap.Config.ARGB_8888);
+            art.draw(new android.graphics.Canvas(b), pic, new android.graphics.RectF(0, 0, b.getWidth(), b.getHeight()), t, 2.5f, true);
+            java.io.OutputStream os = new java.io.FileOutputStream(new File(Monkey.out, String.format(Locale.US, "song-%04.1fs.png", t)));
+            b.compress(Bitmap.CompressFormat.PNG, 100, os);
+            os.close();
+            if (prev != null && differ(prev, b) < 2000) Monkey.problem(scenario + ": the song's picture hardly changed by " + t + " s");
+            prev = b;
+        }
+        // played where the photo is, until a tap
+        press("Hear it");
+        // the sound is made first (on a thread of its own, in real time): a minute at most
+        SongView sv = null;
+        for (long until = System.currentTimeMillis() + 60_000L; sv == null && System.currentTimeMillis() < until; ) {
+            run(100);
+            Thread.sleep(20);
+            sv = find(Monkey.a.getWindow().getDecorView(), SongView.class);
+        }
+        View photo = (View) Monkey.field(Monkey.a, "zoom");
+        if (sv == null) {
+            Monkey.problem(scenario + ": Hear it showed nothing");
+            return;
+        }
+        if (photo == null || photo.getVisibility() == View.VISIBLE) Monkey.problem(scenario + ": the photo still shows while its song plays");
+        run(600);
+        shot("hear the stars");
+        sv.performClick();
+        run(300);
+        if (sv.getParent() != null) Monkey.problem(scenario + ": the song is still on the screen after a tap");
+        if (photo != null && photo.getVisibility() != View.VISIBLE) Monkey.problem(scenario + ": the photo didn't come back after the song");
+        // its video, with its sound
+        Shadows.shadowOf(Monkey.a).getNextStartedActivity();
+        long t0 = System.currentTimeMillis();
+        press("Share the song");
+        long end = t0 + 400_000L;
+        while (r.songVideo == null && System.currentTimeMillis() < end) {
+            run(100);
+            Thread.sleep(20);
+            if (Monkey.field(Monkey.a, "songJob") == null && r.songVideo == null) break;
+        }
+        // the share sheet is offered once the screen's thread has heard
+        run(500);
+        if (r.songVideo == null) {
+            Monkey.problem(scenario + ": Share the song made no video (" + ShadowToast.getTextOfLatestToast() + ")");
+            return;
+        }
+        File mp4 = FakeMediaStore.file(r.songVideo);
+        Monkey.say(String.format(Locale.US, "  the song's video: %s, %d KB, made in %.0f s", mp4 != null ? mp4.getName() : "missing",
+                mp4 != null ? mp4.length() / 1024 : 0, (System.currentTimeMillis() - t0) / 1000.0));
+        if (mp4 == null || mp4.length() == 0) Monkey.problem(scenario + ": the song's video isn't in the gallery");
+        else if (FfmpegVideo.haveFfmpeg()) {
+            String streams = exec("ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,sample_rate,channels",
+                    "-show_entries", "format=duration", "-of", "compact=p=0", mp4.getPath()).trim();
+            Monkey.say("  " + streams.replace("\n", "; "));
+            if (!streams.contains("codec_name=h264") || !streams.contains("codec_name=aac") || !streams.contains("sample_rate=44100")) {
+                Monkey.problem(scenario + ": the song's video isn't H.264 with AAC sound: " + streams);
+            }
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("duration=([0-9.]+)").matcher(streams);
+            double dur = m.find() ? Double.parseDouble(m.group(1)) : -1;
+            if (Math.abs(dur - SongArt.seconds()) > 0.6) Monkey.problem(scenario + ": the song's video lasts " + dur + " s");
+        }
+        Intent ch = Shadows.shadowOf(Monkey.a).getNextStartedActivity();
+        Intent in = ch != null ? (Intent) ch.getParcelableExtra(Intent.EXTRA_INTENT) : null;
+        if (ch == null || !Intent.ACTION_CHOOSER.equals(ch.getAction()) || in == null || !"video/mp4".equals(in.getType())) {
+            Monkey.problem(scenario + ": Share the song didn't offer to share the video: " + ch);
+        }
+        if (findLabel("Share the song") == null) Monkey.problem(scenario + ": the share button didn't come back: " + labels());
+    }
+
+    /**
+     * Mission Control (2.3): what the computer's page reads from the phone's own web server after the session: the page,
+     * the mission's story from Mission Control coming online to the mission complete, with its frames, the sky as
+     * solved, the photo, its song and the patches.
+     */
+    static void missionCheck() throws Exception {
+        RemoteHost rh = Monkey.svc.remote();
+        if (rh == null || !rh.running()) {
+            Monkey.problem(scenario + ": the viewer isn't running, so there's no Mission Control");
+            return;
+        }
+        String base = "http://127.0.0.1:" + rh.port(), t = "t=" + rh.token();
+        String page = new String(get(base + "/mission?" + t), "UTF-8");
+        if (!page.contains("Mission Control")) Monkey.problem(scenario + ": /mission isn't Mission Control's page");
+        String ev = new String(get(base + "/api/events?since=0&" + t), "UTF-8");
+        String[] want = {"Mission Control is online", "Liftoff!", "Frame 1 is in", "Capture complete", "Mission complete!"};
+        for (String w : want) if (!ev.contains(w)) Monkey.problem(scenario + ": Mission Control's story has no \"" + w + "\"");
+        int events = ev.split("\"kind\"").length - 1;
+        String sky = new String(get(base + "/api/sky?" + t), "UTF-8");
+        String song = new String(get(base + "/api/song?" + t), "UTF-8");
+        String patches = new String(get(base + "/api/patches?" + t), "UTF-8");
+        byte[] photo = get(base + "/photo.jpg?" + t);
+        Monkey.say(String.format(Locale.US, "  Mission Control: page %d KB, %d events, sky %d KB, song %d KB, patches %d KB, photo %d KB",
+                page.length() / 1024, events, sky.length() / 1024, song.length() / 1024, patches.length() / 1024, photo.length / 1024));
+        if (!sky.contains("\"stars\"")) Monkey.problem(scenario + ": Mission Control has no sky: " + sky.substring(0, Math.min(200, sky.length())));
+        if (!song.contains("\"notes\"")) Monkey.problem(scenario + ": Mission Control has no song: " + song.substring(0, Math.min(200, song.length())));
+        if (photo.length < 1000 || (photo[0] & 0xFF) != 0xFF || (photo[1] & 0xFF) != 0xD8) Monkey.problem(scenario + ": Mission Control's photo isn't a JPEG");
+        if (!patches.contains("\"id\":\"first-light\",\"name\":\"First Light\",") || !patches.matches("(?s).*\"id\":\"first-light\"[^}]*\"got\":true.*")) {
+            Monkey.problem(scenario + ": no First Light patch earned: " + patches.substring(0, Math.min(300, patches.length())));
+        }
+    }
+
+    /** A GET from the phone's own server (straight, never through a proxy). */
+    static byte[] get(String url) throws Exception {
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection(java.net.Proxy.NO_PROXY);
+        c.setConnectTimeout(5000);
+        c.setReadTimeout(20000);
+        try {
+            InputStream in = c.getResponseCode() < 400 ? c.getInputStream() : c.getErrorStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] b = new byte[16384];
+            int n;
+            while (in != null && (n = in.read(b)) > 0) bo.write(b, 0, n);
+            return bo.toByteArray();
+        } finally {
+            c.disconnect();
+        }
     }
 
     /** Opened again from the sessions page, the photo still has its video to play. */

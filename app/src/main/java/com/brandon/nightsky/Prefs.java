@@ -156,6 +156,26 @@ final class Prefs {
         sp.edit().putBoolean("remoteViewer", v).apply();
     }
 
+    // ---- Mission Control (2.3) ----
+
+    /** The stars named by you (NamedStars' JSON; "" for none). */
+    String namedStars() {
+        return sp.getString("namedStars", "");
+    }
+
+    void setNamedStars(String json) {
+        sp.edit().putString("namedStars", json == null ? "" : json).apply();
+    }
+
+    /** The mission patches earned and the missions flown (Patches' JSON; "" for none yet). */
+    String missionPatches() {
+        return sp.getString("missionPatches", "");
+    }
+
+    void setMissionPatches(String json) {
+        sp.edit().putString("missionPatches", json == null ? "" : json).apply();
+    }
+
     /** How the stack removes satellites, planes and other outliers: a Rejection.Method name, AUTO to choose. */
     String rejection() {
         return sp.getString("rejection", "AUTO");

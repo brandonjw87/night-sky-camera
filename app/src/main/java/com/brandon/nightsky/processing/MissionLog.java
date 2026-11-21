@@ -4,6 +4,7 @@ import com.brandon.nightsky.remote.Json;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,7 +17,7 @@ import java.util.Map;
  * its frame). Kept in memory only: the last {@link #MAX_EVENTS} events and {@link #MAX_SNAPS} snapshots. Thread-safe.
  */
 public final class MissionLog {
-    public static final int MAX_EVENTS = 300, MAX_SNAPS = 16;
+    public static final int MAX_EVENTS = 300, MAX_SNAPS = 48;
 
     /** Kinds of event. */
     public static final String PHASE = "phase", FRAME = "frame", MILESTONE = "milestone", SAT_COMING = "sat-coming",
@@ -139,10 +140,12 @@ public final class MissionLog {
     public String json(int seq, String state) {
         List<Event> es;
         int m, last;
+        HashSet<Integer> have;
         synchronized (this) {
             es = since(seq);
             m = mission;
             last = lastSeq();
+            have = new HashSet<Integer>(snaps.keySet());
         }
         Json j = new Json().obj().put("mission", m).put("last", last).arr("events");
         for (Event e : es) {
@@ -153,7 +156,9 @@ public final class MissionLog {
             if (e.norad != 0) j.put("norad", e.norad);
             if (!Double.isNaN(e.mag)) j.put("mag", e.mag, 3);
             if (e.unit >= 0) j.put("unit", e.unit);
-            if (e.snap >= 0) j.put("snap", e.snap);
+            // a snapshot only while it's still kept (the oldest go first), so a page opened late asks for none that are gone
+            boolean snapped = e.snap >= 0 && have.contains(e.snap);
+            if (snapped) j.put("snap", e.snap);
             if (e.trainOf > 1) j.put("train", e.trainOf);
             if (e.atMs > 0) j.put("at", e.atMs);
             if (!e.detail.isEmpty()) j.put("detail", e.detail);
@@ -162,7 +167,7 @@ public final class MissionLog {
                 for (float v : e.line) j.val(Math.round(v * 10) / 10.0);
                 j.end();
             }
-            if (e.snapLine != null && e.snapLine.length == 4 && e.snapSize != null && e.snapSize.length == 2) {
+            if (snapped && e.snapLine != null && e.snapLine.length == 4 && e.snapSize != null && e.snapSize.length == 2) {
                 j.arr("snapLine");
                 for (float v : e.snapLine) j.val(Math.round(v * 10) / 10.0);
                 j.end();

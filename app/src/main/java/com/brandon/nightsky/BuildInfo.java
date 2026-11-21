@@ -2,7 +2,7 @@ package com.brandon.nightsky;
 
 /** Version shown in the app and written to session logs. */
 final class BuildInfo {
-    static final String VERSION = "2.2";
+    static final String VERSION = "2.3";
 
     private BuildInfo() {}
 }

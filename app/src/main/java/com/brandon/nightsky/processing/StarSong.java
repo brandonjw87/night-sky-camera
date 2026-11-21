@@ -46,6 +46,14 @@ public final class StarSong {
     private StarSong() {}
 
     /**
+     * The song of a picture's crop (x0, y0, w, h in its map's pixels) from its sky map, with the stars named by you
+     * ({@code mine}, may be null): what Mission Control's page and the phone both play.
+     */
+    public static List<Note> of(SkyMap m, int[] crop, List<NamedStars.Star> mine) {
+        return notes(m.things(crop[0], crop[1], crop[2], crop[3], MAX_MAG, mine), m.milkyShares(crop[0], crop[1], crop[2], crop[3]));
+    }
+
+    /**
      * The song of the things in a picture ({@link SkyMap#things}; their u is when they play) and the Milky Way's middle
      * line through it (shares of the crop: [u, v] pairs, may be null), in the order they play.
      */

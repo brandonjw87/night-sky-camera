@@ -145,7 +145,8 @@ public final class MissionTest {
                     MissionLog.Event e = caughtEv.get(k);
                     if (e.unit != f || e.unitLine == null) continue;
                     if (on(e.unitLine, path)) {
-                        hit = k;
+                        // where two trails cross, an event can lie on both: the one that names this satellite counts
+                        if (hit < 0 || caughtEv.get(hit).norad != p.norad) hit = k;
                         explained[k] = true;
                     }
                 }

@@ -46,6 +46,11 @@ public final class StreakWatch {
     /** Too much changed at once to look (a light swept over, the phone moved): this share of cells beyond 5 sigma. */
     static final double BUSY_SHARE = 0.025;
     /**
+     * The sky's clearness changed (a cloud came or went): this share more or fewer stars than the units before. All
+     * the picture changes then, and the edges of what's still (a branch against a sky lit and then not) look like lines.
+     */
+    static final double CLEARNESS = 0.15;
+    /**
      * A line along a predicted path: within this many cells of it (plus the elements' uncertainty) and this angle (plus
      * what a short line's ends, known to a cell, allow: {@link #angleTol}).
      */
@@ -64,6 +69,9 @@ public final class StreakWatch {
     static final double APART = CLAIM + 2;
     /** Not a streak: a line in the same place as one the unit before (something on the sensor or a star's glow). */
     static final String ARTIFACT = "artifact";
+    /** Saturated "stars" with this many others this close (sensor pixels) are pieces of a bright trail ({@link #trailPieces}). */
+    static final int CHAIN = 2;
+    static final float CHAIN_PX = 3 * CELL;
     /** Might be a meteor: shorter than this share of the frame's diagonal, both ends this many cells inside it. */
     static final double METEOR_SHARE = 0.3;
     static final int INSIDE_CELLS = 4;
@@ -142,6 +150,7 @@ public final class StreakWatch {
     private final CameraModel model;
     private final double threshold;
     private final float[][] hist = new float[HISTORY][];
+    private final int[] histStars = new int[HISTORY];
     private int nHist, histNext;
     private final DeepLines lines;
     private float[] cur, z, keep, raw, col, row, apart;
@@ -162,7 +171,7 @@ public final class StreakWatch {
         w = W / CELL;
         h = H / CELL;
         n = w * h;
-        lines = new DeepLines(w, h);
+        lines = new DeepLines(w, h, true);
         threshold = Math.max(MIN_SIGMA, SatMatch.deepSigma(Math.max(1, units), n));
         col = new float[n];
         row = new float[n];
@@ -317,10 +326,23 @@ public final class StreakWatch {
             reset();
             return out;
         }
+        final int count = stars != null ? stars.count : -1;
         if (nHist == 0) {
             out.note = "first unit: nothing to compare with yet";
-            remember(c);
+            remember(c, count);
             return out;
+        }
+        if (count >= 0) {
+            float[] was = new float[nHist];
+            int kept = 0;
+            for (int j = 0; j < nHist; j++) if (histStars[j] >= 0) was[kept++] = histStars[j];
+            float before = kept > 0 ? median(was, kept) : -1;
+            if (before >= 20 && Math.abs(count - before) > CLEARNESS * before) {
+                out.note = String.format(java.util.Locale.US, "the sky's clearness changed (%d stars, %.0f before)", count, before);
+                reset();
+                remember(c, count);
+                return out;
+            }
         }
         if (z == null) {
             z = new float[n];
@@ -339,7 +361,7 @@ public final class StreakWatch {
         out.spread = sd;
         if (!(sd > 0)) {
             out.note = "no sky to look at";
-            remember(c);
+            remember(c, count);
             return out;
         }
         System.arraycopy(z, 0, raw, 0, n);
@@ -353,14 +375,14 @@ public final class StreakWatch {
         }
         if (valid < n / 4) {
             out.note = "too little sky to look at";
-            remember(c);
+            remember(c, count);
             return out;
         }
         if (busy > BUSY_SHARE * valid) {
             // a car's lights, the phone nudged, a cloud lit by the town: everything changed, so nothing stands out
             out.note = String.format(java.util.Locale.US, "too much changed at once (%.1f%% of the cells)", 100.0 * busy / valid);
             reset();
-            remember(c);
+            remember(c, count);
             return out;
         }
         DeepLines.flatten(z, w, h, FLAT);
@@ -436,14 +458,15 @@ public final class StreakWatch {
         before = all;
         beforeUnit = unit;
         // a unit with a bright streak still goes into the background: the median of several hardly sees it
-        remember(c);
+        remember(c, count);
         if (out.note.isEmpty()) out.note = now.isEmpty() ? "nothing" : now.size() + " streak" + (now.size() == 1 ? "" : "s");
         return out;
     }
 
-    private void remember(float[] c) {
+    private void remember(float[] c, int stars) {
         if (hist[histNext] == null) hist[histNext] = new float[n];
         System.arraycopy(c, 0, hist[histNext], 0, n);
+        histStars[histNext] = stars;
         histNext = (histNext + 1) % HISTORY;
         nHist = Math.min(HISTORY, nHist + 1);
     }
@@ -460,9 +483,11 @@ public final class StreakWatch {
         if (s == null) return;
         // the brightest stars' glow reaches further: a cell more for each 1.5 stops brighter than the 30th star
         float ref = s.flux != null && s.count > 30 ? s.flux[29] : Float.NaN;
+        boolean[] piece = trailPieces(s);
         for (int i = 0; i < s.count; i++) {
             // a long thin "star" may be a piece of the very trail looked for
             if (s.elong != null && s.elong[i] > 2.5f && !s.saturated[i]) continue;
+            if (piece[i]) continue;
             int r = s.saturated[i] ? 3 : i < 30 ? 2 : 1;
             if (i < 30 && ref > 0 && s.flux[i] > ref) r = Math.max(r, Math.min(6, 2 + (int) (Math.log(s.flux[i] / ref) / Math.log(2) / 1.5)));
             int cx = (int) Math.floor(s.x[i] / CELL), cy = (int) Math.floor(s.y[i] / CELL);
@@ -470,6 +495,30 @@ public final class StreakWatch {
                 for (int x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) z[y * w + x] = Float.NaN;
             }
         }
+    }
+
+    /**
+     * Saturated "stars" in a row: a trail so bright that it saturates (the Space Station's) is found by the star finder as
+     * dozens of saturated stars a few pixels apart, where a real star is one. Those with {@link #CHAIN} others within
+     * {@link #CHAIN_PX} are pieces of a trail: they aren't masked, so the trail can be found.
+     */
+    static boolean[] trailPieces(StarList s) {
+        boolean[] out = new boolean[s.count];
+        int[] sat = new int[s.count];
+        int k = 0;
+        for (int i = 0; i < s.count; i++) if (s.saturated[i]) sat[k++] = i;
+        float r2 = CHAIN_PX * CHAIN_PX;
+        for (int a = 0; a < k; a++) {
+            int i = sat[a], near = 0;
+            for (int b = 0; b < k && near < CHAIN; b++) {
+                int j = sat[b];
+                if (j == i) continue;
+                float dx = s.x[i] - s.x[j], dy = s.y[i] - s.y[j];
+                if (dx * dx + dy * dy <= r2) near++;
+            }
+            out[i] = near >= CHAIN;
+        }
+        return out;
     }
 
     /**

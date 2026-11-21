@@ -741,13 +741,14 @@ section[hidden]{display:none}
     d.innerHTML = icon(e.kind);
     return d;
   }
+  // snapshots once loaded, by number: the phone keeps only its last few dozen, the page keeps what it has seen
+  var snapCache = {};
   function snapCanvas(e) {
     // the snapshot with its streak lit up (null if there's none)
     if (e.snap == null) return null;
     var cv = document.createElement("canvas");
     cv.width = 320; cv.height = 240; cv.style.width = "100%"; cv.style.borderRadius = "8px"; cv.style.marginTop = "6px";
-    var im = new Image();
-    im.onload = function () {
+    var paint = function (im) {
       cv.width = im.naturalWidth; cv.height = im.naturalHeight;
       var x = cv.getContext("2d");
       x.drawImage(im, 0, 0);
@@ -762,7 +763,18 @@ section[hidden]{display:none}
         });
       }
     };
-    im.src = "/snap.jpg?id=" + e.snap + "&" + q;
+    var had = snapCache[e.snap];
+    if (had) { paint(had); return cv; }
+    var im = new Image(), id = e.snap;
+    im.onload = function () {
+      snapCache[id] = im;
+      var ids = Object.keys(snapCache).map(Number).sort(function (a, b) { return a - b; });
+      while (ids.length > 90) delete snapCache[ids.shift()];
+      paint(im);
+    };
+    // gone from the phone (it keeps the newest few dozen): the icon instead, and no asking again
+    im.onerror = function () { e.snap = null; if (cv.parentNode) cv.parentNode.replaceChild(placeholder(e), cv); else cv.hidden = true; };
+    im.src = "/snap.jpg?id=" + id + "&" + q;
     return cv;
   }
   function renderComing() {
@@ -1054,15 +1066,25 @@ section[hidden]{display:none}
     [-40000, "the time people were painting the first cave paintings"], [-300000, "around when the first modern humans appeared"], [-2500000, "the time human ancestors were making the first stone tools"],
     [-66000000, "the time of the dinosaurs"]
   ];
+  // the moment in history nearest a year, if it's near enough to say so (light {ly} years old)
+  function history(year, ly) {
+    var ev = null, gap = Infinity;
+    HISTORY.forEach(function (h) { var d = Math.abs(h[0] - year); if (d < gap) { gap = d; ev = h; } });
+    return {ev: gap > Math.max(3, ly * 0.2) ? null : ev, gap: gap};
+  }
+  // "as it was in 1846, the year the planet Neptune was discovered": what a giant telescope {ly} away sees of Earth now
+  function earthSeen(ly) {
+    var year = new Date().getFullYear() - ly, hh = history(year, ly);
+    var s = ly < 1000 ? "as it was in " + (year < 0 ? fmt(-Math.round(year)) + " BC" : Math.round(year)) : "as it was about " + fmt(ly) + " years ago";
+    if (hh.ev) s += hh.gap < 1 ? ", " + hh.ev[1] : ", around " + hh.ev[1];
+    return s;
+  }
   function lightMachine(ly, what) {
     if (ly == null || isNaN(ly)) return "";
     var now = new Date().getFullYear();
     if (ly < 1e-6) return "Light takes about " + (ly * 31557600).toFixed(1) + " seconds to get here from " + esc(what) + ".";
     if (ly < 0.01) return "Its light left " + esc(what) + " about <b>" + Math.round(ly * 525960) + " minutes</b> ago.";
-    var year = now - ly, ev = null, gap = Infinity;
-    // the moment in history nearest the light's start, if it's near enough to say so
-    HISTORY.forEach(function (h) { var d = Math.abs(h[0] - year); if (d < gap) { gap = d; ev = h; } });
-    if (gap > Math.max(3, ly * 0.2)) ev = null;
+    var year = now - ly, hh = history(year, ly), ev = hh.ev, gap = hh.gap;
     var when;
     if (ly < 1000) when = "in about <b>" + (year < 0 ? fmt(-year) + " BC" : Math.round(year)) + "</b>";
     else when = "about <b>" + (ly >= 1e6 ? (ly / 1e6).toFixed(ly >= 1e7 ? 0 : 1) + " million" : fmt(ly)) + " years</b> ago";
@@ -1189,7 +1211,7 @@ section[hidden]{display:none}
       }
     }
     // the star to fly to: the one picked, else the farthest bright one with a name
-    var picked3 = null, visiting = null, lastDrawn = [];
+    var picked3 = null, visiting = null, lookingHome = false, lastDrawn = [], boxes = [];
     function farthest() {
       var best = null;
       stars.forEach(function (s) { if (!s.fig && s.name && s.V <= 3.5 && (!best || s.ly > best.ly)) best = s; });
@@ -1202,7 +1224,7 @@ section[hidden]{display:none}
       var dir = norm(s.p), back = Math.max(2, s.ly * 0.025);
       var stop = add(add([0, 0, 0], dir, s.ly - back), home.r, back * 0.35);
       var o = lookAt(stop, s.p, home.u);
-      visiting = s;
+      visiting = s; lookingHome = false;
       $("fBack").hidden = true;
       fly({p: stop, f: o.f, r: o.r, u: o.u, fov: 60}, 4000 + Math.min(5000, Math.log10(1 + s.ly) * 1500), function () { $("fBack").hidden = false; });
     }
@@ -1251,20 +1273,21 @@ section[hidden]{display:none}
         if (r > 2 * d) { var g = x.createRadialGradient(o.p[0], o.p[1], 0, o.p[0], o.p[1], r * 3); g.addColorStop(0, rgb(c, 0.9)); g.addColorStop(1, rgb(c, 0)); x.fillStyle = g; x.beginPath(); x.arc(o.p[0], o.p[1], r * 3, 0, 7); x.fill(); }
         x.fillStyle = rgb(c, Math.min(1, 0.35 + r / (3 * d))); x.beginPath(); x.arc(o.p[0], o.p[1], r * 0.6, 0, 7); x.fill();
       });
-      if (showNames) {
-        x.font = 12 * d + "px system-ui";
-        drawn.forEach(function (o) { if (o.s.name && (o.m < 3.5 || o.s === visiting || o.s === picked3)) { x.fillStyle = rgb(bvRgb(o.s.bv), 0.9); x.fillText(o.s.name, o.p[0] + 8 * d, o.p[1] - 6 * d); } });
-        x.font = "700 " + 14 * d + "px system-ui"; x.fillStyle = "rgba(120,220,255,.85)";
-        figs.forEach(function (f) { var s = [0, 0, 0], n = 0; f.runs.forEach(function (run) { run.forEach(function (q) { if (q) { s = add(s, q.p, 1); n++; } }); }); if (!n) return; var p = proj(add([0, 0, 0], s, 1 / n)); if (p) x.fillText(f.n.toUpperCase(), p[0], p[1]); });
-      }
+      boxes = [];
       // home: the Sun, once we've left it
       if (moved > 1) {
         var sp = proj(sun);
         if (sp) {
           var g2 = x.createRadialGradient(sp[0], sp[1], 0, sp[0], sp[1], 14 * d); g2.addColorStop(0, "rgba(255,240,180,1)"); g2.addColorStop(1, "rgba(255,200,80,0)");
           x.fillStyle = g2; x.beginPath(); x.arc(sp[0], sp[1], 14 * d, 0, 7); x.fill();
-          x.fillStyle = "#ffe39a"; x.font = "700 " + 14 * d + "px system-ui"; x.fillText("the Sun: home!", sp[0] + 12 * d, sp[1] + 4 * d);
+          put("the Sun: home!", sp[0] + 12 * d, sp[1] + 4 * d, "700 " + 14 * d + "px system-ui", "#ffe39a");
         }
+      }
+      if (showNames) {
+        var font = 12 * d + "px system-ui";
+        drawn.forEach(function (o) { if (o.s.name && (o.s === visiting || o.s === picked3)) put(o.s.name, o.p[0] + 8 * d, o.p[1] - 6 * d, "700 " + font, rgb(bvRgb(o.s.bv), 1)); });
+        figs.forEach(function (f) { var s = [0, 0, 0], n = 0; f.runs.forEach(function (run) { run.forEach(function (q) { if (q) { s = add(s, q.p, 1); n++; } }); }); if (!n) return; var p = proj(add([0, 0, 0], s, 1 / n)); if (p) put(f.n.toUpperCase(), p[0], p[1], "700 " + 14 * d + "px system-ui", "rgba(120,220,255,.85)"); });
+        for (var i = drawn.length - 1; i >= 0; i--) { var o = drawn[i]; if (o.s.name && o.m < 3.5 && o.s !== visiting && o.s !== picked3) put(o.s.name, o.p[0] + 8 * d, o.p[1] - 6 * d, font, rgb(bvRgb(o.s.bv), 0.9)); }
       }
       // the star picked or flown to, ringed
       [picked3, visiting].forEach(function (s) {
@@ -1273,8 +1296,15 @@ section[hidden]{display:none}
       });
       var info;
       var near = visiting && !anim ? Math.hypot(cam.p[0] - visiting.p[0], cam.p[1] - visiting.p[1], cam.p[2] - visiting.p[2]) : Infinity;
-      if (visiting && near < visiting.ly * 0.2) {
-        var sm = sunMag(moved);
+      if (visiting && near < visiting.ly * 0.2 && lookingHome) {
+        var sm2 = sunMag(visiting.ly);
+        info = "There's home: the Sun, " + fmt(visiting.ly) + " light-years away" + (sm2 > 6.5 ? ", so faint from here you'd need a telescope. " : ". ")
+          + "Aliens at " + esc(visiting.name) + " with a giant telescope would see Earth " + earthSeen(visiting.ly) + ".";
+        var closer = 0, all = 0;
+        stars.forEach(function (s) { if (!s.fig) { all++; if (s.ly < visiting.ly) closer++; } });
+        if (all > 1) info += " " + (closer >= all - 1 ? "Every other star in your photo is" : fmt(closer) + " of the " + fmt(all) + " stars in your photo are") + " closer to home than " + esc(visiting.name) + ".";
+      } else if (visiting && near < visiting.ly * 0.2) {
+        var sm = sunMag(visiting.ly);
         info = "You made it to <b>" + esc(visiting.name) + "</b>, " + fmt(visiting.ly) + " light-years from home! From here the Sun is a star of magnitude " + sm.toFixed(1)
           + (sm > 6.5 ? ": too faint to see without a telescope." : sm > 3 ? ": a faint little star." : ": one of the brighter stars in the sky.") + " Press <b>Look back home</b> to find it.";
       } else if (picked3 && !anim) {
@@ -1286,6 +1316,15 @@ section[hidden]{display:none}
       }
       if ($("fInfo").innerHTML !== info) $("fInfo").innerHTML = info;
     }
+    // a label, unless it would land on one already there
+    function put(text, px, py, font, colour) {
+      x.font = font;
+      var w = x.measureText(text).width, h = parseFloat((font.match(/([\d.]+)px/) || [0, 12])[1]), b = [px - 2, py - h, px + w + 2, py + h * 0.3];
+      for (var i = 0; i < boxes.length; i++) { var o = boxes[i]; if (b[0] < o[2] && o[0] < b[2] && b[1] < o[3] && o[1] < b[3]) return false; }
+      boxes.push(b);
+      x.fillStyle = colour; x.fillText(text, px, py);
+      return true;
+    }
     function fly(to, ms, done) {
       var from = clone(cam);
       anim = {t0: performance.now(), ms: ms, done: done, step: function (e) {
@@ -1294,12 +1333,12 @@ section[hidden]{display:none}
         cam.f = f; cam.r = r; cam.u = cross(r, f); cam.fov = from.fov + (to.fov - from.fov) * e;
       }};
     }
-    $("fHome").onclick = function () { if (home) { visiting = null; picked3 = null; $("fBack").hidden = true; fly(home, 2500); } };
+    $("fHome").onclick = function () { if (home) { visiting = null; picked3 = null; lookingHome = false; $("fBack").hidden = true; fly(home, 2500); } };
     $("fStar").onclick = function () { flyTo(picked3 || farthest()); };
-    $("fBack").onclick = function () { var o = lookAt(cam.p, sun, cam.u); fly({p: cam.p.slice(), f: o.f, r: o.r, u: o.u, fov: 60}, 2500); };
+    $("fBack").onclick = function () { var o = lookAt(cam.p, sun, cam.u); lookingHome = true; fly({p: cam.p.slice(), f: o.f, r: o.r, u: o.u, fov: 60}, 2500); };
     $("fSide").onclick = function () {
       if (!home) return;
-      visiting = null; $("fBack").hidden = true;
+      visiting = null; lookingHome = false; $("fBack").hidden = true;
       var dist = Math.hypot(target[0], target[1], target[2]);
       var side = add(add([0, 0, 0], home.r, dist * 0.9), home.u, dist * 0.25);
       var o = lookAt(side, target, home.u);
@@ -1307,6 +1346,7 @@ section[hidden]{display:none}
     };
     $("fAround").onclick = function () {
       if (!home) return;
+      lookingHome = false;
       var start = clone(cam), rel = sub(start.p, target), rad = Math.max(50, Math.hypot(rel[0], rel[1], rel[2]));
       if (rad < 60) { rel = add([0, 0, 0], home.r, Math.hypot(target[0], target[1], target[2]) * 0.9); rad = Math.hypot(rel[0], rel[1], rel[2]); }
       var axis = norm(home.u), a0 = norm(sub(rel, add([0, 0, 0], axis, dot(rel, axis)))), b0 = cross(axis, a0), h = dot(rel, axis);
