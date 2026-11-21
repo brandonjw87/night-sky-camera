@@ -550,7 +550,8 @@ public class Night {
         report();
         Monkey.say("  result screen: " + labels());
         SessionController.Result r = Monkey.svc.controller().status().result;
-        press("Deep sky");
+        // the next scenario as the app comes: deep sky
+        new Prefs(Monkey.app).setMode(false, false);
         if (r == null) {
             Monkey.problem(scenario + ": no result");
             return;

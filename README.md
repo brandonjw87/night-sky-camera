@@ -2,9 +2,10 @@
 
 A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen-down under a dark sky and it
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
-and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky.
+and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky. Or, in
+Earth's turn mode, it adds a few seconds of looping video of the whole sky wheeling round the pole.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.1.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.2.
 
 ## What it does
 
@@ -13,6 +14,13 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.1.
   photo with far less noise than a single shot.
 - **Star trails.** Keeps the stars where they fall in each frame, so they draw arcs around the pole star. Longer
   is better: 20 or 30 minutes.
+- **Earth's turn.** A deep photo, plus a 5-second clip that loops for ever: the sky turning round the pole while
+  the ground stays still, made from how far the frames themselves measured the sky turning. It saves as a video
+  (MP4) and as an animated picture that plays by itself like a GIF (WebP, about a third of a GIF's size), and says
+  what it measured: how long the Earth takes to turn once by the stars, and your latitude. Try 15 or 30 minutes.
+- **Bright stars in colour.** In deep sky the brightest stars usually burn out to flat white blobs. Now, after
+  every few long frames, the app takes one 16 times shorter, which sees them without burning out, and gives their
+  centres their real brightness and colour back.
 - **Camera check.** Up to three minutes indoors, before your first night: what this phone's camera really does
   with long exposures, frame after frame and in the dark. Sessions plan with what it finds.
 - **Rehearse a night.** About ten minutes indoors, at any time of day: the phone lies screen-up on a table and a
@@ -148,7 +156,8 @@ with the screen on) is kept for real nights; what it finds about the camera itse
 1. Go somewhere dark, away from street lights, and wait for the sky to be properly dark. The **Tonight** card on
    the home screen says when that is, where the Moon is and what the clouds will do.
 2. Wipe the back camera lens.
-3. Open Night Sky and pick a **Preset**, or choose **Deep sky** or **Star trails**, how long, and the brightness.
+3. Open Night Sky and pick a **Preset**, or choose **Deep sky**, **Star trails** or **Earth's turn**, how long, and
+   the brightness.
 4. Tap **Start**. The first time, allow the camera and the location (approximate is enough: it's for the Sun,
    the Moon and naming the stars, and it never leaves the phone).
 5. Lay the phone **screen-down** on the ground, a table or a car roof, with the back camera facing the sky. A
@@ -167,6 +176,11 @@ from its icon; a tap skips it) can be shown in dim red too, or turned off: **Adv
 
 Under the photo:
 
+- **The Earth's turn** (in that mode): the clip plays over the photo by itself the first time, looping (tap to
+  stop). **Play it** plays it again; **Share video** sends the MP4 and **Share as GIF** the animated picture, which
+  loops by itself in WhatsApp, Messages, Discord or a browser. Both are in `Pictures/NightSky` as
+  `..._earth.mp4` and `..._earth.webp`. The card says how far the sky turned, how long a whole turn of the Earth
+  takes by these frames (the real answer: 23 h 56 min 4 s) and your latitude, all measured from the stars alone.
 - **Play its video** plays the photo's few seconds of video where the photo is (tap to stop). Google Photos plays
   it too: the video is inside the photo's file, a Motion Photo. To save photos without it: **Advanced > The
   photo's video**. Making it adds about 10 seconds to developing; **Skip the video** on the developing screen
@@ -332,6 +346,8 @@ tap **Stop the viewer** on the phone.
   developing, the frames stay on the phone (up to 20 GB in all, set under **Advanced > Sessions and storage**)
   so you can edit, merge and add minutes later; the oldest sessions' frames go first, and the photos always
   stay. Each session's stacked picture takes about 75 MB more.
+- The bright-star short frames (deep sky, on by default) take up to 24 extra RAW frames' space, about 600 MB at
+  most, and a second or two of each minute. Turn them off under **Advanced > Bright stars' colour**.
 - Photos are saved as HDR photos (Ultra HDR): a screen and an app that show HDR, like this phone's and Google
   Photos, show their stars brighter than white; everything else shows the photo as before. Each file is read
   back by the phone's own decoder before it's saved, and saved as an ordinary photo if that fails. To save
@@ -447,6 +463,9 @@ app/src/main/java/com/brandon/nightsky/
         StarGlow        the brightest stars' glow: found in the picture, made bright and coloured from the catalogue
         PhotoVideo      the photo's video: the frames adding up again (or the trails drawing), rendered as the photo
         MotionPhoto     the video put inside the JPEG as a Motion Photo, and read back
+        SkyTurn, EarthTurn  the sky's turn fitted to the frames (axis, rate, day by the stars, latitude); the clip of it
+        AnimatedWebp    an animated WebP put together from the phone's own still WebPs (the clip as a GIF would be)
+        StarBrackets    the short frames: the stack's clipped star cores given their light and colour from them
         HdrGain, UltraHdr  how much brighter than white the stars may show; the Ultra HDR file that says so
         Framing         crops and north up
         DngWriter       16-bit linear DNG

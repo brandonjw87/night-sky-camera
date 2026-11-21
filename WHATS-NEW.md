@@ -1,5 +1,43 @@
 # Night Sky Camera: what's new
 
+## Version 2.2: the Earth's turn, and bright stars in colour
+
+### What's new
+
+- **The Earth's turn, a new mode.** Pick **Earth's turn** next to Deep sky and Star trails. You get the deep
+  photo as always, plus a 5-second clip that loops for ever: the whole sky wheeling round the pole while the
+  ground stays put, with the stars' arcs drawing behind them and a caption counting the minutes and the degrees.
+  It isn't faked or guessed: while the frames were lined up, the app measured exactly how the sky turned between
+  them, and the clip turns the photo by exactly that, sped up a few hundred times.
+- **It plays like a GIF, at a fraction of the size.** Two copies go in `Pictures/NightSky`: an MP4 (H.264, plays
+  everywhere, Windows included, about 1.5 MB) and an **animated WebP**, the modern GIF: it loops by itself in
+  WhatsApp, Messages, Discord and every browser, at about a third of a real GIF's size (a GIF has only 256
+  colours, and a night sky's smooth glow and grain cost it dearly: the same clip measured 7.5 MB as a GIF, 2.3 MB
+  as WebP). On the result screen it plays over the photo by itself the first time; **Share video** and **Share as
+  GIF** send either.
+- **Your phone measures the Earth.** From the stars alone, the Earth's turn card tells you how fast the sky
+  turned, how long one whole turn of the Earth takes by these frames (the right answer is 23 h 56 min 4 s, four
+  minutes short of a day, because the Earth also goes round the Sun), and your latitude, from where the pole
+  sits. In the simulator a 3-minute session got the day within 20 seconds and the turn's axis within 0.02 degrees.
+- **Bright stars in colour (the capture upgrade).** A camera that collects enough light for the faint stars
+  burns the bright ones out: Vega, Arcturus and Betelgeuse end up as flat white blobs, their colour gone. Now,
+  in deep sky, the app slips one frame 16 times shorter in after every few long ones (spread over the session, 24
+  at most). Those short frames see the bright stars without burning out. When developing, the app lines each one
+  up with the stack at its own moment, matches its brightness to the stack's on dozens of stars that didn't burn
+  out (so it doesn't trust the exposure times, it measures), and gives every burnt-out centre its real light and
+  colour back. Everything else in the photo stays exactly as it was, pixel for pixel. It's on by default
+  (**Advanced > Bright stars' colour**); the log says how many stars it fixed and how well the short frames
+  matched.
+
+### Checked off the phone
+
+RESULTS_HERE
+
+### Install it
+
+Exactly as before (same signing key, so it installs over 2.1 and keeps everything): the steps are in the
+README, under **Install it on your phone**.
+
 ## Version 2.1: rehearse a night before you go out
 
 ### What's new
