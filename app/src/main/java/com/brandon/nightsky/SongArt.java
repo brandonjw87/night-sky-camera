@@ -11,6 +11,8 @@ import android.graphics.Typeface;
 
 import com.brandon.nightsky.processing.StarSong;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -38,6 +40,13 @@ final class SongArt {
     private final RectF r = new RectF();
     private static final Typeface BOLD = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
     private static final Typeface PLAIN = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL);
+    /**
+     * Where each note's name is written (its baseline's left end, from the photo's top left corner; NaN: not written),
+     * worked out once for a size of picture so that no two names on the screen at the same time overlap, and none
+     * jumps about as others come and go.
+     */
+    private float[] nameX, nameY;
+    private float namesW = -1, namesH = -1, namesPx = -1;
 
     SongArt(List<StarSong.Note> notes) {
         this.notes = notes;
@@ -101,9 +110,11 @@ final class SongArt {
             c.drawRect(r, fill);
         }
         // each note: a flash where the line meets it, a ring that grows and fades, a name for the special ones
+        placeNames(dst.width(), dst.height(), px);
         text.setTypeface(BOLD);
         text.setTextSize(13 * px);
-        for (StarSong.Note n : notes) {
+        for (int i = 0; i < notes.size(); i++) {
+            StarSong.Note n = notes.get(i);
             if ("milky".equals(n.kind)) continue;
             double age = t - n.t;
             double life = life(n);
@@ -129,18 +140,14 @@ final class SongArt {
                 }
             }
             String name = label(n);
-            if (!name.isEmpty()) {
+            if (!name.isEmpty() && !Float.isNaN(nameX[i])) {
                 double end = life + 1.0;
                 float a = (float) Math.min(1, Math.min(age / 0.15, (end - age) / 0.6));
                 if (a > 0) {
                     text.setColor(col);
                     text.setAlpha(Math.round(255 * a));
                     text.setShadowLayer(3 * px, 0, 0, Color.argb(Math.round(230 * a), 0, 0, 0));
-                    float tx = cx + 12 * px, ty = cy - 10 * px;
-                    float tw = text.measureText(name);
-                    if (tx + tw > dst.right - 4 * px) tx = cx - 12 * px - tw;
-                    if (ty < dst.top + 16 * px) ty = cy + 22 * px;
-                    c.drawText(name, tx, ty, text);
+                    c.drawText(name, dst.left + nameX[i], dst.top + nameY[i], text);
                     text.clearShadowLayer();
                 }
             }
@@ -168,6 +175,69 @@ final class SongArt {
         String clock = String.format(Locale.US, "%s / %s", clock(Math.min(t, seconds())), clock(seconds()));
         c.drawText(clock, dst.right - m - text.measureText(clock), dst.bottom - m, text);
         text.clearShadowLayer();
+    }
+
+    /**
+     * Places the names for a picture {@code w} x {@code h} (sizes {@code px} a dp): each, in the order they're said, at
+     * the first of a few spots around its star (above right, below right, above left, below left, then a line further
+     * out) that stays inside the picture and clears the names already placed that show at the same time, the title
+     * while it shows and the clock; a name with no room left is not written (its ring still rings).
+     */
+    private void placeNames(float w, float h, float px) {
+        if (nameX != null && w == namesW && h == namesH && px == namesPx) return;
+        int k = notes.size();
+        float[] xs = new float[k], ys = new float[k];
+        Arrays.fill(xs, Float.NaN);
+        Arrays.fill(ys, Float.NaN);
+        // {left, top, right, bottom, from (s), to (s)} of what's written
+        List<float[]> taken = new ArrayList<float[]>();
+        float m = 12 * px;
+        text.setTypeface(BOLD);
+        text.setTextSize(20 * px);
+        float title = text.measureText("Hear the Stars");
+        text.setTypeface(PLAIN);
+        text.setTextSize(13 * px);
+        title = Math.max(title, text.measureText("Blue stars sing high, red stars sing low"));
+        taken.add(new float[]{0, 0, m + title + 4 * px, m + 44 * px, 0, 5});
+        text.setTextSize(12 * px);
+        float clock = text.measureText("0:00 / 0:00");
+        taken.add(new float[]{w - m - clock - 4 * px, h - m - 14 * px, w, h, 0, Float.MAX_VALUE});
+        text.setTypeface(BOLD);
+        text.setTextSize(13 * px);
+        float asc = 13 * px, desc = 4 * px, line = 16 * px, pad = 2 * px, edge = 4 * px;
+        for (int i = 0; i < k; i++) {
+            StarSong.Note n = notes.get(i);
+            if ("milky".equals(n.kind)) continue;
+            String name = label(n);
+            if (name.isEmpty()) continue;
+            float cx = (float) n.u * w, cy = (float) n.v * h, tw = text.measureText(name);
+            float from = (float) n.t, to = (float) (n.t + life(n) + 1.0);
+            float right = cx + 12 * px, left = cx - 12 * px - tw, up = cy - 10 * px, down = cy + 22 * px;
+            float[][] spots = {{right, up}, {right, down}, {left, up}, {left, down}, {right, up - line}, {right, down + line},
+                    {left, up - line}, {left, down + line}, {right, up - 2 * line}, {right, down + 2 * line}};
+            for (float[] p : spots) {
+                float l = p[0] - pad, t = p[1] - asc - pad, r = p[0] + tw + pad, b = p[1] + desc + pad;
+                if (l < edge || r > w - edge || t < edge || b > h - edge) continue;
+                boolean clash = false;
+                for (float[] q : taken) {
+                    if (q[5] <= from || q[4] >= to) continue;
+                    if (l < q[2] && r > q[0] && t < q[3] && b > q[1]) {
+                        clash = true;
+                        break;
+                    }
+                }
+                if (clash) continue;
+                xs[i] = p[0];
+                ys[i] = p[1];
+                taken.add(new float[]{l, t, r, b, from, to});
+                break;
+            }
+        }
+        nameX = xs;
+        nameY = ys;
+        namesW = w;
+        namesH = h;
+        namesPx = px;
     }
 
     private void shadowed(int colour, float alpha, float size, boolean bold) {

@@ -67,6 +67,8 @@ shows, type the password it shows, then do steps 2 to 5.
   the day before you go out.
 - A rehearsal (indoors) runs Mission Control too, but its patches wait for the real sky.
 - Stars named on the page are kept on the phone, and the session report lists them.
+- With no internet (a field, the phone's hotspot with no signal), the laptop talks in its own built-in voice (on
+  Windows, David or Zira) instead of the online one: same words, slightly more robot.
 
 ### Tested
 

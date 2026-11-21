@@ -385,10 +385,14 @@ section[hidden]{display:none}
 
   // ---------------------------------------------------------------- voice
   var voice = null, sayQueue = [], saying = false;
+  // the nicest voices (Chrome's Google ones, Edge's natural ones) need the internet, which a field may not have: with
+  // none, only the computer's own voices (on Windows: David, Zira, Mark)
+  var voiceLocalOnly = navigator.onLine === false;
   function pickVoice() {
     if (!window.speechSynthesis) return;
-    var vs = speechSynthesis.getVoices().filter(function (v) { return /^en/i.test(v.lang); });
+    var vs = speechSynthesis.getVoices().filter(function (v) { return /^en/i.test(v.lang) && (!voiceLocalOnly || v.localService); });
     var like = [/Google UK English Male/i, /Guy/i, /Aria/i, /Jenny/i, /Google US English/i, /David/i, /Mark/i, /Daniel/i, /Samantha/i];
+    voice = null;
     for (var i = 0; i < like.length && !voice; i++) for (var j = 0; j < vs.length; j++) if (like[i].test(vs[j].name)) { voice = vs[j]; break; }
     if (!voice && vs.length) voice = vs[0];
   }
@@ -399,20 +403,39 @@ section[hidden]{display:none}
     if (sayQueue.length > 4) sayQueue.splice(0, sayQueue.length - 4);
     next();
   }
+  var sayToken = 0;
   function next() {
     if (saying || !sayQueue.length) return;
+    // the voice turned off: what was waiting goes unsaid
+    if (!voiceOn) { sayQueue.length = 0; return; }
     saying = true;
-    var text = sayQueue.shift();
+    var text = sayQueue.shift(), my = ++sayToken;
     sfx.quindarIn();
     setTimeout(function () {
       var u = new SpeechSynthesisUtterance(text);
       if (voice) u.voice = voice;
       u.rate = 1.02; u.pitch = 1.0;
-      var done = function () { sfx.quindarOut(); setTimeout(function () { saying = false; next(); }, 350); };
-      u.onend = done; u.onerror = done;
+      // once a line, however it ends (spoken, failed, or never heard of again)
+      var done = function () {
+        if (my !== sayToken) return;
+        sayToken++;
+        sfx.quindarOut();
+        setTimeout(function () { saying = false; next(); }, 350);
+      };
+      u.onend = done;
+      u.onerror = function (e) {
+        // an online voice with no internet: change to the computer's own voice and say it again
+        var why = e && e.error;
+        if (voice && !voice.localService && !voiceLocalOnly && why !== "interrupted" && why !== "canceled") {
+          voiceLocalOnly = true;
+          pickVoice();
+          if (!voice || voice.localService) sayQueue.unshift(text);
+        }
+        done();
+      };
       speechSynthesis.speak(u);
       // some browsers never call back: don't let the queue stall
-      setTimeout(function () { if (saying) { saying = false; next(); } }, 12000 + text.length * 80);
+      setTimeout(done, 12000 + text.length * 80);
     }, 300);
   }
 
