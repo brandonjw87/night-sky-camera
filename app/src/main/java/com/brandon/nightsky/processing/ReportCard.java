@@ -41,6 +41,8 @@ public final class ReportCard {
         public Properties props = new Properties();
         public TimeZone zone = TimeZone.getDefault();
         public BrightStars catalog;
+        /** The stars named by you (2.3; null for none). */
+        public java.util.List<NamedStars.Star> named;
     }
 
     /** One problem, with what it cost and what to do about it. */
@@ -1266,6 +1268,8 @@ public final class ReportCard {
         int x0 = a != null ? a.cx0 : 0, y0 = a != null ? a.cy0 : 0;
         int w = a != null ? a.cw : o.image != null ? o.image.width : 0, h = a != null ? a.ch : o.image != null ? o.image.height : 0;
         sky = SkyGuide.describe(o.solution, jd, in.sky, in.catalog != null ? in.catalog : in.sky != null ? in.sky.catalog : null, x0, y0, w, h);
+        // the stars named by you (2.3), labelled with your names
+        if (sky.placed && in.named != null) sky.addNamed(in.named, o.solution, x0, y0, w, h);
     }
 
     private void streaks() {

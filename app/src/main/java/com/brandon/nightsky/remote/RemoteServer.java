@@ -68,6 +68,36 @@ public final class RemoteServer {
         InputStream open(Download d) throws IOException;
     }
 
+    /**
+     * Mission Control (2.3): its page and what it reads. A backend that implements it serves /mission and these too;
+     * one that doesn't (an older viewer's test) serves none of them.
+     */
+    public interface Mission {
+        /** Mission Control's page (UTF-8 HTML). */
+        byte[] missionPage();
+
+        /** JSON: the story after event {@code since}, with the counters. */
+        String events(int since);
+
+        /** JSON: what's named in the shown picture, or null before the sky is solved. */
+        String sky();
+
+        /** JSON: the satellites crossing the live picture around now. */
+        String sats();
+
+        /** JSON: the shown picture's song, or null. */
+        String song();
+
+        /** JSON: the mission patches. */
+        String patches();
+
+        /** The developed photo, plain (no names drawn), or null. */
+        byte[] photo();
+
+        /** An event's snapshot, or null. */
+        byte[] snap(int id);
+    }
+
     /** Decides whether to serve connections that arrive on a given local address of the phone. */
     public interface LocalFilter {
         boolean allowLocal(InetAddress local);
@@ -542,7 +572,7 @@ public final class RemoteServer {
             return;
         }
         if (!authorized(r)) {
-            if ("/".equals(p) || "/index.html".equals(p)) {
+            if ("/".equals(p) || "/index.html".equals(p) || "/mission".equals(p)) {
                 // the start page: the browser shows it although the status is 403
                 send(out, 403, "text/html; charset=utf-8", PairPage.HTML.getBytes(UTF8), null);
             } else {
@@ -580,6 +610,8 @@ public final class RemoteServer {
             String res = backend.action(p.substring(5), args);
             if (res == null) json(out, 404, "{\"error\":\"no such command\"}");
             else json(out, 200, res);
+        } else if (backend instanceof Mission && missionRoute((Mission) backend, r, p, out, now)) {
+            return;
         } else if ("/api/files".equals(p)) {
             Json j = new Json().arr();
             for (Download d : backend.downloads()) {
@@ -599,6 +631,53 @@ public final class RemoteServer {
         } else {
             send(out, 404, "text/plain", "Not found".getBytes(UTF8), null);
         }
+    }
+
+    /** Mission Control's routes (GET); false if {@code p} isn't one of them. */
+    private boolean missionRoute(Mission m, Request r, String p, OutputStream out, long now) throws IOException {
+        if (!"GET".equals(r.method) && !"HEAD".equals(r.method)) return false;
+        if ("/mission".equals(p)) {
+            lastActiveMs = now;
+            send(out, 200, "text/html; charset=utf-8", m.missionPage(), null);
+        } else if ("/api/events".equals(p)) {
+            int since = 0;
+            try {
+                String f = r.query.get("since");
+                if (f != null) since = Math.max(0, Integer.parseInt(f));
+            } catch (NumberFormatException ignored) {
+            }
+            json(out, 200, m.events(since));
+        } else if ("/api/sky".equals(p)) {
+            String j = m.sky();
+            if (j == null) json(out, 404, "{\"error\":\"not solved yet\"}");
+            else json(out, 200, j);
+        } else if ("/api/sats".equals(p)) {
+            json(out, 200, m.sats());
+        } else if ("/api/song".equals(p)) {
+            String j = m.song();
+            if (j == null) json(out, 404, "{\"error\":\"no song yet\"}");
+            else json(out, 200, j);
+        } else if ("/api/patches".equals(p)) {
+            json(out, 200, m.patches());
+        } else if ("/photo.jpg".equals(p) || "/snap.jpg".equals(p)) {
+            byte[] jpeg;
+            if ("/photo.jpg".equals(p)) {
+                jpeg = m.photo();
+            } else {
+                int id = -1;
+                try {
+                    String f = r.query.get("id");
+                    if (f != null) id = Integer.parseInt(f);
+                } catch (NumberFormatException ignored) {
+                }
+                jpeg = id >= 0 ? m.snap(id) : null;
+            }
+            if (jpeg == null) send(out, 404, "text/plain", "Not yet".getBytes(UTF8), null);
+            else send(out, 200, "image/jpeg", jpeg, null);
+        } else {
+            return false;
+        }
+        return true;
     }
 
     private void pair(Request r, OutputStream out) throws IOException {

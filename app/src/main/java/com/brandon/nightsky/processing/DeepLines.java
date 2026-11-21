@@ -43,16 +43,23 @@ public final class DeepLines {
     private final int w, h;
     /** How much neighbouring cells move together: along rows, columns, rising and falling diagonals. */
     private double[] rho = new double[4];
-    private float[] va = new float[0], vb = new float[0];
-    private short[] ca = new short[0], cb = new short[0];
-    // the candidates: a small heap by score (weakest on top)
-    private final float[] candScore = new float[MAX_CANDIDATES];
-    private final int[][] cand = new int[MAX_CANDIDATES][5];
-    private int nCand;
+    /** The transform's working arrays and the candidates kept from it (all four orientations, one after another). */
+    private final Pass serial = new Pass();
+    /**
+     * 2.3: one per orientation, run side by side (the live streak watch, which has a few seconds a unit), or null. Their
+     * candidates are then pooled into {@link #serial}'s heap, and the exact fits share the work too.
+     */
+    private final Pass[] side;
 
     public DeepLines(int w, int h) {
+        this(w, h, false);
+    }
+
+    /** With {@code parallel}, each search runs its four orientations (and its fits) on the worker threads. */
+    public DeepLines(int w, int h, boolean parallel) {
         this.w = w;
         this.h = h;
+        side = parallel ? new Pass[]{new Pass(), new Pass(), new Pass(), new Pass()} : null;
     }
 
     /** How much the next maps' neighbouring cells move together ({@link #neighbours}); none at first. */
@@ -226,20 +233,65 @@ public final class DeepLines {
     public List<Line> find(float[] z, double threshold, int minCells, int maxLines, double claim) {
         List<Line> out = new ArrayList<Line>();
         for (int round = 0; round < maxLines; round++) {
-            nCand = 0;
             double low = threshold * CANDIDATE_SHARE;
-            for (int o = 0; o < 4; o++) transform(z, o, low, minCells);
+            Pass p = candidates(z, low, minCells);
             // the candidates fitted exactly: the strongest that holds up is the line
+            Line[] fits = fits(z, p, minCells);
             Line best = null;
-            for (int i = 0; i < nCand; i++) {
-                float[] e = ends(cand[i]);
-                Line l = fit(z, e[0], e[1], e[2], e[3], minCells);
+            for (Line l : fits) {
                 if (l != null && l.score >= threshold && (best == null || l.score > best.score)) best = l;
             }
             if (best == null) break;
             out.add(best);
             clear(z, best, claim);
         }
+        return out;
+    }
+
+    /** The transform's strongest candidates, in {@link #serial}'s heap. */
+    private Pass candidates(final float[] z, final double low, final int minCells) {
+        serial.nCand = 0;
+        if (side == null) {
+            for (int o = 0; o < 4; o++) serial.transform(z, o, low, minCells);
+            return serial;
+        }
+        Parallel.forRange(4, new Parallel.Range() {
+            @Override
+            public void run(int a, int b) {
+                for (int o = a; o < b; o++) {
+                    side[o].nCand = 0;
+                    side[o].transform(z, o, low, minCells);
+                }
+            }
+        });
+        for (Pass q : side) {
+            for (int i = 0; i < q.nCand; i++) {
+                int[] c = q.cand[i];
+                serial.offer(q.candScore[i], c[0], c[1], c[2], c[3], c[4]);
+            }
+        }
+        return serial;
+    }
+
+    /** Each candidate's exact fit (null where none), in the heap's order. */
+    private Line[] fits(final float[] z, final Pass p, final int minCells) {
+        final Line[] out = new Line[p.nCand];
+        if (side == null) {
+            for (int i = 0; i < p.nCand; i++) {
+                float[] e = ends(p.cand[i]);
+                out[i] = fit(z, e[0], e[1], e[2], e[3], minCells);
+            }
+            return out;
+        }
+        Parallel.forRange(p.nCand, new Parallel.Range() {
+            @Override
+            public void run(int a, int b) {
+                for (int i = a; i < b; i++) {
+                    float[] e = ends(p.cand[i]);
+                    out[i] = fit(z, e[0], e[1], e[2], e[3], minCells);
+                }
+            }
+        });
         return out;
     }
 
@@ -283,141 +335,150 @@ public final class DeepLines {
         }
     }
 
-    /**
-     * The transform of orientation o, for lines rising 0 to 45 degrees in it: level j holds, for each block of 2^j
-     * columns, each rise s (0 to 2^j - 1 cells across the block) and each starting row (from 2^j - 1 below the map
-     * to its top), the sum of the digital line's cells and their number. Level j + 1's line is level j's with half
-     * the rise in the left half, and in the right half from as far up as the left one's rise rounded up.
-     */
-    private void transform(float[] z, int o, double low, int minCells) {
-        int W = ow(o), H = oh(o);
-        int n = 1, levels = 0;
-        while (n < W) {
-            n <<= 1;
-            levels++;
-        }
-        final int N = n, R = H + N - 1, size = N * R;
-        if (va.length < size) {
-            va = new float[size];
-            vb = new float[size];
-            ca = new short[size];
-            cb = new short[size];
-        }
-        float[] vi = va, vo = vb;
-        short[] ci = ca, co = cb;
-        // level 0: the cells themselves (row yy is the map's row yy - (N - 1))
-        for (int x = 0; x < N; x++) {
-            int base = x * R;
-            for (int yy = 0; yy < R; yy++) {
-                int y = yy - (N - 1);
-                float v = x < W && y >= 0 && y < H ? z[at(o, x, y)] : Float.NaN;
-                boolean ok = v == v;
-                vi[base + yy] = ok ? v : 0f;
-                ci[base + yy] = (short) (ok ? 1 : 0);
+    /** A transform's working arrays, and the candidates kept from it: a small heap by score (weakest on top). */
+    private final class Pass {
+        private float[] va = new float[0], vb = new float[0];
+        private short[] ca = new short[0], cb = new short[0];
+        final float[] candScore = new float[MAX_CANDIDATES];
+        final int[][] cand = new int[MAX_CANDIDATES][5];
+        int nCand;
+
+        /**
+         * The transform of orientation o, for lines rising 0 to 45 degrees in it: level j holds, for each block of 2^j
+         * columns, each rise s (0 to 2^j - 1 cells across the block) and each starting row (from 2^j - 1 below the map
+         * to its top), the sum of the digital line's cells and their number. Level j + 1's line is level j's with half
+         * the rise in the left half, and in the right half from as far up as the left one's rise rounded up.
+         */
+        private void transform(float[] z, int o, double low, int minCells) {
+            int W = ow(o), H = oh(o);
+            int n = 1, levels = 0;
+            while (n < W) {
+                n <<= 1;
+                levels++;
             }
-        }
-        double low2 = low * low;
-        for (int j = 0; j < levels; j++) {
-            int half = 1 << j, blocks = N >> (j + 1);
-            boolean score = 2 * half >= minCells;
-            for (int b = 0; b < blocks; b++) {
-                for (int s = 0; s < 2 * half; s++) {
-                    int kL = (b << (j + 1)) + (s >> 1), kR = kL + half, kO = (b << (j + 1)) + s, sh = (s + 1) >> 1;
-                    int bL = kL * R, bR = kR * R, bO = kO * R;
-                    int lim = R - sh;
-                    for (int yy = 0; yy < lim; yy++) {
-                        vo[bO + yy] = vi[bL + yy] + vi[bR + yy + sh];
-                        co[bO + yy] = (short) (ci[bL + yy] + ci[bR + yy + sh]);
-                    }
-                    for (int yy = lim; yy < R; yy++) {
-                        vo[bO + yy] = vi[bL + yy];
-                        co[bO + yy] = ci[bL + yy];
-                    }
-                    if (!score) continue;
-                    for (int yy = 0; yy < R; yy++) {
-                        float v = vo[bO + yy];
-                        int c = co[bO + yy];
-                        if (v > 0 && c >= minCells && v * v >= low2 * c) offer((float) (v / Math.sqrt(c)), o, j + 1, b << (j + 1), s, yy - (N - 1));
-                    }
-                    // the pair half a block along: this block's right half and the next one's left half
-                    if (b + 1 < blocks) {
-                        int kN = ((b + 1) << (j + 1)) + (s >> 1), bN = kN * R;
+            final int N = n, R = H + N - 1, size = N * R;
+            if (va.length < size) {
+                va = new float[size];
+                vb = new float[size];
+                ca = new short[size];
+                cb = new short[size];
+            }
+            float[] vi = va, vo = vb;
+            short[] ci = ca, co = cb;
+            // level 0: the cells themselves (row yy is the map's row yy - (N - 1))
+            for (int x = 0; x < N; x++) {
+                int base = x * R;
+                for (int yy = 0; yy < R; yy++) {
+                    int y = yy - (N - 1);
+                    float v = x < W && y >= 0 && y < H ? z[at(o, x, y)] : Float.NaN;
+                    boolean ok = v == v;
+                    vi[base + yy] = ok ? v : 0f;
+                    ci[base + yy] = (short) (ok ? 1 : 0);
+                }
+            }
+            double low2 = low * low;
+            for (int j = 0; j < levels; j++) {
+                int half = 1 << j, blocks = N >> (j + 1);
+                boolean score = 2 * half >= minCells;
+                for (int b = 0; b < blocks; b++) {
+                    for (int s = 0; s < 2 * half; s++) {
+                        int kL = (b << (j + 1)) + (s >> 1), kR = kL + half, kO = (b << (j + 1)) + s, sh = (s + 1) >> 1;
+                        int bL = kL * R, bR = kR * R, bO = kO * R;
+                        int lim = R - sh;
                         for (int yy = 0; yy < lim; yy++) {
-                            float v = vi[bR + yy] + vi[bN + yy + sh];
-                            if (!(v > 0)) continue;
-                            int c = ci[bR + yy] + ci[bN + yy + sh];
-                            if (c >= minCells && v * v >= low2 * c) offer((float) (v / Math.sqrt(c)), o, j + 1, (b << (j + 1)) + half, s, yy - (N - 1));
+                            vo[bO + yy] = vi[bL + yy] + vi[bR + yy + sh];
+                            co[bO + yy] = (short) (ci[bL + yy] + ci[bR + yy + sh]);
+                        }
+                        for (int yy = lim; yy < R; yy++) {
+                            vo[bO + yy] = vi[bL + yy];
+                            co[bO + yy] = ci[bL + yy];
+                        }
+                        if (!score) continue;
+                        for (int yy = 0; yy < R; yy++) {
+                            float v = vo[bO + yy];
+                            int c = co[bO + yy];
+                            if (v > 0 && c >= minCells && v * v >= low2 * c) offer((float) (v / Math.sqrt(c)), o, j + 1, b << (j + 1), s, yy - (N - 1));
+                        }
+                        // the pair half a block along: this block's right half and the next one's left half
+                        if (b + 1 < blocks) {
+                            int kN = ((b + 1) << (j + 1)) + (s >> 1), bN = kN * R;
+                            for (int yy = 0; yy < lim; yy++) {
+                                float v = vi[bR + yy] + vi[bN + yy + sh];
+                                if (!(v > 0)) continue;
+                                int c = ci[bR + yy] + ci[bN + yy + sh];
+                                if (c >= minCells && v * v >= low2 * c) offer((float) (v / Math.sqrt(c)), o, j + 1, (b << (j + 1)) + half, s, yy - (N - 1));
+                            }
                         }
                     }
                 }
+                float[] tv = vi;
+                vi = vo;
+                vo = tv;
+                short[] tc = ci;
+                ci = co;
+                co = tc;
             }
-            float[] tv = vi;
-            vi = vo;
-            vo = tv;
-            short[] tc = ci;
-            ci = co;
-            co = tc;
         }
-    }
 
-    /** A candidate: orientation, level, first column, rise and starting row, kept if among the strongest. */
-    private void offer(float score, int o, int level, int x0, int rise, int y0) {
-        if (nCand == MAX_CANDIDATES && score <= candScore[0]) return;
-        // a near copy of one kept (the same line a row or a rise off) keeps only the stronger
-        for (int i = 0; i < nCand; i++) {
-            int[] c = cand[i];
-            if (c[0] == o && c[1] == level && c[2] == x0 && Math.abs(c[3] - rise) <= 1 && Math.abs(c[4] - y0) <= 1) {
-                if (score > candScore[i]) {
-                    candScore[i] = score;
-                    c[3] = rise;
-                    c[4] = y0;
-                    siftDown(i);
+        /** A candidate: orientation, level, first column, rise and starting row, kept if among the strongest. */
+        private void offer(float score, int o, int level, int x0, int rise, int y0) {
+            if (nCand == MAX_CANDIDATES && score <= candScore[0]) return;
+            // a near copy of one kept (the same line a row or a rise off) keeps only the stronger
+            for (int i = 0; i < nCand; i++) {
+                int[] c = cand[i];
+                if (c[0] == o && c[1] == level && c[2] == x0 && Math.abs(c[3] - rise) <= 1 && Math.abs(c[4] - y0) <= 1) {
+                    if (score > candScore[i]) {
+                        candScore[i] = score;
+                        c[3] = rise;
+                        c[4] = y0;
+                        siftDown(i);
+                    }
+                    return;
                 }
-                return;
+            }
+            int i;
+            if (nCand < MAX_CANDIDATES) {
+                i = nCand++;
+                candScore[i] = score;
+                set(cand[i], o, level, x0, rise, y0);
+                while (i > 0 && candScore[(i - 1) / 2] > candScore[i]) {
+                    swap(i, (i - 1) / 2);
+                    i = (i - 1) / 2;
+                }
+            } else {
+                candScore[0] = score;
+                set(cand[0], o, level, x0, rise, y0);
+                siftDown(0);
             }
         }
-        int i;
-        if (nCand < MAX_CANDIDATES) {
-            i = nCand++;
-            candScore[i] = score;
-            set(cand[i], o, level, x0, rise, y0);
-            while (i > 0 && candScore[(i - 1) / 2] > candScore[i]) {
-                swap(i, (i - 1) / 2);
-                i = (i - 1) / 2;
+
+        private void set(int[] c, int o, int level, int x0, int rise, int y0) {
+            c[0] = o;
+            c[1] = level;
+            c[2] = x0;
+            c[3] = rise;
+            c[4] = y0;
+        }
+
+        private void siftDown(int i) {
+            while (true) {
+                int l = 2 * i + 1, r = l + 1, m = i;
+                if (l < nCand && candScore[l] < candScore[m]) m = l;
+                if (r < nCand && candScore[r] < candScore[m]) m = r;
+                if (m == i) return;
+                swap(i, m);
+                i = m;
             }
-        } else {
-            candScore[0] = score;
-            set(cand[0], o, level, x0, rise, y0);
-            siftDown(0);
         }
-    }
 
-    private static void set(int[] c, int o, int level, int x0, int rise, int y0) {
-        c[0] = o;
-        c[1] = level;
-        c[2] = x0;
-        c[3] = rise;
-        c[4] = y0;
-    }
-
-    private void siftDown(int i) {
-        while (true) {
-            int l = 2 * i + 1, r = l + 1, m = i;
-            if (l < nCand && candScore[l] < candScore[m]) m = l;
-            if (r < nCand && candScore[r] < candScore[m]) m = r;
-            if (m == i) return;
-            swap(i, m);
-            i = m;
+        private void swap(int a, int b) {
+            float t = candScore[a];
+            candScore[a] = candScore[b];
+            candScore[b] = t;
+            int[] c = cand[a];
+            cand[a] = cand[b];
+            cand[b] = c;
         }
-    }
-
-    private void swap(int a, int b) {
-        float t = candScore[a];
-        candScore[a] = candScore[b];
-        candScore[b] = t;
-        int[] c = cand[a];
-        cand[a] = cand[b];
-        cand[b] = c;
     }
 
     /** A candidate's ends in the map's cells: {x0, y0, x1, y1}. */

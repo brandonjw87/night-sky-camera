@@ -44,7 +44,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * the finished files. Pictures are made on the viewer's own low-priority threads from what the session has
  * already prepared, and a request that arrives while one is being made gets the previous one.
  */
-final class RemoteHost implements RemoteServer.Backend {
+final class RemoteHost implements RemoteServer.Backend, RemoteServer.Mission {
     static final int PORT = 8765;
     /** After the photo is done, the viewer stays up this long after the last time someone used it... */
     static final long IDLE_STOP_MS = 30 * 60_000L;
@@ -70,7 +70,7 @@ final class RemoteHost implements RemoteServer.Backend {
     private final CaptureService service;
     private final SessionController controller;
     private final RemoteServer server;
-    private volatile byte[] page;
+    private volatile byte[] page, missionPage;
 
     private final ReentrantLock stackLock = new ReentrantLock(), latestLock = new ReentrantLock();
     private volatile RemoteServer.Picture stackPic, latestPic;
@@ -163,18 +163,22 @@ final class RemoteHost implements RemoteServer.Backend {
     public byte[] page() {
         byte[] p = page;
         if (p != null) return p;
+        p = raw(R.raw.viewer, "The viewer page is missing.");
+        page = p;
+        return p;
+    }
+
+    private byte[] raw(int id, String missing) {
         InputStream in = null;
         try {
-            in = ctx.getResources().openRawResource(R.raw.viewer);
-            ByteArrayOutputStream bo = new ByteArrayOutputStream(32 * 1024);
+            in = ctx.getResources().openRawResource(id);
+            ByteArrayOutputStream bo = new ByteArrayOutputStream(64 * 1024);
             byte[] buf = new byte[8192];
             int n;
             while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
-            p = bo.toByteArray();
-            page = p;
-            return p;
-        } catch (IOException e) {
-            return "<!doctype html><title>Night Sky</title><p>The viewer page is missing.".getBytes();
+            return bo.toByteArray();
+        } catch (IOException | RuntimeException e) {
+            return ("<!doctype html><title>Night Sky</title><p>" + missing).getBytes();
         } finally {
             if (in != null) {
                 try {
@@ -183,6 +187,55 @@ final class RemoteHost implements RemoteServer.Backend {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // RemoteServer.Mission (2.3): Mission Control's page and what it reads
+    // ------------------------------------------------------------------------------------------------
+
+    @Override
+    public byte[] missionPage() {
+        controller.mission().opened();
+        byte[] p = missionPage;
+        if (p != null) return p;
+        p = raw(R.raw.mission, "Mission Control's page is missing.");
+        missionPage = p;
+        return p;
+    }
+
+    @Override
+    public String events(int since) {
+        return controller.mission().eventsJson(since);
+    }
+
+    @Override
+    public String sky() {
+        return controller.mission().skyJson();
+    }
+
+    @Override
+    public String sats() {
+        return controller.mission().satsJson();
+    }
+
+    @Override
+    public String song() {
+        return controller.mission().songJson();
+    }
+
+    @Override
+    public String patches() {
+        return controller.mission().patchesJson();
+    }
+
+    @Override
+    public byte[] photo() {
+        return controller.mission().photoJpeg();
+    }
+
+    @Override
+    public byte[] snap(int id) {
+        return controller.mission().snap(id);
     }
 
     @Override
@@ -454,6 +507,8 @@ final class RemoteHost implements RemoteServer.Backend {
         else if ("mute".equals(name)) msg = controller.remoteMute(true);
         else if ("unmute".equals(name)) msg = controller.remoteMute(false);
         else if ("arm".equals(name)) msg = service.armFromViewer();
+        else if ("name-star".equals(name)) return controller.mission().nameStar(args);
+        else if ("unname-star".equals(name)) return controller.mission().unnameStar(args);
         else return null;
         return new Json().obj().put("message", msg).end().toString();
     }

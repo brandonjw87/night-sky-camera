@@ -77,6 +77,7 @@ import com.brandon.nightsky.processing.SessionStore;
 import com.brandon.nightsky.processing.SettingsFile;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyReading;
+import com.brandon.nightsky.processing.StarSong;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitRecord;
 import com.brandon.nightsky.remote.QrCode;
@@ -364,6 +365,7 @@ public final class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         visible = false;
+        stopSong();
         stopCalibrator();
         stopCameraCheck();
         // the screen was turned on for the tile once; not again
@@ -492,6 +494,8 @@ public final class MainActivity extends Activity {
     }
 
     private void clearRefs() {
+        stopSong();
+        songShare = null;
         closeReport();
         setPageBack(false);
         HdrScreen.window(this, false);
@@ -3004,6 +3008,7 @@ public final class MainActivity extends Activity {
         row2.addView(again, weight());
         col.addView(row2, gap(6));
         if (r != null && r.earth != null) addEarthTurn(col, r);
+        if (r != null && r.song != null && !r.trails) addSong(col, r);
         // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
         List<Button> more = new ArrayList<Button>();
         if (r != null && r.video != null) {
@@ -4596,7 +4601,7 @@ public final class MainActivity extends Activity {
     private void buildViewerLine(RemoteHost r, List<RemoteHost.Address> as) {
         RemoteHost.Address a = pick(as, service.hotspotInfo() != null);
         if (a != null) {
-            TextView t = text("Viewer: " + r.typedFor(a.ip) + " · code " + spaced(r.pairCode()), 13, RED_DIM, false);
+            TextView t = text("Mission Control: " + r.typedFor(a.ip) + "/mission · code " + spaced(r.pairCode()), 13, RED_DIM, false);
             t.setTextIsSelectable(true);
             viewerBox.addView(t);
         }
@@ -4635,7 +4640,8 @@ public final class MainActivity extends Activity {
         } else {
             if (hs == null) card.addView(text("Scan with a phone or tablet camera on the same Wi-Fi:", 14, RED_DIM, false), gap(8));
             card.addView(qrView(r.linkFor(a.ip), qrPx), gapWrap(6));
-            TextView typed = text("On a laptop, open " + r.typedFor(a.ip) + " and type the code " + spaced(r.pairCode()), 14, RED, false);
+            TextView typed = text("On a laptop, open " + r.typedFor(a.ip) + "/mission for Mission Control and type the code "
+                    + spaced(r.pairCode()), 14, RED, false);
             typed.setTextIsSelectable(true);
             typed.setGravity(Gravity.CENTER);
             card.addView(typed, gap(6));
@@ -6523,6 +6529,252 @@ public final class MainActivity extends Activity {
 
     /** The result whose Earth's turn has played by itself (its name), so it plays once, not every time the screen is drawn. */
     private String earthPlayed = "";
+
+    // ------------------------------------------------------------------------------------------------
+    // Hear the Stars (2.3)
+    // ------------------------------------------------------------------------------------------------
+
+    /** The song playing where the photo is (null if none), and how to stop it. */
+    private Runnable songStop;
+    /** The last song's sound, kept for playing it again (made from {@link #songPcmOf}). */
+    private volatile short[] songPcm;
+    private volatile List<StarSong.Note> songPcmOf;
+    /** The song's video being made (null if none), and the button that shows how far it has got. */
+    private Thread songJob;
+    private Button songShare;
+    private String songJobText = "";
+
+    /** The photo played as music: a line sweeps across it, each star rings as it's reached; and the song as a video to share. */
+    private void addSong(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Hear the Stars", 17, RED, true));
+        card.addView(text(songWords(r.song), 13, RED_DIM, false), gap(6));
+        LinearLayout row = row();
+        Button play = smallButton("Hear it", true);
+        play.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                playSong(r);
+            }
+        });
+        row.addView(play, weight());
+        final Button sv = smallButton(songJob != null ? songJobText : "Share the song", false);
+        sv.setEnabled(songJob == null);
+        songShare = sv;
+        sv.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                shareSong(r);
+            }
+        });
+        row.addView(sv, weight());
+        card.addView(row, gap(8));
+        col.addView(card, gap(12));
+    }
+
+    /** What the song is made of, in words. */
+    static String songWords(List<StarSong.Note> notes) {
+        int stars = 0, mine = 0, objects = 0;
+        List<String> big = new ArrayList<String>();
+        boolean milky = false;
+        for (StarSong.Note n : notes) {
+            if ("star".equals(n.kind)) stars++;
+            else if ("mine".equals(n.kind)) mine++;
+            else if ("object".equals(n.kind)) objects++;
+            else if ("milky".equals(n.kind)) milky = true;
+            else if (("planet".equals(n.kind) || "moon".equals(n.kind)) && !n.name.isEmpty() && big.size() < 3) big.add(n.name);
+        }
+        List<String> parts = new ArrayList<String>();
+        if (stars > 0) parts.add(String.format(Locale.US, "%d star%s", stars, stars == 1 ? "" : "s"));
+        parts.addAll(big);
+        if (objects > 0) parts.add(objects == 1 ? "a galaxy or nebula" : objects + " galaxies, clusters and nebulae");
+        if (milky) parts.add("the Milky Way");
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < parts.size(); i++) {
+            if (i > 0) b.append(i == parts.size() - 1 ? " and " : ", ");
+            b.append(parts.get(i));
+        }
+        String what = b.length() > 0 ? b.toString() : "The sky";
+        String out = what + " turned into music. A line sweeps across the photo and each star sings as it's reached: blue stars high, "
+                + "red stars low, the brightest loudest.";
+        if (mine > 0) out += mine == 1 ? " The star you named sparkles." : " The " + mine + " stars you named sparkle.";
+        return out;
+    }
+
+    /** The song's sound (made once for its notes; on the calling thread, never the screen's). */
+    private short[] songPcm(List<StarSong.Note> notes) {
+        if (songPcmOf == notes && songPcm != null) return songPcm;
+        short[] pcm = StarSong.render(notes);
+        songPcm = pcm;
+        songPcmOf = notes;
+        return pcm;
+    }
+
+    /** Plays the song where the photo is, the photo lighting up as it goes, until it ends or is tapped. */
+    private void playSong(final SessionController.Result r) {
+        if (service == null || songStop != null) return;
+        final SessionController ctl = service.controller();
+        final Bitmap pic = ctl.songPicture();
+        if (pic == null || zoom == null) {
+            toastish("The photo isn't there any more");
+            return;
+        }
+        android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am != null && am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0) toastish("Turn the volume up to hear the stars!");
+        // a moment to tune up (the sound is made the first time), then the show
+        songStop = new Runnable() {
+            @Override
+            public void run() {
+                songStop = null;
+            }
+        };
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                List<StarSong.Note> notes = null;
+                short[] pcm = null;
+                try {
+                    notes = ctl.song(r);
+                    if (notes != null) pcm = songPcm(notes);
+                } catch (RuntimeException | OutOfMemoryError e) {
+                    android.util.Log.w("NightSky", "the song couldn't be made: " + e);
+                }
+                final List<StarSong.Note> fn = notes;
+                final short[] fp = pcm;
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        boolean wanted = songStop != null;
+                        songStop = null;
+                        // the app was left (or the screen changed) while it tuned up: no show
+                        if (!wanted || !visible) return;
+                        if (fn == null) {
+                            toastish("The song couldn't be made");
+                            return;
+                        }
+                        startSong(pic, fn, fp);
+                    }
+                });
+            }
+        }, "nightsky-song-tune").start();
+    }
+
+    private void startSong(Bitmap pic, List<StarSong.Note> notes, short[] pcm) {
+        if (zoom == null || !(zoom.getParent() instanceof ViewGroup) || songStop != null) return;
+        final ViewGroup parent = (ViewGroup) zoom.getParent();
+        final View photo = zoom;
+        final SongView sv = new SongView(this, pic, notes);
+        parent.addView(sv, parent.indexOfChild(photo), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        photo.setVisibility(View.GONE);
+        SongPlayer player = pcm != null ? new SongPlayer(pcm, StarSong.RATE) : null;
+        if (player != null && !player.start()) {
+            player = null;
+            toastish("The phone wouldn't play the sound: the stars light up anyway");
+        }
+        final SongPlayer fp = player;
+        final Runnable done = new Runnable() {
+            boolean once;
+
+            @Override
+            public void run() {
+                if (once) return;
+                once = true;
+                if (fp != null) fp.stop();
+                if (songStop == this) songStop = null;
+                parent.removeView(sv);
+                photo.setVisibility(View.VISIBLE);
+            }
+        };
+        songStop = done;
+        sv.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                done.run();
+            }
+        });
+        sv.play(fp, done);
+    }
+
+    private void stopSong() {
+        Runnable s = songStop;
+        if (s != null) s.run();
+        songStop = null;
+    }
+
+    /** The song as a video with its sound: made once (a few seconds), saved in the gallery, then shared. */
+    private void shareSong(final SessionController.Result r) {
+        if (r.songVideo != null) {
+            share(r.songVideo, "video/mp4", "Share the song of the stars");
+            return;
+        }
+        if (service == null || songJob != null) return;
+        final SessionController ctl = service.controller();
+        final Bitmap pic = ctl.songPicture();
+        if (pic == null) {
+            toastish("The photo isn't there any more");
+            return;
+        }
+        final android.content.Context app = getApplicationContext();
+        songProgress("Making the video…");
+        songJob = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File mp4 = new File(app.getCacheDir(), "song.mp4");
+                try {
+                    List<StarSong.Note> notes = ctl.song(r);
+                    if (notes == null) throw new IOException("the photo has no song");
+                    short[] pcm = songPcm(notes);
+                    long t0 = android.os.SystemClock.elapsedRealtime();
+                    String note = SongVideo.make(Mp4Writer.factory, pic, notes, pcm, mp4, new SongVideo.Progress() {
+                        @Override
+                        public void at(final float share) {
+                            main.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (songJob != null) songProgress(String.format(Locale.US, "Making the video: %d%%", Math.round(100 * share)));
+                                }
+                            });
+                        }
+                    });
+                    android.util.Log.i("NightSky", String.format(Locale.US, "the song's video: %s in %.1f s", note,
+                            (android.os.SystemClock.elapsedRealtime() - t0) / 1000.0));
+                    final Uri u = MediaSaver.saveVideo(app, mp4, (r.name.isEmpty() ? "NightSky" : r.name) + "_song", new Date());
+                    r.songVideo = u;
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            songJob = null;
+                            songProgress(null);
+                            share(u, "video/mp4", "Share the song of the stars");
+                        }
+                    });
+                } catch (final IOException | RuntimeException | OutOfMemoryError e) {
+                    android.util.Log.w("NightSky", "the song's video wasn't made: " + e);
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            songJob = null;
+                            songProgress(null);
+                            toastish("The video couldn't be made: " + e.getMessage());
+                        }
+                    });
+                } finally {
+                    //noinspection ResultOfMethodCallIgnored
+                    mp4.delete();
+                }
+            }
+        }, "nightsky-song-video");
+        songJob.start();
+    }
+
+    /** The share button's words while the video is made ({@code text}), or as it was (null). */
+    private void songProgress(String text) {
+        songJobText = text != null ? text : "";
+        Button b = songShare;
+        if (b == null) return;
+        b.setText(text != null ? text : "Share the song");
+        b.setEnabled(text == null);
+    }
 
     private void share(Uri uri, String type, String title) {
         try {

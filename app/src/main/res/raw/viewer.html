@@ -12,6 +12,8 @@ html,body{background:var(--bg);color:var(--red);margin:0;font:15px/1.4 system-ui
 main{max-width:1100px;margin:0 auto;padding:14px 16px 40px}
 header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 header h1{font-size:20px;margin:0;flex:1}
+.mlink{color:#000;background:var(--red);text-decoration:none;font-weight:700;padding:8px 14px;border-radius:12px}
+.mlink:focus-visible{outline:2px solid var(--pale);outline-offset:2px}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:6px}
 .dot.on{background:var(--red);box-shadow:0 0 6px var(--red)}
 .muted{color:var(--dim)}
@@ -81,6 +83,7 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
 <main>
   <header>
     <h1>Night Sky</h1>
+    <a id="mission" class="mlink" href="/mission">Mission Control &rarr;</a>
     <span id="conn"><span class="dot" id="dot"></span><span id="connText">Connecting…</span></span>
   </header>
 
@@ -189,6 +192,7 @@ footer{margin-top:22px;font-size:12px;color:var(--dim)}
   var token = new URLSearchParams(location.search).get("t") || "";
   var q = "t=" + encodeURIComponent(token);
   var $ = function (id) { return document.getElementById(id); };
+  $("mission").href = "/mission?" + q;
   var st = null, units = [], tab = "stack", shown = {stack: -1, latest: -1}, failures = 0, busy = false;
   var lastOk = 0, timer = null;
 

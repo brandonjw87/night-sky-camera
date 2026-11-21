@@ -48,6 +48,32 @@ public final class UnitProcessor {
     }
 
     /**
+     * Looks at each unit once it is stored and measured (2.3: streaks for Mission Control), on the processing thread, with
+     * the unit's frames as they are (hot pixels painted over) and what was found in it. A watcher that fails is said once
+     * in the session's log and left out from then on; the session goes on.
+     */
+    public interface UnitWatcher {
+        void unit(short[] raw, UnitRecord r, StarList stars, Aligner.Result live, PreviewAccumulator preview);
+    }
+
+    /** The frame the live stack is aligned to (2.3: the live sky map is solved on its stars), once there is one. */
+    public static final class Reference {
+        public final StarList stars;
+        public final int unit;
+        /** Its first frame's camera timestamp (ns), and its exposure (seconds, all its frames). */
+        public final long sensorTimestampNs;
+        public final double exposure, t;
+
+        Reference(StarList stars, int unit, long sensorTimestampNs, double exposure, double t) {
+            this.stars = stars;
+            this.unit = unit;
+            this.sensorTimestampNs = sensorTimestampNs;
+            this.exposure = exposure;
+            this.t = t;
+        }
+    }
+
+    /**
      * Work done on each frame before it is stored and measured, on the processing thread (2.1: a rehearsal's sky drawn
      * into the camera's own frame). A hook that fails leaves the frame as the camera took it.
      */
@@ -70,6 +96,8 @@ public final class UnitProcessor {
     private final BlockingQueue<short[]> pool;
     private final Listener listener;
     private volatile FrameHook hook;
+    private volatile UnitWatcher watcher;
+    private volatile Reference reference;
 
     // unit being assembled (exec thread only)
     private short[] unitBuf;
@@ -130,6 +158,21 @@ public final class UnitProcessor {
     /** Work to do on each frame before it is stored (null: none). */
     public void setHook(FrameHook h) {
         hook = h;
+    }
+
+    /** What looks at each unit once it is measured (null: nothing). */
+    public void setWatcher(UnitWatcher w) {
+        watcher = w;
+    }
+
+    /** The frame the live stack is aligned to, or null before there is one. */
+    public Reference reference() {
+        return reference;
+    }
+
+    /** The camera model frames are aligned with. */
+    public CameraModel model() {
+        return aligner.model();
     }
 
     /** Whether to keep a preview-size copy of each unit (only while someone may look at it). */
@@ -324,6 +367,18 @@ public final class UnitProcessor {
         if (sumCount >= 2 && Integer.bitCount(sumCount) == 1) updateLiveHot();
         if (liveHot != null) liveHot.fix(raw);
         if (live.ok && !r.disturbed) preview.add(raw, sc, bl, live.R);
+        if (reference == null && aligner.referenceUnit() == r.index && aligner.reference() != null) {
+            reference = new Reference(aligner.reference(), r.index, r.sensorTimestampNs, r.exposure, r.t);
+        }
+        UnitWatcher wt = watcher;
+        if (wt != null) {
+            try {
+                wt.unit(raw, r, stars, live, preview);
+            } catch (RuntimeException | OutOfMemoryError e) {
+                watcher = null;
+                store.log("mission control: the frames stopped being watched for streaks: " + e);
+            }
+        }
         if (keepLatest) {
             float[] clipped = new float[3];
             RgbImage thumb = preview.thumbnail(raw, sc, bl, clipped);

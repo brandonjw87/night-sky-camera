@@ -3,9 +3,12 @@
 A long-exposure star camera for the Google Pixel 10 Pro XL. Lay the phone screen-down under a dark sky and it
 shoots a series of RAW frames on the main camera for as long as you choose, lines the stars up between frames,
 and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws each star's arc across the sky. Or, in
-Earth's turn mode, it adds a few seconds of looping video of the whole sky wheeling round the pole.
+Earth's turn mode, it adds a few seconds of looping video of the whole sky wheeling round the pole. And while it
+works, a laptop on the same Wi-Fi becomes **Mission Control**: a countdown, a computer voice calling the mission,
+satellites named live as they cross the picture, star cards, a 3D flight through the stars, and the sky played as
+music.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.2.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
 
 ## What it does
 
@@ -73,6 +76,20 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.2.
   from remember their preset.
 - **Tile, widget and shortcuts.** Two taps from the lock screen to a session.
 - **Sky reading.** How dark is the sky here, in magnitudes per square arcsecond.
+- **Mission Control (on a computer).** Open the phone's address with `/mission` on a laptop on the same Wi-Fi: a
+  big countdown, a computer voice ("Focus locked!", "Liftoff!", "Halfway there!"), sound effects, the live picture
+  and giant counters (frames, stars found, seconds of starlight, satellites caught). Steps below.
+- **Live catches.** Each frame is searched for streaks as it lands: satellites named as they cross ("Got it! The
+  Space Station is in the picture!", with an alarm), satellites announced before they arrive, planes, meteors,
+  and mystery satellites that aren't on the list, each with a close-up snapshot.
+- **Star Spotter.** The live picture with the constellations' lines and the stars' names; click a star for its card
+  (what kind of star, how far, and what was happening on Earth when its light set off); name a star yourself and
+  it keeps that name, with a pink heart, on the page and in the phone's photos of that sky.
+- **3D Star Flight.** Fly through the photo's stars at their real distances: the constellations fall apart, and
+  from another star you can look back home at the Sun.
+- **Hear the Stars.** The photo played as music: a line sweeps across it and each star sings as it's reached, blue
+  stars high and red stars low. On the computer, and on the phone's result screen with a video to share.
+- **Mission patches.** 18 badges earned over many nights (First Light, Space Station, Meteor Hunter, Night Owl...).
 - **Viewer.** Watch the photo build up from a laptop, tablet or another phone on the same Wi-Fi.
 - **Files.** JPEG with its video inside, named `.MP.jpg` (and optionally a RAW DNG) in `Pictures/NightSky`, so
   they show up in Google Photos. Logs, settings files and sky readings go in `Documents/NightSky`.
@@ -176,6 +193,11 @@ from its icon; a tap skips it) can be shown in dim red too, or turned off: **Adv
 
 Under the photo:
 
+- **Hear the Stars**: **Hear it** plays the photo as music where the photo is: a line sweeps across it and each
+  star rings as it's reached, in its own colour, blue stars high and red stars low, the brightest loudest; the
+  planets, the Moon and the stars you named say their names (tap to stop). **Share the song** makes a 27-second
+  video of it with the sound (a few seconds' work), puts it in `Pictures/NightSky` as `..._song.mp4` and offers
+  to send it.
 - **The Earth's turn** (in that mode): the clip plays over the photo by itself the first time, looping (tap to
   stop). **Play it** plays it again; **Share video** sends the MP4 and **Share as GIF** the animated picture, which
   loops by itself in WhatsApp, Messages, Discord or a browser. Both are in `Pictures/NightSky` as
@@ -316,20 +338,50 @@ At night the app finds the focus on the stars by itself. A few calibrations in d
 Three calibrations at temperatures at least 5 °C apart (a cool morning and a warm afternoon) let it predict the
 night's focus.
 
-## Watch it from a Windows laptop
+## Mission Control on a Windows laptop
 
-The viewer is on unless you untick **Viewer** on the home screen.
+The viewer is on unless you untick **Viewer** on the home screen. Nothing goes through the internet: the phone
+itself serves the page, so it works in a field with no phone signal.
 
 1. Put the laptop on the **same Wi-Fi** as the phone.
    No Wi-Fi out there? On the phone's start screen, tap **No Wi-Fi here? Start a hotspot for it**. Then on the
-   laptop, click the Wi-Fi icon at the bottom right of the screen, pick the network name the phone shows, and
-   type the password it shows.
-2. On the phone, tap **Start**. The screen shows an address like `http://192.168.1.23:8765` and a 6-digit
-   code.
-3. On the laptop, open Chrome or Edge, type that address into the address bar exactly as shown (with the
-   `http://`), and press Enter.
-4. Type the 6-digit code and click **Open the viewer**.
-5. Lay the phone down. The laptop page shows the pre-flight check, the countdown, then the stack building up.
+   laptop, click the Wi-Fi icon at the bottom right of the screen (next to the clock), pick the network name the
+   phone shows, and type the password it shows.
+2. On the phone, tap **Start**. The screen says something like **On a laptop, open
+   http://192.168.1.23:8765/mission for Mission Control and type the code 123 456**.
+3. On the laptop, open **Chrome** or **Edge**, click the address bar at the top, type that address exactly as the
+   phone shows it (starting with `http://`, ending with `/mission`), and press **Enter**.
+4. Type the 6-digit code and click **Open Mission Control**.
+5. Click **START MISSION CONTROL** (a browser only lets a page talk after a click), turn the laptop's sound up,
+   and lay the phone down, screen-down, camera to the sky.
+
+The page has six tabs along the top:
+
+| Tab | What it does |
+|---|---|
+| **Mission** | The countdown, the mission log the computer voice reads out, the live picture and the big counters. |
+| **Live Catches** | Satellites flying across the picture right now, on their real paths, the ones coming up next, and everything caught tonight with its snapshot. |
+| **Star Spotter** | The live picture with names and constellation lines. Click a star for its card, then **name it** if you like. |
+| **3D Star Flight** | Drag to look around, scroll to fly in and out, pick a star to fly to, then **Look back home**. |
+| **Hear the Stars** | Plays the picture as music (the photo once it's developed, the live picture before). |
+| **Patches** | The 18 mission patches, the ones earned and how. |
+
+**Voice on**, **Sounds on** and **Night vision** (the page in dark red, kind to night eyes) are at the top right.
+
+### For the astronaut in training
+
+- The phone is the spacecraft, the laptop is Mission Control, and you're the flight director. Your job: keep the
+  phone perfectly still (no touching once the countdown starts!) and watch for catches.
+- A **satellite** is a machine going round the Earth. You can see one because the Sun is shining on it high up,
+  even though it's dark where you are. Starlink satellites often fly in a line, like a train.
+- The **Space Station** is the brightest satellite of all, as big as a football pitch, with astronauts inside,
+  going round the Earth every 90 minutes. If the alarm goes off, they just flew through your picture.
+- A **meteor** (a shooting star) is a speck of space dust, smaller than a grain of sand, burning up 100 km above
+  you. Make a wish.
+- A **light-year** is how far light goes in a year: about 9.5 million million km. When the star card says the
+  light left a star 600 years ago, you're seeing that star as it was 600 years ago. The photo is a time machine.
+- **Blue stars** are the hottest (over 10,000 degrees), **red stars** the coolest (about 3,000). That's why they
+  sing high and low in Hear the Stars.
 
 A phone or tablet can scan the QR code on the phone's screen instead of typing anything. From the viewer you
 can start early, add 5 minutes, mute the beeps, stop and develop, and download the finished files. It also
@@ -370,7 +422,10 @@ The opening film's lettering is set in [Inter](https://rsms.me/inter/) by Rasmus
 Open Font License 1.1 (the film holds only pictures of the letters, not the font), and the film is rendered with
 [Blender](https://www.blender.org/). How it's made: [intro/README.md](intro/README.md).
 
-The stars come from the Yale Bright Star Catalogue. The constellations' figures and where their names go come from
+The stars come from the Yale Bright Star Catalogue; their distances and spectral types (for the star cards and the 3D
+flight) from the [HYG database](https://github.com/astronexus/HYG-Database) 3.7 by David Nash, which is under the
+Creative Commons Attribution-ShareAlike licence (CC BY-SA 4.0), as is the star list made from it
+(`app/src/main/assets/stars.csv`). The constellations' figures and where their names go come from
 d3-celestial (https://github.com/ofrohn/d3-celestial), under its licence:
 
 ```
@@ -427,11 +482,21 @@ app/src/main/java/com/brandon/nightsky/
     MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo, as an HDR photo)
     HdrScreen           HDR photos on this phone's screen, and its decoder reading a saved one back
     IntroView           the opening film (res/raw/intro.mp4) over the first screen
-    Mp4Writer           the photo's video: H.264 through the phone's encoder (MediaCodec) into an MP4
-    RemoteHost          the remote viewer: what the web page shows and the commands it can send
+    Mp4Writer           the photo's video: H.264 through the phone's encoder (MediaCodec) into an MP4 (with AAC sound, 2.3)
+    SongArt, SongView   Hear the Stars on the phone: the photo lit up star by star as its song plays
+    SongPlayer, SongVideo  the song through the speaker (AudioTrack); the song as a video with its sound
+    RemoteHost          the remote viewer and Mission Control: what the web pages show and the commands they send
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
+    res/raw/mission.html  Mission Control's page (one file: its sounds, voice, 3D flight and music all made in the page)
     processing/         the engine, plain Java with no Android dependencies
         UnitProcessor   live processing while capturing: hot pixels, star detection, alignment
+        MissionControl  Mission Control's engine (2.3): the mission's story, the live sky, catches, patches, the song
+        MissionLog      its story: events with what the voice says, and the catches' snapshots
+        StreakWatch     each unit searched for streaks as it lands, and each one told apart (satellite, plane, meteor)
+        LiveSats        the satellites crossing the live picture, and the ones coming
+        SkyMap, PictureStars  the stars, planets and deep-sky objects in a picture, for the page's map and the song
+        StarSong        Hear the Stars: a picture's stars as notes (blue high, red low), and the song's sound
+        NamedStars, Patches  stars named by you; the mission patches earned over nights
         Aligner         3D rotation fit between frames using the lens model
         SkyMotion       the frames' path on the sky (Kalman smoother)
         SensorPattern   fixed-pattern noise and banding
@@ -469,7 +534,8 @@ app/src/main/java/com/brandon/nightsky/
         HdrGain, UltraHdr  how much brighter than white the stars may show; the Ultra HDR file that says so
         Framing         crops and north up
         DngWriter       16-bit linear DNG
-sim/                    desktop simulator and tests that drive the engine with synthetic night skies
+sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
+                        a night through Mission Control; MissionDemo: the page served from a simulated night)
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
 intro/                  the scripts that made the opening film (Blender, Python; see intro/README.md)
 tools/build_apk.sh      builds the APK without Gradle
@@ -514,7 +580,13 @@ for example `java -Xmx6g -cp build/sim com.brandon.nightsky.sim.G3Test out/g3 2 
 output folder, the scale and the frames (`out/pv 2 24`) and, with ffmpeg on the path, also writes its videos as MP4.
 `MeteorLimit` (an output folder, then the scale) measures how faint a meteor the camera catches. `RehearsalTest`
 (2.1) draws a rehearsal's sky into dark frames and runs the app's own measurements on it: the sky check, the star
-solve, the focus sweep, a whole session and its check.
+solve, the focus sweep, a whole session and its check. `MissionTest` (2.3; an output folder, then optionally the
+scale, frames, seed and `catches` or `quiet`) runs a night through Mission Control: a sky full of satellites, a
+Starlink train, the Space Station, a plane and a meteor, each trail checked against the truth (named right, nothing
+named wrong, nothing made up), then a quiet night with clouds, banding, a branch and a knock that must report
+nothing; its story, its patches and its song are checked too. `MissionDemo` serves the page from a simulated night
+(`MissionDemo app/src/main/res/raw 8765 3 2 37`: the pages' folder, the port, the clock's speed, the scale and the
+frames) for working on the page in a browser.
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 

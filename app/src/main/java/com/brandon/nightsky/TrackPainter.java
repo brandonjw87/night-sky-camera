@@ -120,9 +120,12 @@ final class TrackPainter {
                 continue;
             }
             float r = 9 * unit;
+            boolean mine = "mine".equals(it.kind);
+            // a star named by you (2.3): in pink, with a heart
+            ring.setColor(mine ? 0xE0FF8FC6 : 0xC0B8D8FF);
             c.drawCircle(x, y, r, ring);
-            text.setColor("planet".equals(it.kind) || "moon".equals(it.kind) ? 0xFFFFE6B8 : 0xFFC8E0FF);
-            c.drawText(it.name, x + r + 3 * unit, y + size * 0.35f, text);
+            text.setColor(mine ? 0xFFFF8FC6 : "planet".equals(it.kind) || "moon".equals(it.kind) ? 0xFFFFE6B8 : 0xFFC8E0FF);
+            c.drawText(mine ? "\u2665 " + it.name : it.name, x + r + 3 * unit, y + size * 0.35f, text);
         }
     }
     /**

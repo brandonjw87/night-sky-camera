@@ -1,5 +1,85 @@
 # Night Sky Camera: what's new
 
+## Version 2.3: Mission Control, and five things to show an 11-year-old
+
+### What's new
+
+Three of these are on the computer, while the phone lies in the grass doing the work. Nothing goes through the
+internet: the phone itself serves the page over your own Wi-Fi (or its hotspot), so it works in a field with no
+signal at all.
+
+- **Mission Control on the computer.** Open `http://<the phone's address>/mission` (the phone shows it, steps
+  below) and the laptop turns into a launch room: a big countdown, **T-MINUS 10, 9, 8...**, a computer voice
+  calling the mission out loud ("Focusing. To infinity, and beyond!", "Focus locked!", "Liftoff! The camera is
+  collecting starlight", "Halfway there!", "One minute to go!"), beeps and whooshes, the live picture building up,
+  and giant counters: frames in, stars found (they climb past 1,000 as the stack gets deeper), seconds of
+  starlight in the bucket, satellites caught. **Voice on** and **Sounds on** in the corner turn them off if the
+  house is asleep, and **Night vision** turns the whole page red to keep your eyes used to the dark.
+- **Live catches.** Every frame is searched for streaks as soon as it lands, and each one is identified while
+  you watch: "Got it! Starlink 1002!", "Got it! The Space Station is in the picture!" (with an alarm, because
+  that's the big one), "Was that a meteor? Make a wish!", a plane's blinking lights, or "Mystery satellite! It
+  isn't on my list." Each catch comes with a close-up snapshot of its streak. Before a satellite even arrives,
+  Mission Control says it's coming: its name, how soon, and a dotted line where it will cross. In the simulator
+  it named 47 of 48 trails right at the phone's full picture size, with none wrong and no false alarms.
+- **Star Spotter.** Once the phone has worked out where it's pointing (usually after the first frame), the live
+  picture gets the constellations' lines and the stars' names. Click any star for its card: what kind of star it
+  is (a red supergiant, a blue-white giant...), how far away, and the best bit, the light's age: "The light you're
+  seeing left Deneb about 1,410 years ago, around when..." with what was happening on Earth when it set off. And **name a star yourself**: click it, type a name, and
+  from then on it wears that name with a pink heart, on the page and in every photo the phone takes of that sky.
+- **3D Star Flight.** The photo's stars, each at its real distance from us, in 3D. Drag to look around, then fly:
+  the constellations you know fall apart, because their stars only look close together from Earth. Pick a star
+  and the ship flies there; turn round and **look back home** to find the Sun, a faint dot among the others, and
+  find out what aliens with a giant telescope at that star would see of Earth right now (from Deneb: the Earth as
+  it was 1,400 years ago).
+- **Hear the Stars.** The photo played as music. A line sweeps across it, and each star sings as the line reaches
+  it: blue stars (the hottest) high, red stars low, the brightest loudest, on a scale where any sky sounds like a
+  tune. Planets play an organ note, the Moon a gong, galaxies a hum, the Milky Way a swell, and the stars you
+  named a sparkle. It plays on the computer page, and on the phone too: **Hear it** on the result screen lights
+  the photo up star by star with rings in each star's own colour, and **Share the song** makes a 27-second video
+  of it, with the sound, to send to anyone.
+- **Mission patches.** 18 badges to collect over many nights, shown on the page: First Light, Night Owl (after
+  midnight), Marathon (30 minutes), Satellite Spotter, Space Station, Meteor Hunter, Plane Spotter ("Not a UFO.
+  Probably."), Planet Hunter, Moonwalker, Deep Space, Heart of the Galaxy, Time Traveller (starlight older than
+  1,000 years), Star Counter (1,000 stars), Constellation Collector, Star Namer, Mission Commander and more. The
+  page announces each new one with a fanfare.
+
+### How to open Mission Control on a Windows laptop
+
+1. Put the laptop on the **same Wi-Fi** as the phone (no Wi-Fi outside? see "No Wi-Fi here?" below).
+2. On the phone, tap **Start**. The screen says **On a laptop, open http://192.168.1.23:8765/mission for Mission
+   Control and type the code 123 456** (your numbers will be different).
+3. On the laptop, open **Chrome** or **Edge**, click the address bar at the top, type that address exactly as the
+   phone shows it, starting with `http://` and ending with `/mission`, and press **Enter**.
+4. Type the 6-digit code and click **Open Mission Control**.
+5. Click **START MISSION CONTROL** (browsers only let a page talk after a click), turn the laptop's sound up, and
+   lay the phone down, screen-down, camera to the sky.
+
+**No Wi-Fi here?** On the phone's start screen tap **No Wi-Fi here? Start a hotspot for it**. On the laptop,
+click the Wi-Fi icon at the bottom right of the screen (next to the clock), pick the network name the phone
+shows, type the password it shows, then do steps 2 to 5.
+
+### Good to know
+
+- The live watch for streaks runs on the phone while it captures, only while the viewer is on, and never holds
+  the camera up: it uses the phone's spare cores and lets its memory go before the photo is developed. Untick
+  **Viewer** on the home screen and the phone works exactly as 2.2 did.
+- Satellites can only be named when the phone has this week's satellite list: open the app once on Wi-Fi during
+  the day before you go out.
+- A rehearsal (indoors) runs Mission Control too, but its patches wait for the real sky.
+- Stars named on the page are kept on the phone, and the session report lists them.
+- With no internet (a field, the phone's hotspot with no signal), the laptop talks in its own built-in voice (on
+  Windows, David or Zira) instead of the online one: same words, slightly more robot.
+
+### Tested
+
+All on the simulator and the app off the phone, as before (nothing here has run on the Pixel yet): a full simulated
+night through Mission Control at the phone's full 4080 x 3072 size (47 of 48 trails named live; the one missed
+crossed the very first frame, which has nothing to compare with yet), a cloudy, banded, branch-in-the-corner quiet
+night with no false alarms, the page in a real browser (the countdown, catches, star cards, naming, the 3D flight,
+the song, and the voice switching to the laptop's own when there's no internet), a whole night in the app with a
+pretend laptop watching Mission Control from start to finish, and the app's own result screen (Hear it, Share the
+song with its sound checked).
+
 ## Version 2.2: the Earth's turn, and bright stars in colour
 
 ### What's new

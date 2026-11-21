@@ -27,5 +27,11 @@ interface VideoEncoder extends PhotoVideo.Sink {
 
         /** The same at a bit rate of its own (bits a second): the Earth's turn (2.2), which needs fewer than a photo's video. */
         VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException;
+
+        /**
+         * The same with a sound track (Hear the Stars' video, 2.3): {@code pcm} is all of it, 16-bit stereo samples (left,
+         * right, ...) at {@code rate} a second, put beside the pictures as AAC.
+         */
+        VideoEncoder open(File out, int w, int h, int fps, int bitRate, short[] pcm, int rate) throws IOException;
     }
 }

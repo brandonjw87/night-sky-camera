@@ -46,6 +46,8 @@ import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.MeteorLog;
+import com.brandon.nightsky.processing.MissionControl;
+import com.brandon.nightsky.processing.PreviewAccumulator;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PhotoVideo;
 import com.brandon.nightsky.processing.PostProcessor;
@@ -71,6 +73,8 @@ import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.SkySolver;
+import com.brandon.nightsky.processing.SkyMap;
+import com.brandon.nightsky.processing.StarSong;
 import com.brandon.nightsky.processing.StarGlow;
 import com.brandon.nightsky.processing.Stats;
 import com.brandon.nightsky.processing.Tonight;
@@ -296,6 +300,22 @@ final class SessionController {
         File earth;
         Uri earthVideo, earthWebp;
         String earthWords = "";
+        /**
+         * Hear the Stars (2.3): where the photo points, for its song (null for star trails, or a sky not found); the song
+         * as last made, with the version of the named stars it was made with; its video, once saved to the gallery.
+         */
+        SongSource songFrom;
+        volatile List<StarSong.Note> song;
+        volatile int songNamed = -1;
+        volatile Uri songVideo;
+    }
+
+    /** Where a photo points and its crop (its stack's pixels), for its song. */
+    static final class SongSource {
+        SkySolver.Solution sol;
+        double jdUtc;
+        SessionSky sky;
+        int[] crop;
     }
 
     /** What to draw over a saved photo. */
@@ -365,14 +385,14 @@ final class SessionController {
     private volatile Status status = new Status();
     private volatile Bitmap preview;
     /** The result's preview without the tracks and names drawn on it, before its crop and turn ({@link #previewFraming}). */
-    private Bitmap previewBase;
+    private volatile Bitmap previewBase;
     /** How the preview is cut and turned (G3), or null for as it is. */
     private Framing previewFraming;
     private int previewVersion;
     private long statusVersion;
 
     // session
-    private Settings settings;
+    private volatile Settings settings;
     private MotionMonitor motion;
     private Sounds sounds;
     private CameraRig rig;
@@ -396,7 +416,7 @@ final class SessionController {
     private int startToken;
 
     // countdown and test frame
-    private int countdownLeft;
+    private volatile int countdownLeft;
     private long nextBeepMs;
     private boolean probeSent, probeDone;
     private int probeRetries;
@@ -564,6 +584,186 @@ final class SessionController {
         thread.start();
         h = new Handler(thread.getLooper());
         root = sessionsRoot(ctx);
+        mission = newMission(prefs);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Mission Control (2.3): the story a computer on the same Wi-Fi tells while the phone lies outside
+    // ------------------------------------------------------------------------------------------------
+
+    private final MissionControl mission;
+
+    MissionControl mission() {
+        return mission;
+    }
+
+    private MissionControl newMission(final Prefs p) {
+        MissionControl m = new MissionControl(p.namedStars(), p.missionPatches(), new MissionControl.Jpeg() {
+            @Override
+            public byte[] encode(int[] argb, int w, int hh, int quality) {
+                try {
+                    Bitmap b = Bitmap.createBitmap(argb, w, hh, Bitmap.Config.ARGB_8888);
+                    try {
+                        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(64 * 1024);
+                        return HdrScreen.compressPlain(b, quality, bo) ? bo.toByteArray() : null;
+                    } finally {
+                        b.recycle();
+                    }
+                } catch (RuntimeException | OutOfMemoryError e) {
+                    return null;
+                }
+            }
+        }, new MissionControl.Keep() {
+            @Override
+            public void namedStars(String json) {
+                p.setNamedStars(json);
+            }
+
+            @Override
+            public void patches(String json) {
+                p.setMissionPatches(json);
+            }
+        });
+        m.setLogger(new MissionControl.Logger() {
+            @Override
+            public void log(final String line) {
+                // into the session's log, from the session's own thread
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        SessionController.this.log(line);
+                    }
+                });
+            }
+        });
+        m.setStatus(new MissionControl.Status() {
+            @Override
+            public String state() {
+                return RemoteHost.stateOf(status.phase);
+            }
+
+            @Override
+            public String detail() {
+                return status.detail;
+            }
+
+            @Override
+            public long elapsedMs() {
+                return Math.max(0, status.elapsedMs);
+            }
+
+            @Override
+            public long remainingMs() {
+                return Math.max(0, status.remainingMs);
+            }
+
+            @Override
+            public double countdownLeftS() {
+                int c = countdownLeft;
+                return status.phase == Phase.COUNTDOWN && c > 0 ? c : Double.NaN;
+            }
+
+            @Override
+            public Renderer.Analysis analysis() {
+                return liveAnalysis;
+            }
+
+            @Override
+            public float brightness() {
+                Settings st = settings;
+                return st != null ? st.brightness : 1f;
+            }
+        });
+        return m;
+    }
+
+    /** The star catalogue for Mission Control's live sky (read on a thread of its own: it takes a moment the first time). */
+    private void missionCatalogue() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                BrightStars c = SkyCatalog.get(ctx);
+                if (c != null) mission.setCatalogue(c);
+            }
+        }, "catalogue").start();
+    }
+
+    /**
+     * Mission Control's end of the story, or a photo opened again (2.3): the photo as shown (plain), where it points, its
+     * small copy (its stars counted), and for a session just taken what it caught. Nothing here can hold the photo up.
+     */
+    private void missionPhoto(PostProcessor.Output o, SkySolver.Solution sol, double jdUtc, SessionSky sk, RgbImage sm, int f, Bitmap bmp,
+                              ReportCard card, Properties props, boolean fresh, SessionStore st, boolean rehearsal) {
+        try {
+            if (o == null || o.analysis == null || sm == null || bmp == null || bmp.isRecycled()) return;
+            MissionControl.Photo p = new MissionControl.Photo();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(512 * 1024);
+            if (!HdrScreen.compressPlain(bmp, 90, bo)) return;
+            p.jpeg = bo.toByteArray();
+            p.width = bmp.getWidth();
+            p.height = bmp.getHeight();
+            p.sol = sol;
+            p.jdUtc = jdUtc;
+            p.crop = new int[]{o.analysis.cx0, o.analysis.cy0, sm.cropWidth() * f, sm.cropHeight() * f};
+            p.small = sm;
+            p.streaks = o.streaks;
+            p.meteors = o.meteors != null ? o.meteors.size() : 0;
+            p.startMs = props != null ? parseLong(props.getProperty("capture.startWallMs")) : 0;
+            p.endMs = System.currentTimeMillis();
+            p.seconds = o.integrationSeconds;
+            p.fresh = fresh;
+            p.rehearsal = rehearsal;
+            if (card != null && card.sky != null && card.sky.placed) {
+                for (SkyGuide.Item it : card.sky.items) if ("constellation".equals(it.kind)) p.constellations.add(it.name);
+            }
+            BrightStars c = SkyCatalog.get(ctx);
+            if (c != null) mission.setCatalogue(c);
+            mission.setPhotoSky(sk);
+            mission.photo(p);
+        } catch (RuntimeException | OutOfMemoryError e) {
+            if (st != null) st.log("mission control: the photo wasn't handed over: " + e);
+        }
+    }
+
+    /** Where a photo points, for its song (2.3): null for star trails (its stars are arcs) or a sky not found. */
+    private static SongSource songSource(boolean trails, SkySolver.Solution sol, double jdUtc, SessionSky sk, PostProcessor.Output o,
+                                         RgbImage sm, int f) {
+        if (trails || sol == null || o == null || o.analysis == null || sm == null) return null;
+        SongSource src = new SongSource();
+        src.sol = sol;
+        src.jdUtc = jdUtc;
+        src.sky = sk;
+        src.crop = new int[]{o.analysis.cx0, o.analysis.cy0, sm.cropWidth() * f, sm.cropHeight() * f};
+        return src;
+    }
+
+    /**
+     * Hear the Stars (2.3, any thread): the song of result {@code r}'s photo, made once and again when stars have been
+     * named since (each named one sparkles); null if it has none. Its notes' places are shares of the photo shown.
+     */
+    List<StarSong.Note> song(Result r) {
+        if (r == null || r.songFrom == null) return null;
+        try {
+            int v = mission.named().version();
+            List<StarSong.Note> notes = r.song;
+            if (notes != null && r.songNamed == v) return notes;
+            BrightStars c = SkyCatalog.get(ctx);
+            if (c == null) return null;
+            SongSource src = r.songFrom;
+            notes = StarSong.of(new SkyMap(src.sol, src.jdUtc, src.sky, c, "photo"), src.crop, mission.named().all());
+            if (notes.isEmpty()) return null;
+            r.song = notes;
+            r.songNamed = v;
+            return notes;
+        } catch (RuntimeException e) {
+            android.util.Log.w("NightSky", "no song for the photo: " + e);
+            return null;
+        }
+    }
+
+    /** The photo as the song plays over it (2.3): as developed, nothing drawn on it, not turned; null if none is shown. */
+    Bitmap songPicture() {
+        return previewBase;
     }
 
     static File sessionsRoot(Context c) {
@@ -836,6 +1036,11 @@ final class SessionController {
             Opened op = open(st, props, sp, rc, l);
             st.log("opened from master " + l.meta.key + (rc != null ? String.format(Locale.US, " (render r%03d)", rc.number) : ""));
             show(op, headline, detail);
+            // shown on Mission Control's page too (2.3): its map, its song, its stars to name
+            if (!l.meta.trails) {
+                missionPhoto(op.o, l.meta.solution(), l.meta.solutionJd, SessionSky.fromProperties(props), op.small, op.factor, op.bmp,
+                        op.r.report, props, false, null, op.r.fromRehearsal);
+            }
         } catch (final Throwable t) {
             st.log("opening failed: " + t);
             h.post(new Runnable() {
@@ -902,6 +1107,8 @@ final class SessionController {
         r.repeatOf = props.getProperty("repeatOf", "");
         r.rehearsal = RehearsalCheck.fromProperties(props);
         r.fromRehearsal = isRehearsal(props);
+        r.songFrom = songSource(l.meta.trails, l.meta.solution(), l.meta.solutionJd, SessionSky.fromProperties(props), o, sm, f);
+        song(r);
         Opened op = new Opened();
         op.o = o;
         op.spec = sp;
@@ -1525,6 +1732,10 @@ final class SessionController {
         r.merge = was.merge;
         r.rehearsal = was.rehearsal;
         r.fromRehearsal = was.fromRehearsal;
+        // the same stack and crop: the same song
+        r.songFrom = was.songFrom;
+        r.song = was.song;
+        r.songNamed = was.songNamed;
         return r;
     }
 
@@ -1938,6 +2149,14 @@ final class SessionController {
             satCatalog = null;
             satDataLog = "";
             if (!s.trails && !s.readingOnly) loadSatellites(tk);
+            if (s.readingOnly) {
+                mission.standBy();
+            } else {
+                // a new mission: its story starts now (the sky solved and the streaks looked for while a viewer may watch)
+                int units = Math.max(1, (plan.frames + plan.framesPerUnit - 1) / plan.framesPerUnit);
+                mission.newSession(sky, null, null, spec.width, spec.height, units, remoteWanted && !s.trails);
+                if (!s.trails && remoteWanted) missionCatalogue();
+            }
             motion = new MotionMonitor(ctx);
             // a rehearsal lies screen-up, its camera against the table: taken as turned over, as on a night
             motion.setScreenUp(s.rehearsal);
@@ -2036,7 +2255,10 @@ final class SessionController {
             @Override
             public void run() {
                 if (tk != token) return;
-                if (cat != null) satCatalog = cat;
+                if (cat != null) {
+                    satCatalog = cat;
+                    mission.satellites(cat);
+                }
                 satDataLog = satDataLog.isEmpty() ? line : satDataLog + "\n" + line;
                 android.util.Log.i("NightSky", line);
             }
@@ -3882,6 +4104,7 @@ final class SessionController {
         phase = Phase.CAPTURING;
         captureStartMs = SystemClock.elapsedRealtime();
         captureStartWallMs = System.currentTimeMillis();
+        mission.captureStarted(captureStartWallMs);
         lastProgressMs = captureStartMs;
         publishCapture();
         submitNext();
@@ -4045,6 +4268,8 @@ final class SessionController {
         store.writeSettings(p);
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
+        // Mission Control's streak watch (2.3): only while a viewer may watch, and never for star trails
+        if (remoteWanted && !settings.trails) up.setWatcher(mission.watcher(up, Math.max(1, (plan.frames + plan.framesPerUnit - 1) / plan.framesPerUnit)));
         liveSpec = spec;
         if (rsk != null) up.setHook(rehearsalHook);
     }
@@ -4652,6 +4877,7 @@ final class SessionController {
             liveStars = rec.stars;
             liveAligned = live.ok;
             LiveStats.Unit lu = liveStats.add(rec, live, System.currentTimeMillis());
+            mission.unit(rec, live, unitsDone);
             final double ut = rec.t;
             final float uh = lu.hfr, utr = lu.transparency;
             final boolean uok = lu.ok && !lu.disturbed;
@@ -4675,6 +4901,8 @@ final class SessionController {
                         preview = Bitmap.createBitmap(px, img.cropWidth(), img.cropHeight(), Bitmap.Config.ARGB_8888);
                         liveAnalysis = a;
                         previewVersion++;
+                        int f = PreviewAccumulator.FACTOR;
+                        mission.livePicture(img, new int[]{img.x0 * f, img.y0 * f, img.cropWidth() * f, img.cropHeight() * f}, previewVersion);
                     }
                 } catch (Throwable ignored) {
                 }
@@ -5313,6 +5541,10 @@ final class SessionController {
         final Bitmap bmp = previewBitmap(sm, o.analysis, params, f);
         final Framing pf = frameFor(m.recipe, north, sm.cropWidth(), sm.cropHeight());
         saveThumb(home, frame(bmp, pf));
+        // Mission Control's end of the story (2.3): a capture's photo ends its mission; an edit or a merge of nights is
+        // shown there as a photo opened again
+        boolean captured = !m.edit && m.again == null && !m.nights;
+        missionPhoto(o, o.solution, o.solutionJd, m.sky, sm, f, bmp, card, m.props, captured, st, isRehearsal(m.props));
         final Result r = new Result();
         if (earthWanted) {
             if (turn == null) {
@@ -5351,6 +5583,8 @@ final class SessionController {
         r.north = north;
         r.repeatOf = m.merge == null && !m.edit ? m.props.getProperty("repeatOf", "") : "";
         r.rehearsal = check != null ? check : RehearsalCheck.fromProperties(m.props);
+        r.songFrom = songSource(m.trails, o.solution, o.solutionJd, m.sky, o, sm, f);
+        song(r);
         r.fromRehearsal = m.merge == null && isRehearsal(m.props);
         if (jpeg != null) prefs.setLastResultUri(jpeg.toString());
         // what's said: an edit by its render's number, a render made again by how it came out
@@ -5470,6 +5704,7 @@ final class SessionController {
             in.props = props;
             in.zone = TimeZone.getDefault();
             in.catalog = sk.catalog;
+            in.named = mission.named().all();
             ReportCard card = ReportCard.build(in);
             st.log("report:\n" + card.describe());
             if (!own) return card;
