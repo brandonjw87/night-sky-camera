@@ -72,11 +72,13 @@ shows, type the password it shows, then do steps 2 to 5.
 
 ### Tested
 
-All on the simulator and the app off the phone, as before (nothing here has run on the Pixel yet): a full
-simulated night through Mission Control at the phone's full 4080 x 3072 size (every trail caught or explained, a
-cloudy, banded, branch-in-the-corner quiet night with no false alarms), the page in a real browser (the
-countdown, catches, star cards, naming, the 3D flight and the song), and the app's own result screen (Hear it,
-Share the song with its sound checked).
+All on the simulator and the app off the phone, as before (nothing here has run on the Pixel yet): a full simulated
+night through Mission Control at the phone's full 4080 x 3072 size (47 of 48 trails named live; the one missed
+crossed the very first frame, which has nothing to compare with yet), a cloudy, banded, branch-in-the-corner quiet
+night with no false alarms, the page in a real browser (the countdown, catches, star cards, naming, the 3D flight,
+the song, and the voice switching to the laptop's own when there's no internet), a whole night in the app with a
+pretend laptop watching Mission Control from start to finish, and the app's own result screen (Hear it, Share the
+song with its sound checked).
 
 ## Version 2.2: the Earth's turn, and bright stars in colour
 
