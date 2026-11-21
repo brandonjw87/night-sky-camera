@@ -31,7 +31,22 @@
 
 ### Checked off the phone
 
-RESULTS_HERE
+Nothing has run on your Pixel yet (your first rehearsal will run both new parts on the real camera). Off the phone:
+
+- **The Earth's turn, through the real app** (3 minutes, simulated camera): the frames measured the sky turning
+  15.04 degrees an hour, a day by the stars of 23 h 55 min 52 s (the truth: 23 h 56 min 4 s) and a latitude of
+  40.0 degrees (the simulated site: 40). The clip came out 976 x 736, 153 pictures, 5.1 seconds, looping; the
+  animated WebP 77 pictures, looping for ever; both in the gallery, the result screen playing it with Share video
+  and Share as GIF. In the simulator's own test the turn's axis was 0.02 degrees from the truth and stars landed
+  within 0.11 pixels of where the sky really put them.
+- **Bright-star brackets:** in a real-app session, 174 burnt-out stars were measured again from the short frames,
+  their centres up to 14 times brighter than the old clip level, the short frames matched on 80 stars to within
+  1% of what the exposure times say. In the simulator, burnt-out stars came back at 1.00 of their true
+  brightness (0.84 without), their colour within 4% of a star that never burnt out (16% off without), and every
+  other pixel of the photo identical.
+- **Everything else unchanged:** all 39 checks of the release gate passed, the six test nights stack exactly as
+  2.1's did, and the tap-everything test went through 41 screens and 963 taps with no problems. Whole sessions
+  (deep sky, Earth's turn, stopped early) ran with no problems.
 
 ### Install it
 
