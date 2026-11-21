@@ -23,6 +23,14 @@ import android.util.Size;
 import com.brandon.nightsky.processing.Aligner;
 import com.brandon.nightsky.processing.Astro;
 import com.brandon.nightsky.processing.BrightStars;
+import com.brandon.nightsky.processing.StarBrackets;
+import android.graphics.Typeface;
+import android.graphics.Paint;
+import android.graphics.Canvas;
+import com.brandon.nightsky.processing.GroundMap;
+import com.brandon.nightsky.processing.AnimatedWebp;
+import com.brandon.nightsky.processing.EarthTurn;
+import com.brandon.nightsky.processing.SkyTurn;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.ClearSky;
@@ -188,6 +196,17 @@ final class SessionController {
          * against the sky it was given. Nothing it finds is learned as this camera's or this site's.
          */
         boolean rehearsal;
+        /**
+         * Bright-star brackets (2.2, {@link StarBrackets}): after every few long frames one 16 times shorter, which sees
+         * the brightest stars' cores unclipped; developing gives the stack's clipped cores their real light and colour
+         * from them. Deep photos only (a gap in the light would break a trail).
+         */
+        boolean brackets = true;
+        /**
+         * Earth's turn (2.2, {@link EarthTurn}): a deep photo, and from the frames' own measured turn of the sky a short
+         * looping clip of the Earth turning under it (an MP4 and an animated WebP), with the turn's axis and speed.
+         */
+        boolean earth;
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -270,6 +289,13 @@ final class SessionController {
         /** A rehearsal's check (2.1; null if this wasn't one, or it couldn't be made), and whether the photo is a rehearsal's. */
         RehearsalCheck rehearsal;
         boolean fromRehearsal;
+        /**
+         * The Earth's turn (2.2): its clip kept in the session's folder for playing here (null if none), the copies in the
+         * gallery (MP4, and the animated WebP that shares as a GIF would), and what the turn measured, in words.
+         */
+        File earth;
+        Uri earthVideo, earthWebp;
+        String earthWords = "";
     }
 
     /** What to draw over a saved photo. */
@@ -289,7 +315,7 @@ final class SessionController {
         void onIdle();
     }
 
-    private static final int PROBE = 1, FRAME = 2, TEST = 3, FOCUS = 4, FOCUS_CHECK = 5;
+    private static final int PROBE = 1, FRAME = 2, TEST = 3, FOCUS = 4, FOCUS_CHECK = 5, BRACKET = 6;
     private static final long STILL_NS = 3_000_000_000L;
     /** Stillness needed after "Start now" from the viewer (the phone need not be face-down). */
     private static final long FORCED_STILL_NS = 1_000_000_000L;
@@ -468,6 +494,10 @@ final class SessionController {
      *  only those processing had no room for); times the camera went silent and was restarted, and for how long
      *  (for the report). */
     private int pauses, framesFailed, stalls;
+    /** Bright-star brackets: their exposure (0: none this session), in flight, taken, failed, and long frames sent. */
+    private long bracketNs;
+    private int bracketEvery = StarBrackets.EVERY;
+    private int bracketsInFlight, bracketsTaken, bracketsFailed, longSent;
     private long stalledMs;
     /** Times the camera was opened again after an error as it opened (once: such errors often pass). */
     private int openRetries;
@@ -847,6 +877,8 @@ final class SessionController {
         if (rc != null && !rc.uri.isEmpty()) r.jpeg = Uri.parse(rc.uri);
         File video = videoFile(st.dir, r.name);
         if (video.isFile()) r.video = video;
+        File earth = earthFile(st.dir, r.name);
+        if (earth.isFile()) r.earth = earth;
         r.motion = rc != null && rc.motion;
         r.jpegFactor = rc != null && rc.quick ? 2 : 1;
         r.canAdjust = true;
@@ -2134,6 +2166,8 @@ final class SessionController {
         pausedTotalMs = 0;
         pauses = 0;
         framesFailed = 0;
+        bracketNs = 0;
+        bracketsInFlight = bracketsTaken = bracketsFailed = longSent = 0;
         stalls = 0;
         stalledMs = 0;
         openRetries = 0;
@@ -3999,6 +4033,15 @@ final class SessionController {
                     Math.round(settings.maxDurationSec / 60f)));
         }
         p.setProperty("scheduled", Boolean.toString(settings.scheduled));
+        bracketNs = settings.brackets && !settings.trails ? StarBrackets.shortNs(plan.frameExpNs) : 0;
+        // spread over the whole session, no more than develop uses (each is a whole raw frame on the disk)
+        bracketEvery = Math.max(StarBrackets.EVERY, (plan.frames + StarBrackets.MAX_FRAMES - 1) / StarBrackets.MAX_FRAMES);
+        p.setProperty("brackets", Long.toString(bracketNs));
+        p.setProperty("earth", Boolean.toString(settings.earth && !settings.trails));
+        if (settings.brackets && !settings.trails) {
+            store.log(bracketNs > 0 ? String.format(Locale.US, "bright stars: a %.2f s frame after every %d long ones, for the brightest stars' cores",
+                    bracketNs / 1e9, bracketEvery) : "bright stars: the frames are too short to bracket");
+        }
         store.writeSettings(p);
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
@@ -4020,7 +4063,7 @@ final class SessionController {
             }
             if (focusCheckDue || focusCheckStep != 0) return;
         }
-        while (inFlight < 2 && framesDone + inFlight < plan.frames) {
+        while (inFlight < 2 && framesDone + inFlight - bracketsInFlight < plan.frames) {
             if (renewAfter > 0 && rig.sessionCaptures() >= renewAfter) {
                 // the camera has stopped after a few more than this in a row: a fresh capture session first, once the
                 // frames in flight are in (about a second, against the minute it takes to notice a stop)
@@ -4028,15 +4071,80 @@ final class SessionController {
                 return;
             }
             int seq = ++seqCounter;
+            if (bracketDue()) {
+                // a bright-star bracket: one short frame (its gap in the light, a sixteenth of a frame's, costs the stack
+                // nothing it would show)
+                Req r = new Req(seq, BRACKET, bracketNs);
+                if (!rig.capture(seq, bracketNs, plan.iso)) break;
+                reqs.put(seq, r);
+                inFlight++;
+                bracketsInFlight++;
+                continue;
+            }
             Req r = new Req(seq, FRAME, plan.frameExpNs);
             if (!rig.capture(seq, plan.frameExpNs, plan.iso)) break;
             reqs.put(seq, r);
             inFlight++;
+            longSent++;
         }
+    }
+
+    /** A short frame is due: after every {@link #bracketEvery}th long frame sent, up to the most develop uses. */
+    private boolean bracketDue() {
+        if (bracketNs <= 0 || up == null || bracketsFailed >= 3) return false;
+        int wanted = longSent / bracketEvery;
+        return longSent > 0 && longSent % bracketEvery == 0 && bracketsTaken + bracketsInFlight + bracketsFailed < wanted
+                && bracketsTaken + bracketsInFlight < StarBrackets.MAX_FRAMES && framesDone + inFlight - bracketsInFlight < plan.frames;
+    }
+
+    /** A bright-star bracket is in (or lost): stored for developing, never counted as a frame of the stack. */
+    private void bracketArrived(Req r) {
+        reqs.remove(r.seq);
+        if (r.startNs >= 0) tsToSeq.remove(r.startNs);
+        inFlight--;
+        bracketsInFlight--;
+        lastProgressMs = SystemClock.elapsedRealtime();
+        if (r.buf == null) {
+            bracketsFailed++;
+            submitNext();
+            return;
+        }
+        TotalCaptureResult res = r.result;
+        Long e = res.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        long exp = e != null ? e : r.expNs;
+        if (exp > r.expNs * 1.5 || exp < r.expNs * 0.5) {
+            // not the exposure asked for (a camera that holds its last long one): no use for the bright stars
+            up.releaseBuffer(r.buf);
+            if (++bracketsFailed == 3) log(String.format(Locale.US, "bright stars: the camera gave %.2f s for %.2f s; no more short frames", exp / 1e9, r.expNs / 1e9));
+            submitNext();
+            return;
+        }
+        UnitProcessor.FrameInfo info = new UnitProcessor.FrameInfo();
+        Long ts = res.get(CaptureResult.SENSOR_TIMESTAMP);
+        info.timestampNs = ts != null ? ts : r.startNs;
+        info.exposureNs = exp;
+        Integer iso = res.get(CaptureResult.SENSOR_SENSITIVITY);
+        info.iso = iso != null ? iso : plan.iso;
+        float[] black = SensorSpecFactory.dynamicBlack(res, geo);
+        System.arraycopy(black != null ? black : spec.black, 0, info.black, 0, 4);
+        Float fd = res.get(CaptureResult.LENS_FOCUS_DISTANCE);
+        info.focus = fd != null ? fd : 0f;
+        if (rehearsalSky != null) {
+            info.utcStartMs = frameUtcMs(res, r, exp);
+            info.electronsPerLevel = electronsPerLevel(res);
+        }
+        up.submitBracket(r.buf, info);
+        bracketsTaken++;
+        if (framesDone >= plan.frames && !moreForClearSky()) finishCapture(null, null);
+        else submitNext();
     }
 
     private void frameArrived(Req r) {
         if (r.result == null || (r.buf == null && !r.lost && !r.dropped)) return;
+        if (r.kind == BRACKET) {
+            bracketArrived(r);
+            return;
+        }
         reqs.remove(r.seq);
         if (r.startNs >= 0) tsToSeq.remove(r.startNs);
         inFlight--;
@@ -4169,13 +4277,14 @@ final class SessionController {
         Iterator<Map.Entry<Integer, Req>> it = reqs.entrySet().iterator();
         while (it.hasNext()) {
             Req r = it.next().getValue();
-            if (r.kind != FRAME) continue;
+            if (r.kind != FRAME && r.kind != BRACKET) continue;
             if (r.buf != null && up != null) up.releaseBuffer(r.buf);
             r.buf = null;
             it.remove();
         }
         tsToSeq.clear();
         inFlight = 0;
+        bracketsInFlight = 0;
         if (rig != null) rig.abort();
     }
 
@@ -4430,6 +4539,14 @@ final class SessionController {
             if (r.buf != null && up != null) up.releaseBuffer(r.buf);
             r.buf = null;
             inFlight--;
+            if (r.kind == BRACKET) {
+                // a short frame lost costs the bright stars a little; it isn't the camera failing the session
+                bracketsInFlight--;
+                bracketsFailed++;
+                lastProgressMs = SystemClock.elapsedRealtime();
+                submitNext();
+                return;
+            }
             framesFailed++;
             log("frame " + seq + " failed");
             ++consecutiveFailures;
@@ -5135,6 +5252,14 @@ final class SessionController {
             m.recipe.motion = motion;
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
         }
+        // the Earth's turn (2.2): the sky's measured turn and the ground, from what the frames were read with
+        SkyTurn turn = null;
+        GroundMap turnGround = null;
+        boolean earthWanted = !m.trails && m.merge == null && !m.edit && m.again == null && "true".equals(m.props.getProperty("earth"));
+        if (earthWanted && o.video != null) {
+            turn = SkyTurn.fit(o.video.plans());
+            turnGround = o.video.ground();
+        }
         o.video = null; // how the frames were read for it: let go
         logNoise(home, o, params);
         if (m.again != null) {
@@ -5189,6 +5314,15 @@ final class SessionController {
         final Framing pf = frameFor(m.recipe, north, sm.cropWidth(), sm.cropHeight());
         saveThumb(home, frame(bmp, pf));
         final Result r = new Result();
+        if (earthWanted) {
+            if (turn == null) {
+                home.log("decision: no Earth's turn: " + (o.aligned ? "the frames span too little time to measure the sky's turn"
+                        : "the frames weren't aligned, so the sky's turn wasn't measured"));
+            } else {
+                makeEarthTurn(home, o, turn, turnGround, bmp, f, name, parseLong(m.props.getProperty("capture.startWallMs")), r);
+            }
+            turnGround = null;
+        }
         r.summary = o.summary;
         r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
         r.session = home.dir.getName();
@@ -5662,6 +5796,150 @@ final class SessionController {
         mo.mp4.delete();
         st.log("decision: the photo saved without its video, " + why);
         return null;
+    }
+
+    /** The Earth's turn's clip in a session's folder. */
+    static File earthFile(File dir, String name) {
+        return new File(dir, name + "_earth.mp4");
+    }
+
+    /** Spare heap the Earth's turn leaves beyond its own needs (bytes): the encoder's and the WebPs' buffers. */
+    private static final long EARTH_SPARE = 48L << 20;
+
+    /**
+     * The Earth's turn (2.2): the photo ({@code bmp}, one pixel every {@code f} of the stack's) turned as the frames
+     * measured the sky turning ({@code turn}), the ground held still, into a looping MP4 kept in the session's folder and
+     * saved in the gallery, and the same as an animated WebP (a GIF's place, at a third of a GIF's size) for sharing.
+     * Into {@code r}; anything that fails is logged and leaves the photo as it is.
+     */
+    private void makeEarthTurn(SessionStore st, PostProcessor.Output o, SkyTurn turn, GroundMap ground, Bitmap bmp, int f, String name,
+                               long startedMs, Result r) {
+        st.log("earth's turn: " + turn.describe());
+        int pw = bmp.getWidth(), ph = bmp.getHeight();
+        File mp4 = earthFile(st.dir, name);
+        VideoEncoder enc = null;
+        try {
+            int[] photo = new int[pw * ph];
+            bmp.getPixels(photo, 0, pw, 0, 0, pw, ph);
+            EarthTurn et = EarthTurn.of(photo, pw, ph, o.analysis.cx0, o.analysis.cy0, f, o.model, turn, ground, EarthTurn.MAX_SIDE);
+            if (et == null) {
+                st.log("decision: no Earth's turn: the photo turned that far leaves too little picture");
+                return;
+            }
+            final int w = et.width(), hh = et.height();
+            long need = et.heapNeeded() + EARTH_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                st.log(String.format(Locale.US, "decision: no Earth's turn: not enough memory (%d MB needed, %d MB free)", need >> 20, free >> 20));
+                return;
+            }
+            if (!Mp4Writer.factory.supports(w, hh)) {
+                st.log("decision: no Earth's turn: the phone has no video encoder for " + w + "x" + hh);
+                return;
+            }
+            enc = Mp4Writer.factory.open(mp4, w, hh, EarthTurn.FPS, EarthTurn.bitRate(w, hh));
+            final VideoEncoder out = enc;
+            final int share = EarthTurn.shareFactor(w, hh);
+            final AnimatedWebp webp = new AnimatedWebp(w / share, hh / share);
+            final String[] webpWhy = {null};
+            final int frameMs = Math.round(1000f * EarthTurn.SHARE_EVERY / EarthTurn.FPS);
+            PhotoVideo.Sink sink = new PhotoVideo.Sink() {
+                int n;
+                Bitmap small;
+                final java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+
+                @Override
+                public void frame(int[] argb, long ptsUs) throws IOException {
+                    out.frame(argb, ptsUs);
+                    if (webpWhy[0] == null && n % EarthTurn.SHARE_EVERY == 0) {
+                        try {
+                            int sw = w / share, sh = hh / share;
+                            if (small == null) small = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+                            small.setPixels(EarthTurn.shrink(argb, w, hh, share), 0, sw, 0, 0, sw, sh);
+                            bos.reset();
+                            if (!small.compress(Bitmap.CompressFormat.WEBP_LOSSY, EarthTurn.SHARE_QUALITY, bos)) throw new IOException("WebP encoding failed");
+                            webp.add(bos.toByteArray(), frameMs);
+                        } catch (IOException | RuntimeException e) {
+                            webpWhy[0] = e.toString();
+                        }
+                    }
+                    n++;
+                }
+            };
+            et.build(sink, new Caption(), new Progress() {
+                long last;
+
+                @Override
+                public void update(String stage, float fraction) {
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - last < 300 && fraction < 1f) return;
+                    last = now;
+                    post(Phase.DEVELOPING, "Saving", stage, fraction);
+                }
+
+                @Override
+                public boolean cancelled() {
+                    return cancelDevelop;
+                }
+            });
+            enc.finish();
+            enc = null;
+            Date when = startedMs > 0 ? new Date(startedMs) : new Date();
+            r.earth = mp4;
+            r.earthWords = turn.words();
+            r.earthVideo = MediaSaver.saveVideo(ctx, mp4, name + "_earth", when);
+            String webpNote;
+            if (webpWhy[0] == null && webp.frames() > 0) {
+                byte[] b = webp.toBytes();
+                r.earthWebp = MediaSaver.saveWebp(ctx, b, name + "_earth", when);
+                webpNote = String.format(Locale.US, "; as an animated WebP %dx%d, %d pictures, %d KB", w / share, hh / share, webp.frames(), b.length >> 10);
+            } else {
+                webpNote = "; no animated WebP: " + (webpWhy[0] != null ? webpWhy[0] : "no pictures");
+            }
+            st.log(String.format(Locale.US, "earth's turn: %dx%d, %.1f s looping, %.0f times faster than the sky, %d KB in the gallery as %s_earth.mp4%s; %s",
+                    w, hh, et.durationMs() / 1000.0, et.speedUp(), mp4.length() >> 10, name, webpNote, et.note()));
+        } catch (CancelledException e) {
+            st.log("decision: no Earth's turn: cancelled while it was being made");
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no Earth's turn: making it failed: " + e);
+            r.earth = null;
+        } finally {
+            if (enc != null) {
+                enc.close();
+                //noinspection ResultOfMethodCallIgnored
+                mp4.delete();
+            }
+        }
+    }
+
+    /** The Earth's turn's caption: how long since the first frame, and how far the sky has turned (bottom left). */
+    private static final class Caption implements EarthTurn.Overlay {
+        private Bitmap b;
+        private Canvas c;
+        private final Paint big = new Paint(Paint.ANTI_ALIAS_FLAG), small = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        @Override
+        public void draw(int[] argb, int w, int h, double fraction, double minutes, double degrees) {
+            if (b == null) {
+                b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                c = new Canvas(b);
+                float size = Math.max(14f, h / 17f);
+                big.setTextSize(size);
+                big.setColor(0xFFF2F4FF);
+                big.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+                big.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+                small.setTextSize(size * 0.62f);
+                small.setColor(0xFFC8CEE8);
+                small.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+            }
+            b.setPixels(argb, 0, w, 0, 0, w, h);
+            float pad = big.getTextSize() * 0.6f;
+            int mins = (int) Math.round(minutes);
+            String time = mins >= 60 ? String.format(Locale.US, "+%d h %02d min", mins / 60, mins % 60) : String.format(Locale.US, "+%d min", mins);
+            c.drawText("THE EARTH'S TURN", pad, h - pad - big.getTextSize() * 1.15f, small);
+            c.drawText(String.format(Locale.US, "%s   %.1f\u00b0", time, degrees), pad, h - pad, big);
+            b.getPixels(argb, 0, w, 0, 0, w, h);
+        }
     }
 
     /** Ends the photo's video on the photo itself, {@code bmp} as it's saved; false (and the log says why) if it can't. */

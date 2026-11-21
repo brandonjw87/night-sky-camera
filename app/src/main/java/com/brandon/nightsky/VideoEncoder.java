@@ -24,5 +24,8 @@ interface VideoEncoder extends PhotoVideo.Sink {
         boolean supports(int w, int h);
 
         VideoEncoder open(File out, int w, int h, int fps) throws IOException;
+
+        /** The same at a bit rate of its own (bits a second): the Earth's turn (2.2), which needs fewer than a photo's video. */
+        VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException;
     }
 }

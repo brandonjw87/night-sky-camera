@@ -98,6 +98,16 @@ public final class PhotoVideo {
             return units != null;
         }
 
+        /** A deep-sky stack's plans, in the order the frames were taken (null for star trails): the Earth's turn (2.2). */
+        public List<SharpStacker.Plan> plans() {
+            return plans;
+        }
+
+        /** The ground kept still (null: none). */
+        public GroundMap ground() {
+            return ground;
+        }
+
         public int frames() {
             return units != null ? units.size() : plans.size();
         }

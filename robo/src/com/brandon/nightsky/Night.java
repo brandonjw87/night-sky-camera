@@ -536,6 +536,62 @@ public class Night {
     }
 
     /**
+     * The Earth's turn (2.2): 3 minutes in its mode. The clip is in the session's folder, H.264, 153 pictures (4 s of the
+     * turn, 0.5 s held, 0.6 s back to the start), in the gallery as an MP4 and an animated WebP; the result screen says what
+     * the turn measured (the day by the stars within a minute of 23 h 56 min) and plays it; and the bright-star brackets
+     * were taken and used, as in every deep-sky session.
+     */
+    static void earth() throws Exception {
+        begin("3 minutes of the Earth's turn");
+        minutes(3);
+        press("Earth's turn");
+        startAndPutDown();
+        follow(20 * 60_000L);
+        report();
+        Monkey.say("  result screen: " + labels());
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        // the next scenario as the app comes: deep sky
+        new Prefs(Monkey.app).setMode(false, false);
+        if (r == null) {
+            Monkey.problem(scenario + ": no result");
+            return;
+        }
+        String log = new com.brandon.nightsky.processing.SessionStore(new File(Monkey.root, r.session)).readLog();
+        for (String l : log.split("\n")) {
+            if (l.contains("earth's turn") || l.contains("bright stars")) Monkey.say("    log: " + l.replaceFirst("^\\S+ ", ""));
+        }
+        if (!log.contains("bright stars: a ")) Monkey.problem(scenario + ": no short frames planned");
+        if (!log.contains("short frames (1/16 of the exposure)") && !log.contains("none repaired from the short frames")) {
+            Monkey.problem(scenario + ": the short frames weren't used");
+        }
+        if (r.earth == null || !r.earth.isFile()) {
+            Monkey.problem(scenario + ": no Earth's turn");
+            return;
+        }
+        if (!r.earthWords.contains("23 h 5")) Monkey.problem(scenario + ": the words: " + r.earthWords);
+        Monkey.say("  words: " + r.earthWords);
+        if (r.earthVideo == null || FakeMediaStore.file(r.earthVideo) == null) Monkey.problem(scenario + ": the clip isn't in the gallery");
+        if (r.earthWebp == null) {
+            Monkey.problem(scenario + ": no animated WebP in the gallery");
+        } else {
+            byte[] w = java.nio.file.Files.readAllBytes(FakeMediaStore.file(r.earthWebp).toPath());
+            String head = new String(w, 0, 4, "ISO-8859-1") + new String(w, 8, 8, "ISO-8859-1");
+            Monkey.say("  animated WebP: " + w.length / 1024 + " KB, " + head);
+            if (!"RIFFWEBPVP8X".equals(head)) Monkey.problem(scenario + ": the WebP starts " + head);
+        }
+        if (FfmpegVideo.haveFfmpeg()) {
+            String[] p = exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                    "stream=codec_name,width,height,nb_read_frames", "-of", "csv=p=0", r.earth.getPath()).trim().split(",");
+            Monkey.say("  clip: " + Arrays.toString(p) + ", " + r.earth.length() / 1024 + " KB");
+            if (p.length < 4 || !"h264".equals(p[0].trim()) || Integer.parseInt(p[3].trim()) != 153) {
+                Monkey.problem(scenario + ": the clip is " + Arrays.toString(p));
+            }
+        }
+        if (findLabel("Play it") == null || findLabel("Share as GIF") == null) Monkey.problem(scenario + ": the result screen has no Earth's turn: " + labels());
+        shot("earth");
+    }
+
+    /**
      * The photo's video (1.8) when there's none to put in: a phone without a video encoder for it, the video off in
      * Advanced settings, the encoder failing part way, and the video skipped from the developing screen. Each time the
      * photo is saved as before, a plain JPEG, and the session's log says why.

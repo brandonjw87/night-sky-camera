@@ -34,7 +34,7 @@ public final class SettingsFile {
             {"planSounds", "b"}, {"planMinBattery", "i"}, {"tileUnlocks", "b"}, {"sqmOffset", "f"}, {"preset", "s"},
             {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"}, {"focusAssist", "b"},
             {"keepFramesGb", "i"}, {"remoteKey", "b"}, {"photoVideo", "b"}, {"hdrPhotos", "b"},
-            {"intro", "i"},
+            {"intro", "i"}, {"earth", "b"}, {"brackets", "b"},
     };
     /** What the app learned about the camera: keys starting with these (camera and system build follow), or equal. */
     static final String[][] LEARNED = {
@@ -105,6 +105,7 @@ public final class SettingsFile {
         p.collectClear = bool(m, "collectClear", false);
         p.blend = bool(m, "blend", false);
         p.quick = bool(m, "quick", false);
+        p.earth = bool(m, "earth", false) && !p.trails;
         return p;
     }
 

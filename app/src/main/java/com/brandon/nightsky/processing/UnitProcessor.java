@@ -85,6 +85,10 @@ public final class UnitProcessor {
     /** Defective pixels found so far, to keep them out of the live pictures (refreshed as units come in). */
     private HotPixels liveHot;
 
+    /** Where the bright-star brackets go (made with the first one), and how many there are. */
+    private FrameStore brackets;
+    private volatile int bracketCount;
+
     public UnitProcessor(SessionStore store, SensorSpec spec, int framesPerUnit, int poolSize, Listener listener) {
         this.store = store;
         this.spec = spec;
@@ -178,6 +182,51 @@ public final class UnitProcessor {
                 }
             }
         });
+    }
+
+    /**
+     * Hands over a bright-star bracket (2.2, {@link StarBrackets}): a short frame taken between the long ones. It isn't
+     * stacked or measured: it is stored as it is, with its time on the units' clock, for the develop step. The buffer
+     * goes back to the pool when done. Before any long frame has come it has no time to go by, and is dropped.
+     */
+    public void submitBracket(final short[] raw, final FrameInfo info) {
+        exec.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (!failed && t0Ns != Long.MIN_VALUE) {
+                        FrameHook hk = hook;
+                        if (hk != null) {
+                            try {
+                                hk.before(raw, info);
+                            } catch (RuntimeException | OutOfMemoryError e) {
+                                hk.failed(info, e);
+                            }
+                        }
+                        if (brackets == null) brackets = StarBrackets.store(store, W, H);
+                        StarBrackets.Frame f = new StarBrackets.Frame();
+                        f.index = bracketCount;
+                        f.t = (info.timestampNs + info.exposureNs / 2 - t0Ns) * 1e-9;
+                        f.exposure = info.exposureNs * 1e-9;
+                        f.iso = info.iso;
+                        System.arraycopy(info.black, 0, f.black, 0, 4);
+                        brackets.write(f.index, raw);
+                        StarBrackets.append(store, f);
+                        bracketCount++;
+                    }
+                } catch (Throwable t) {
+                    // a short frame lost costs the bright stars a little, never the session
+                    store.log("bright stars: a short frame couldn't be stored: " + t);
+                } finally {
+                    pool.offer(raw);
+                }
+            }
+        });
+    }
+
+    /** Short frames stored so far. */
+    public int bracketsStored() {
+        return bracketCount;
     }
 
     private void addFrame(short[] raw, FrameInfo info) throws IOException {

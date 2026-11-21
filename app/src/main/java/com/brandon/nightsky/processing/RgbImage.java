@@ -14,6 +14,11 @@ public final class RgbImage {
      * not trustworthy there (green clips first).
      */
     public byte[] clip;
+    /**
+     * Bright-star brackets (2.2, {@link StarBrackets}): clipped star cores were given their light from short frames,
+     * so values above the clip level with no clip flag are real light, not clipped samples.
+     */
+    public boolean bracketed;
     /** A copy made by {@link #binned}: the picture it was binned from (held weakly), its factor and the crop's corner. */
     private java.lang.ref.WeakReference<RgbImage> binnedFrom;
     private int binnedBy, binnedX0, binnedY0;
@@ -82,6 +87,7 @@ public final class RgbImage {
                 }
             }
         });
+        o.bracketed = bracketed;
         o.binnedFrom = new java.lang.ref.WeakReference<RgbImage>(this);
         o.binnedBy = factor;
         o.binnedX0 = x0;
