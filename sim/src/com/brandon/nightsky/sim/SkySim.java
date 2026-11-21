@@ -699,12 +699,32 @@ public final class SkySim {
         return Math.sqrt(psfSigma * psfSigma + b * b);
     }
 
+    /**
+     * Renders a bright-star bracket (2.2): a short frame of {@code expSec} taken right after frame i (in the gap before the
+     * next), with frame i's clouds and haze but none of its passing satellites, planes or meteors.
+     */
+    public void renderBracket(int i, double expSec, short[] raw, UnitProcessor.FrameInfo info, long seed) {
+        bracketStart = frameStart(i) + frameExp + 0.01;
+        bracketExp = expSec;
+        try {
+            render(i, raw, info, seed * 31 + 977);
+        } finally {
+            bracketStart = Double.NaN;
+            bracketExp = Double.NaN;
+        }
+    }
+
+    /** While a bracket is rendered: its start and exposure (NaN otherwise). */
+    private double bracketStart = Double.NaN, bracketExp = Double.NaN;
+
     /** Renders frame i into raw (unsigned 16-bit in a short[]), filling info. */
     public void render(final int i, final short[] raw, UnitProcessor.FrameInfo info, final long seed) {
         if (branch && branchT == null) buildBranch();
         final double haloFrac = haloAt(i), psfSigma = psfAt(i);
         final float[] img = new float[W * H];
-        final double exp = frameExp;
+        final boolean bracket = !Double.isNaN(bracketExp);
+        final double exp = bracket ? bracketExp : frameExp;
+        final double start = bracket ? bracketStart : frameStart(i);
         final int[] cfa = {0, 1, 1, 2};
         // background: sky glow with gradient, vignetting, cloud glow, the Milky Way, dark current
         final float[] mwGrid = milkyWay > 0 ? milkyWayGrid(i) : null;
@@ -734,7 +754,7 @@ public final class SkySim {
         final double[] b = new double[3], p = new double[2];
         for (int s = 0; s < substeps; s++) {
             double f = (s + 0.5) / substeps;
-            double t = frameStart(i) + f * exp;
+            double t = start + f * exp;
             double[] C = Rot.mul(camera(i, f), sky(t));
             for (int k = 0; k < nStars; k++) {
                 Rot.apply(C, sx[k], sy[k], sz[k], b);
@@ -764,7 +784,7 @@ public final class SkySim {
         // a smudged lens: part of each star's light in a wide glow (once, at mid-exposure: the glow doesn't care
         // about a tenth of a pixel of drift)
         if (haloFrac > 0) {
-            double[] C = Rot.mul(camera(i, 0.5), sky(frameStart(i) + 0.5 * exp));
+            double[] C = Rot.mul(camera(i, 0.5), sky(start + 0.5 * exp));
             for (int k = 0; k < nStars; k++) {
                 Rot.apply(C, sx[k], sy[k], sz[k], b);
                 if (b[2] < 0.3 || !truth.project(b[0], b[1], b[2], p)) continue;
@@ -776,13 +796,15 @@ public final class SkySim {
                 addSpot(img, px, py, haloSigma, amp, cfa, k, -1);
             }
         }
-        // transients
-        if (i == satelliteFrame) addLine(img, W * 0.08, H * 0.1, W * 0.9, H * 0.85, 1.0, 140 * exp / 8, 0);
-        double[] plane = planeSegment(i);
-        if (plane != null) addLine(img, plane[0], plane[1], plane[2], plane[3], 1.2, 400, 28);
-        if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
-        for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
-        for (Meteor me : meteors) drawMeteor(img, i, me, psfSigma, haloFrac);
+        // transients (not in a bracket)
+        if (!bracket) {
+            if (i == satelliteFrame) addLine(img, W * 0.08, H * 0.1, W * 0.9, H * 0.85, 1.0, 140 * exp / 8, 0);
+            double[] plane = planeSegment(i);
+            if (plane != null) addLine(img, plane[0], plane[1], plane[2], plane[3], 1.2, 400, 28);
+            if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
+            for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
+            for (Meteor me : meteors) drawMeteor(img, i, me, psfSigma, haloFrac);
+        }
         // the branch's lit leaves: fixed bright spots
         if (branchT != null) {
             for (int g : glints) {
@@ -826,7 +848,7 @@ public final class SkySim {
                 }
             }
         });
-        info.timestampNs = (long) (frameStart(i) * 1e9) + 1_000_000_000L;
+        info.timestampNs = (long) (start * 1e9) + 1_000_000_000L;
         info.exposureNs = (long) (exp * 1e9);
         info.iso = 700;
         // dynamic black level from optical-black pixels also carries most of the dark current

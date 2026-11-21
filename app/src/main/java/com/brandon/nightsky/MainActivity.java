@@ -753,26 +753,33 @@ public final class MainActivity extends Activity {
 
         // mode
         col.addView(label("Mode"), gap(22));
-        final Button deep = chip("Deep sky", !prefs.trails());
+        final Button deep = chip("Deep sky", !prefs.trails() && !prefs.earth());
         final Button trails = chip("Star trails", prefs.trails());
-        final TextView modeHelp = text(modeHelp(prefs.trails()), 13, RED_DIM, false);
+        final Button earth = chip("Earth's turn", prefs.earth());
+        final TextView modeHelp = text(modeHelp(prefs.trails(), prefs.earth()), 13, RED_DIM, false);
         View.OnClickListener modeClick = new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean t = v == trails;
-                prefs.setTrails(t);
-                styleChip(deep, !t);
+                boolean t = v == trails, e = v == earth;
+                prefs.setMode(t, e);
+                styleChip(deep, !t && !e);
                 styleChip(trails, t);
-                modeHelp.setText(modeHelp(t));
+                styleChip(earth, e);
+                modeHelp.setText(modeHelp(t, e));
                 showSatellites();
                 handChanged();
             }
         };
         deep.setOnClickListener(modeClick);
         trails.setOnClickListener(modeClick);
+        earth.setOnClickListener(modeClick);
+        deep.setTextSize(15);
+        trails.setTextSize(15);
+        earth.setTextSize(15);
         LinearLayout modes = row();
         modes.addView(deep, weight());
         modes.addView(trails, weight());
+        modes.addView(earth, weight());
         col.addView(modes, gap(8));
         col.addView(modeHelp, gap(6));
 
@@ -1224,6 +1231,19 @@ public final class MainActivity extends Activity {
         });
         box.addView(video, gap(6));
 
+        // bright-star brackets (2.2)
+        box.addView(label("Bright stars' colour"), gap(20));
+        CheckBox brk = check("Deep sky: after every few long frames, one 16 times shorter, which sees the brightest stars "
+                + "without burning them out. Their centres get their real light and colour back (Vega blue-white, Arcturus "
+                + "orange) instead of flat white. Costs a second or two a minute of sky.", prefs.brackets());
+        brk.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton b, boolean on) {
+                prefs.setBrackets(on);
+            }
+        });
+        box.addView(brk, gap(6));
+
         // the opening film (2.0)
         box.addView(label("The opening film"), gap(20));
         final int look = prefs.intro();
@@ -1447,9 +1467,12 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static String modeHelp(boolean trails) {
+    private static String modeHelp(boolean trails, boolean earth) {
         return trails
                 ? "Each star draws its arc across the sky. Longer is better: try 20 or 30 minutes."
+                : earth ? "A deep photo, plus a few seconds of video that loops for ever: the whole sky wheeling round the pole while "
+                + "the ground stays put, from the frames' own measured turn. It also works out the length of a day by the stars "
+                + "and your latitude. Longer turns further: try 15 or 30 minutes."
                 : "Lines up the stars between frames and stacks them into one deep, clean photo.";
     }
 
@@ -2980,6 +3003,7 @@ public final class MainActivity extends Activity {
         row2.addView(open, weight());
         row2.addView(again, weight());
         col.addView(row2, gap(6));
+        if (r != null && r.earth != null) addEarthTurn(col, r);
         // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
         List<Button> more = new ArrayList<Button>();
         if (r != null && r.video != null) {
@@ -6447,7 +6471,75 @@ public final class MainActivity extends Activity {
     }
 
     /** Plays the photo's video where the photo is, then shows the photo again; a tap stops it. */
+    /** The result's Earth's turn (2.2): what it measured, its looping clip played over the photo, and its two shares. */
+    private void addEarthTurn(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("The Earth's turn", 17, RED, true));
+        if (!r.earthWords.isEmpty()) card.addView(text(r.earthWords, 13, RED_DIM, false), gap(6));
+        LinearLayout row = row();
+        Button play = smallButton("Play it", true);
+        play.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                playVideo(r.earth, true);
+            }
+        });
+        row.addView(play, weight());
+        if (r.earthVideo != null) {
+            Button sv = smallButton("Share video", false);
+            sv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(r.earthVideo, "video/mp4", "Share the Earth's turn");
+                }
+            });
+            row.addView(sv, weight());
+        }
+        if (r.earthWebp != null) {
+            // an animated WebP: loops by itself in a message or a browser, as a GIF would, at a third of a GIF's size
+            Button sg = smallButton("Share as GIF", false);
+            sg.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(r.earthWebp, "image/webp", "Share the Earth's turn");
+                }
+            });
+            row.addView(sg, weight());
+        }
+        card.addView(row, gap(8));
+        col.addView(card, gap(12));
+        // a new one plays at once, once: the first look at the sky wheeling is the point of the mode
+        if (r.endedMs > 0 && !r.name.equals(earthPlayed)) {
+            earthPlayed = r.name;
+            final File f = r.earth;
+            col.post(new Runnable() {
+                @Override
+                public void run() {
+                    playVideo(f, true);
+                }
+            });
+        }
+    }
+
+    /** The result whose Earth's turn has played by itself (its name), so it plays once, not every time the screen is drawn. */
+    private String earthPlayed = "";
+
+    private void share(Uri uri, String type, String title) {
+        try {
+            Intent i = new Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i, title));
+        } catch (RuntimeException e) {
+            toastish("No app can share it");
+        }
+    }
+
     private void playVideo(File f) {
+        playVideo(f, false);
+    }
+
+    /** Plays {@code f} where the photo is, until it ends ({@code loop}: until it's tapped), an error, or a tap. */
+    private void playVideo(File f, final boolean loop) {
         if (zoom == null || !(zoom.getParent() instanceof ViewGroup) || !f.isFile()) {
             toastish("The video isn't there any more");
             return;
@@ -6493,6 +6585,14 @@ public final class MainActivity extends Activity {
                 done.run();
             }
         });
+        if (loop) {
+            vv.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    mp.setLooping(true);
+                }
+            });
+        }
         vv.setVideoPath(f.getPath());
         vv.start();
     }

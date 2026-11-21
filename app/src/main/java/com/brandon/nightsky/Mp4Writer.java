@@ -35,7 +35,12 @@ final class Mp4Writer implements VideoEncoder {
 
         @Override
         public VideoEncoder open(File out, int w, int h, int fps) throws IOException {
-            return new Mp4Writer(out, w, h, fps);
+            return new Mp4Writer(out, w, h, fps, bitRate(w, h, fps));
+        }
+
+        @Override
+        public VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException {
+            return new Mp4Writer(out, w, h, fps, bitRate);
         }
     };
 
@@ -54,15 +59,15 @@ final class Mp4Writer implements VideoEncoder {
     private long lastPts = -1, bytes;
     private int frames;
 
-    private Mp4Writer(File out, int w, int h, int fps) throws IOException {
+    private Mp4Writer(File out, int w, int h, int fps, int bitRate) throws IOException {
         if ((w & 1) != 0 || (h & 1) != 0 || w < 16 || h < 16) throw new IOException("a " + w + "x" + h + " video can't be made");
         this.w = w;
         this.h = h;
-        MediaFormat f = format(w, h, fps, true);
+        MediaFormat f = format(w, h, fps, true, bitRate);
         String name = new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(f);
         boolean high = name != null;
         if (name == null) {
-            f = format(w, h, fps, false);
+            f = format(w, h, fps, false, bitRate);
             name = new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(f);
         }
         if (name == null) throw new IOException("the phone has no H.264 encoder for " + w + "x" + h);
@@ -75,7 +80,7 @@ final class Mp4Writer implements VideoEncoder {
                 if (!high) throw e;
                 // the High profile was listed but not taken: the encoder's own choice
                 codec.reset();
-                codec.configure(format(w, h, fps, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                codec.configure(format(w, h, fps, false, bitRate), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             }
             codec.start();
             muxer = new MediaMuxer(out.getPath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
@@ -86,10 +91,10 @@ final class Mp4Writer implements VideoEncoder {
     }
 
     /** The format asked of the encoder: the size, about 0.25 bits a pixel, a key frame a second, BT.709 colours. */
-    private static MediaFormat format(int w, int h, int fps, boolean high) {
+    private static MediaFormat format(int w, int h, int fps, boolean high, int bitRate) {
         MediaFormat f = MediaFormat.createVideoFormat(MIME, w, h);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
-        f.setInteger(MediaFormat.KEY_BIT_RATE, bitRate(w, h, fps));
+        f.setInteger(MediaFormat.KEY_BIT_RATE, bitRate);
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         f.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
@@ -112,7 +117,7 @@ final class Mp4Writer implements VideoEncoder {
     /** An encoder's name for a w x h video (High profile if asked), or null. */
     static String encoderFor(int w, int h, int fps, boolean high) {
         try {
-            return new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(format(w, h, fps, high));
+            return new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(format(w, h, fps, high, bitRate(w, h, fps)));
         } catch (RuntimeException e) {
             return null;
         }

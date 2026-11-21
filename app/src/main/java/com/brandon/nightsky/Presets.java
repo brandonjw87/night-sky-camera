@@ -114,6 +114,8 @@ final class Presets {
         s.keepMeteors = p.keepMeteors;
         s.blend = p.blend;
         s.quick = p.quick;
+        s.earth = p.earth && !p.trails;
+        s.brackets = prefs.brackets();
         // collect N clear minutes (A3): the session's length of clear sky, for at most three times as long
         s.clearTargetSec = p.collectClear ? s.durationSec : 0;
         s.maxDurationSec = p.collectClear ? Math.min(MAX_COLLECT_SEC, 3 * s.durationSec) : 0;

@@ -242,6 +242,28 @@ final class MediaSaver {
                 "image/x-adobe-dng", PICTURES_DIR, time, w);
     }
 
+    /** A video file (the Earth's turn, 2.2) in Pictures/NightSky, beside its photo, as the gallery's videos are. */
+    static Uri saveVideo(Context c, final File mp4, String name, Date time) throws IOException {
+        return insert(c, MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name + ".mp4", "video/mp4",
+                PICTURES_DIR, time, new Writer() {
+                    @Override
+                    public void write(OutputStream os) throws IOException {
+                        copy(mp4, os);
+                    }
+                });
+    }
+
+    /** An animated WebP (the Earth's turn as a GIF would be, 2.2) in Pictures/NightSky. */
+    static Uri saveWebp(Context c, final byte[] webp, String name, Date time) throws IOException {
+        return insert(c, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name + ".webp", "image/webp",
+                PICTURES_DIR, time, new Writer() {
+                    @Override
+                    public void write(OutputStream os) throws IOException {
+                        os.write(webp);
+                    }
+                });
+    }
+
     /** A file of any type in Documents/NightSky (a CSV log, a settings export). */
     static Uri saveDocument(Context c, String name, String mime, Writer w) throws IOException {
         return insert(c, MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name, mime, DOCS_DIR, new Date(), w);

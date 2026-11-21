@@ -45,6 +45,8 @@ public final class Master {
     private static final int MAGIC = 0x4E534D31; // "NSM1"
     private static final int FORMAT = 1;
     private static final int HEADER_INTS = 10;
+    /** The header's last word: bit 0, the stack's clipped star cores were given their light from short frames (2.2). */
+    static final int FLAG_BRACKETED = 1;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     /** What a master is. */
@@ -248,7 +250,7 @@ public final class Master {
             FileChannel ch = raf.getChannel();
             ByteBuffer head = ByteBuffer.allocate(4 * HEADER_INTS).order(ByteOrder.LITTLE_ENDIAN);
             head.putInt(MAGIC).putInt(FORMAT).putInt(img.width).putInt(img.height).putInt(img.x0).putInt(img.y0).putInt(img.x1)
-                    .putInt(img.y1).putInt(clip.length).putInt(0);
+                    .putInt(img.y1).putInt(clip.length).putInt(img.bracketed ? FLAG_BRACKETED : 0);
             head.flip();
             md.update(head.array(), 0, head.limit());
             while (head.hasRemaining()) ch.write(head);
@@ -310,12 +312,14 @@ public final class Master {
                 if (w <= 0 || h <= 0 || (long) w * h > 200_000_000L) return null;
                 int x0 = head.getInt(), y0 = head.getInt(), x1 = head.getInt(), y1 = head.getInt();
                 int clipLen = head.getInt();
+                int flags = head.getInt();
                 if (f.length() != 4L * HEADER_INTS + 6L * w * h + clipLen) return null;
                 RgbImage img = new RgbImage(w, h);
                 img.x0 = x0;
                 img.y0 = y0;
                 img.x1 = x1;
                 img.y1 = y1;
+                img.bracketed = (flags & FLAG_BRACKETED) != 0;
                 ByteBuffer b = ByteBuffer.allocate(1 << 20).order(ByteOrder.LITTLE_ENDIAN);
                 for (int c = 0; c < 3; c++) {
                     float[] p = img.channel(c);

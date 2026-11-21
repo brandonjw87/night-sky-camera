@@ -95,6 +95,25 @@ final class Prefs {
         sp.edit().putBoolean("trails", v).apply();
     }
 
+    /** The Earth's turn mode (2.2): a deep photo and its looping clip of the Earth turning. Never with trails. */
+    boolean earth() {
+        return sp.getBoolean("earth", false) && !trails();
+    }
+
+    /** The mode at once: star trails, the Earth's turn, or (both false) deep sky. */
+    void setMode(boolean trails, boolean earth) {
+        sp.edit().putBoolean("trails", trails).putBoolean("earth", earth && !trails).apply();
+    }
+
+    /** Bright-star brackets (2.2): a short frame after every few long ones, for the brightest stars' real colour. */
+    boolean brackets() {
+        return sp.getBoolean("brackets", true);
+    }
+
+    void setBrackets(boolean v) {
+        sp.edit().putBoolean("brackets", v).apply();
+    }
+
     int durationMin() {
         return sp.getInt("durationMin", 5);
     }
@@ -266,6 +285,7 @@ final class Prefs {
         p.collectClear = collectClear();
         p.blend = blend();
         p.quick = quick();
+        p.earth = earth();
         return p;
     }
 
@@ -274,7 +294,7 @@ final class Prefs {
         sp.edit().putBoolean("trails", p.trails).putInt("durationMin", p.durationMin).putFloat("brightness", p.brightness)
                 .putBoolean("saveDng", p.saveDng).putString("rejection", p.rejection).putBoolean("keepSatellites", p.keepSatellites)
                 .putBoolean("keepMeteors", p.keepMeteors).putBoolean("collectClear", p.collectClear).putBoolean("blend", p.blend).putBoolean("quick", p.quick)
-                .putString("preset", p.id).apply();
+                .putBoolean("earth", p.earth && !p.trails).putString("preset", p.id).apply();
     }
 
     /** Brandon's own presets and the saved sites, as JSON lists ("" for none). */

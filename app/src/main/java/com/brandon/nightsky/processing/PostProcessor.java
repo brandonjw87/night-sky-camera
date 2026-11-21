@@ -64,6 +64,8 @@ public final class PostProcessor {
         public StarList referenceStars;
         /** The sensor's defective pixels, as found in the session's average and taken out of every frame. */
         public HotPixels hot;
+        /** What the bright-star brackets did (2.2), or null when there were none to use. */
+        public StarBrackets.Result brackets;
         /**
          * The streaks the frames had (satellites by name where a known one explains them, then planes, meteors and
          * the rest), or null if they weren't looked for; with the satellites' predicted paths through the picture
@@ -179,6 +181,11 @@ public final class PostProcessor {
      * the Quick look, which stacks once, and tests switch it off.
      */
     public boolean fringes = true;
+    /**
+     * Bright-star brackets (2.2): the session's short frames, if it took any, give the stack's clipped star cores their
+     * light ({@link StarBrackets}).
+     */
+    public boolean brackets = true;
     /** Place, time and the star catalogue, to find where the camera pointed; null to skip that. */
     public SessionSky sky;
     /**
@@ -701,6 +708,7 @@ public final class PostProcessor {
         for (FrameReport fr : out.frames) if (fr.used && fr.hfr > 0) hh[nhh++] = (float) fr.hfr;
         if (nhh > 0) out.medianHfr = Stats.median(hh, nhh);
         out.referenceStars = refDetections != null ? refDetections : ref != null ? ref.stars : null;
+        if (brackets && out.aligned) bracketStars(out, sr.image, plans, model, hot, st.chroma, recs, progress);
         out.image = sr.image;
         out.video = PhotoVideo.Source.deepSky(spec, model, fs, hot, plans, target, st.minTransparency, st.ground);
         out.analysis = Renderer.analyze(sr.image, spec);
@@ -1271,6 +1279,29 @@ public final class PostProcessor {
             hi = Math.max(hi, v);
         }
         return String.format(Locale.US, " (%.2f-%.2f)", lo, hi);
+    }
+
+    /** Bright-star brackets (2.2): the clipped star cores given their light from the session's short frames, if it took any. */
+    private void bracketStars(Output out, RgbImage img, List<SharpStacker.Plan> plans, CameraModel model, HotPixels hot,
+                              ChromaShift.Model chroma, List<UnitRecord> recs, Progress progress) {
+        List<StarBrackets.Frame> bf = StarBrackets.list(store, W, H);
+        if (bf.isEmpty()) return;
+        // a stacked value is one frame's light: a unit's exposure over its frames
+        double[] e = new double[recs.size()];
+        int n = 0;
+        for (UnitRecord r : recs) if (r.exposure > 0) e[n++] = r.exposure / Math.max(1, r.frames);
+        double longExp = n > 0 ? Stats.median(e, n) : spec.frameExposureNs / 1e9;
+        try {
+            StarBrackets.Result r = StarBrackets.repair(img, bf, StarBrackets.store(store, W, H), spec, model, plans, longExp, hot, chroma,
+                    progress);
+            out.brackets = r;
+            decide(out, r.describe());
+        } catch (CancelledException c) {
+            throw c;
+        } catch (IOException | RuntimeException err) {
+            // a bonus: never let it cost the photo
+            store.log("bright stars: the short frames couldn't be used: " + err);
+        }
     }
 
     private void decide(Output out, String s) {

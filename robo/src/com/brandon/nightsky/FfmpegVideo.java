@@ -24,6 +24,11 @@ final class FfmpegVideo implements VideoEncoder {
             opened++;
             return new FfmpegVideo(out, w, h, fps);
         }
+
+        @Override
+        public VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException {
+            return open(out, w, h, fps);
+        }
     };
     /** Encoders opened and videos finished, for the checks. */
     static volatile int opened, finished;

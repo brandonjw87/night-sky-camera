@@ -1012,6 +1012,9 @@ public final class Renderer {
             float[] ic = new float[3 * CGX];
             float[] CN = T3; // clip badness 0..1, before T3 is needed
             byte[] flags = img.clip;
+            // bright-star brackets (2.2): a core given its light from the short frames has no clip flag and may stand
+            // well over the clip level; only the flags say what clipped
+            boolean bracketed = img.bracketed && flags != null;
             for (int y = rs; y < re; y++) {
                 int o = (y - rs) * w;
                 int src = (a.cy0 + y) * img.width + a.cx0;
@@ -1043,7 +1046,9 @@ public final class Renderer {
                     float ng0 = cg * (ic[CGX + gi] + t * (ic[CGX + gi + 1] - ic[CGX + gi]));
                     float nb0 = cb * (ic[2 * CGX + gi] + t * (ic[2 * CGX + gi + 1] - ic[2 * CGX + gi]));
                     float cn = Math.max(nr0, Math.max(ng0, nb0));
-                    if (flags != null) {
+                    if (bracketed) {
+                        CN[o + x] = smooth((flags[src + x] & 0xFF) * (1f / 255f), 0.02f, 0.25f);
+                    } else if (flags != null) {
                         CN[o + x] = Math.max(smooth(cn, 0.90f, 0.98f), smooth((flags[src + x] & 0xFF) * (1f / 255f), 0.02f, 0.25f));
                     } else {
                         CN[o + x] = smooth(cn, 0.80f, 0.95f);
