@@ -34,6 +34,7 @@ import com.brandon.nightsky.processing.SkyTurn;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.ClearSky;
+import com.brandon.nightsky.processing.DeepZoom;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
@@ -46,6 +47,7 @@ import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.MeteorLog;
+import com.brandon.nightsky.processing.MissionReplay;
 import com.brandon.nightsky.processing.MissionControl;
 import com.brandon.nightsky.processing.PreviewAccumulator;
 import com.brandon.nightsky.processing.NightPlan;
@@ -301,6 +303,16 @@ final class SessionController {
         Uri earthVideo, earthWebp;
         String earthWords = "";
         /**
+         * Deep Space Zoom (2.4): the close-ups made of the galaxies, nebulae, clusters and planets in the photo (none if
+         * nothing stood out enough, or the photo wasn't placed on the sky), and what to say when there are none.
+         */
+        final List<ZoomShot> zooms = new ArrayList<ZoomShot>();
+        String zoomWords = "";
+        /** Mission Replay (2.4): the night as a looping GIF, kept in the session's folder and saved in the gallery (null: none). */
+        File replay;
+        Uri replayGif;
+        String replayWords = "";
+        /**
          * Hear the Stars (2.3): where the photo points, for its song (null for star trails, or a sky not found); the song
          * as last made, with the version of the named stars it was made with; its video, once saved to the gallery.
          */
@@ -308,6 +320,17 @@ final class SessionController {
         volatile List<StarSong.Note> song;
         volatile int songNamed = -1;
         volatile Uri songVideo;
+    }
+
+    /** A Deep Space Zoom close-up (2.4): what it shows, the picture in the gallery, and a small copy for the result screen. */
+    static final class ZoomShot {
+        String title = "", what = "", line = "";
+        Uri uri;
+        File small;
+        /** For Mission Replay, until it's made: the close-up shrunk, and its box in the stack (middle and side, pixels). */
+        int[] replay;
+        int replaySide;
+        double x, y, side;
     }
 
     /** Where a photo points and its crop (its stack's pixels), for its song. */
@@ -5451,6 +5474,7 @@ final class SessionController {
         Recipe recipe;
         File video = null;
         boolean motion = false;
+        MissionReplay.Recorder replayRec = null;
         if (same) {
             jpeg = m.again.uri.isEmpty() ? null : Uri.parse(m.again.uri);
             recipe = m.again;
@@ -5476,6 +5500,8 @@ final class SessionController {
             if (mo != null) {
                 if (mo.complete) video = mo.mp4;
                 motion = mo.saved;
+                replayRec = mo.replay;
+                mo.replay = null;
             }
             m.recipe.motion = motion;
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
@@ -5487,6 +5513,13 @@ final class SessionController {
         if (earthWanted && o.video != null) {
             turn = SkyTurn.fit(o.video.plans());
             turnGround = o.video.ground();
+        }
+        // Deep Space Zoom (2.4): close-ups drizzled from the frames, while they can still be read as the stack read them
+        List<ZoomShot> zooms = new ArrayList<ZoomShot>();
+        String zoomWords = "";
+        if (!m.trails && m.merge == null && !m.edit && m.again == null) {
+            zoomWords = deepZoom(home, o, sp, params, m.recipe != null && m.recipe.northUp && north != null, name,
+                    parseLong(m.props.getProperty("capture.startWallMs")), zooms);
         }
         o.video = null; // how the frames were read for it: let go
         logNoise(home, o, params);
@@ -5540,7 +5573,22 @@ final class SessionController {
         RgbImage sm = o.image.binned(f);
         final Bitmap bmp = previewBitmap(sm, o.analysis, params, f);
         final Framing pf = frameFor(m.recipe, north, sm.cropWidth(), sm.cropHeight());
-        saveThumb(home, frame(bmp, pf));
+        Bitmap framed = frame(bmp, pf);
+        saveThumb(home, framed);
+        // Mission Replay (2.4): the night as one looping GIF in the gallery
+        File replay = null;
+        Uri replayGif = null;
+        String replayWords = "";
+        if (m.merge == null && !m.edit && m.again == null) {
+            Object[] rp = makeReplay(home, o, replayRec, framed, f, pf, zooms, m, name);
+            replay = (File) rp[0];
+            replayGif = (Uri) rp[1];
+            replayWords = (String) rp[2];
+        }
+        replayRec = null;
+        for (ZoomShot z : zooms) z.replay = null;
+        if (framed != bmp) framed.recycle();
+        framed = null;
         // Mission Control's end of the story (2.3): a capture's photo ends its mission; an edit or a merge of nights is
         // shown there as a photo opened again
         boolean captured = !m.edit && m.again == null && !m.nights;
@@ -5555,6 +5603,11 @@ final class SessionController {
             }
             turnGround = null;
         }
+        r.zooms.addAll(zooms);
+        r.zoomWords = zoomWords;
+        r.replay = replay;
+        r.replayGif = replayGif;
+        r.replayWords = replayWords;
         r.summary = o.summary;
         r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
         r.session = home.dir.getName();
@@ -5939,6 +5992,8 @@ final class SessionController {
         PhotoVideo pv;
         VideoEncoder enc;
         File mp4;
+        /** Mission Replay's copy of the frames adding up (2.4; null: none). */
+        MissionReplay.Recorder replay;
         /** The video's file is whole; it was saved inside the photo. */
         boolean complete, saved;
     }
@@ -6004,7 +6059,15 @@ final class SessionController {
         mo.mp4 = videoFile(st.dir, name);
         try {
             mo.enc = Mp4Writer.factory.open(mo.mp4, pv.width(), pv.height(), PhotoVideo.FPS);
-            pv.build(mo.enc, new Progress() {
+            // Mission Replay (2.4) keeps a few of the frames adding up as they go by, when there's room for them
+            long rneed = MissionReplay.Recorder.heapNeeded(pv.width(), pv.height()) + REPLAY_SPARE, rfree = heapFree(false);
+            if (rfree >= rneed + pv.heapNeeded()) {
+                mo.replay = new MissionReplay.Recorder(mo.enc, pv.width(), pv.height(), pv.buildFrames());
+            } else {
+                st.log(String.format(Locale.US, "decision: Mission Replay without the frames adding up: not enough memory to keep them "
+                        + "(%d MB needed, %d MB free)", (rneed + pv.heapNeeded()) >> 20, rfree >> 20));
+            }
+            pv.build(mo.replay != null ? mo.replay : mo.enc, new Progress() {
                 long last;
 
                 @Override
@@ -6040,6 +6103,243 @@ final class SessionController {
 
     /** Spare heap the Earth's turn leaves beyond its own needs (bytes): the encoder's and the WebPs' buffers. */
     private static final long EARTH_SPARE = 48L << 20;
+    /** Spare heap a close-up leaves beyond its own needs (bytes): its bitmap, its card, the JPEG's encoding. */
+    private static final long ZOOM_SPARE = 24L << 20;
+    /** Spare heap Mission Replay leaves beyond its own needs (bytes). */
+    private static final long REPLAY_SPARE = 16L << 20;
+
+    /** Mission Replay's GIF in a session's folder. */
+    static File replayFile(File dir, String name) {
+        return new File(dir, name + "_replay.gif");
+    }
+
+    /**
+     * Mission Replay (2.4): the frames adding up ({@code rec}, kept from the photo's video; null: none), the photo as
+     * saved ({@code framed}: the stack's crop binned {@code f} times, framed by {@code pf}), the close-ups' zooms and
+     * the mission's numbers, as one looping GIF kept in the session's folder and saved in the gallery. Returns {the
+     * file, its gallery Uri, words}, nulls when it wasn't made (the log says why).
+     */
+    private Object[] makeReplay(SessionStore st, PostProcessor.Output o, MissionReplay.Recorder rec, Bitmap framed, int f, Framing pf,
+                                List<ZoomShot> zooms, Made m, String name) {
+        Object[] none = {null, null, ""};
+        int pw = framed.getWidth(), ph = framed.getHeight();
+        long need = (long) pw * ph * 4 * 2 + (long) MissionReplay.SIDE * MissionReplay.SIDE * 4 * (8 + zooms.size()) + REPLAY_SPARE;
+        long free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no Mission Replay: not enough memory (%d MB needed, %d MB free)", need >> 20, free >> 20));
+            return none;
+        }
+        File gif = replayFile(st.dir, name);
+        try {
+            int[] photo = new int[pw * ph];
+            framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+            List<MissionReplay.Shot> shots = new ArrayList<MissionReplay.Shot>();
+            Renderer.Analysis a = o.analysis;
+            for (ZoomShot z : zooms) {
+                if (z.replay == null) continue;
+                double u = (z.x - a.cx0) / f, v = (z.y - a.cy0) / f;
+                double[] at = pf != null ? pf.forward(u, v) : new double[]{u, v};
+                MissionReplay.Shot sh = new MissionReplay.Shot();
+                sh.x = at[0];
+                sh.y = at[1];
+                sh.side = z.side / f;
+                sh.argb = z.replay;
+                sh.size = z.replaySide;
+                sh.title = z.title;
+                sh.line = z.line;
+                shots.add(sh);
+            }
+            long started = parseLong(m.props.getProperty("capture.startWallMs"));
+            String when = new java.text.SimpleDateFormat("d MMM yyyy", Locale.US).format(new Date(started > 0 ? started : System.currentTimeMillis()));
+            String light = o.integrationSeconds > 0 ? durationWords((int) Math.round(o.integrationSeconds)) + " of light" : "";
+            List<String> lines = new ArrayList<String>();
+            lines.add("MISSION COMPLETE");
+            lines.add(m.trails ? "Star trails" + (light.isEmpty() ? "" : ", " + light) : light.isEmpty() ? "The night's photo" : light);
+            if (!shots.isEmpty()) {
+                StringBuilder sb = new StringBuilder(shots.size() == 1 ? "Close-up: " : shots.size() + " close-ups: ");
+                for (int i = 0; i < shots.size(); i++) {
+                    if (i > 0) sb.append(i == shots.size() - 1 ? " and " : ", ");
+                    sb.append(shots.get(i).title);
+                }
+                lines.add(sb.toString());
+            }
+            lines.add("Night Sky \u00b7 " + when);
+            String note;
+            java.io.OutputStream os = new java.io.BufferedOutputStream(new java.io.FileOutputStream(gif), 1 << 16);
+            try {
+                note = MissionReplay.make(rec, photo, pw, ph, shots, lines.toArray(new String[0]), new CanvasDraw(), os, new Progress() {
+                    long last;
+
+                    @Override
+                    public void update(String stage, float fraction) {
+                        long now = SystemClock.elapsedRealtime();
+                        if (now - last < 300 && fraction < 1f) return;
+                        last = now;
+                        post(Phase.DEVELOPING, "Saving", stage, fraction);
+                    }
+
+                    @Override
+                    public boolean cancelled() {
+                        return cancelDevelop;
+                    }
+                });
+            } finally {
+                os.close();
+            }
+            Uri uri = MediaSaver.saveGif(ctx, gif, name + "_replay", new Date(started > 0 ? started : System.currentTimeMillis()));
+            st.log("mission replay: " + note + "; in the gallery as " + name + "_replay.gif");
+            return new Object[]{gif, uri, ""};
+        } catch (CancelledException e) {
+            st.log("decision: no Mission Replay: cancelled while it was being made");
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no Mission Replay: making it failed: " + e);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        gif.delete();
+        return none;
+    }
+
+    /** "3 min 12 s", "48 s", "1 h 05 min": how long, for the replay's end card. */
+    static String durationWords(int s) {
+        if (s >= 3600) return String.format(Locale.US, "%d h %02d min", s / 3600, (s % 3600) / 60);
+        if (s >= 60) return s % 60 == 0 ? (s / 60) + " min" : String.format(Locale.US, "%d min %d s", s / 60, s % 60);
+        return s + " s";
+    }
+
+    /** Mission Replay's captions drawn with Canvas on one reused bitmap. */
+    private static final class CanvasDraw implements MissionReplay.Draw {
+        private Bitmap b;
+        private int w, h;
+
+        @Override
+        public com.brandon.nightsky.processing.Painter on(int[] argb, int w, int h) {
+            if (b == null || this.w != w || this.h != h) {
+                if (b != null) b.recycle();
+                b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                this.w = w;
+                this.h = h;
+            }
+            b.setPixels(argb, 0, w, 0, 0, w, h);
+            return new CanvasPainter(b);
+        }
+
+        @Override
+        public void off(int[] argb) {
+            b.getPixels(argb, 0, w, 0, 0, w, h);
+        }
+    }
+    /** The result screen's copy of a close-up: this many pixels a side. */
+    private static final int ZOOM_SMALL = 360;
+
+    /**
+     * Deep Space Zoom (2.4): the close-ups {@link DeepZoom#plan} picks in the photo, drizzled from the frames
+     * ({@code o.video}) and developed as the photo was ({@code params}), north up when the photo is; each with its card
+     * drawn on, saved in the gallery as name_zoomN.jpg, and a small copy kept in the session's folder for the result
+     * screen. Into {@code out}; returns what to say when there are none. Anything that fails is logged and the rest go on.
+     */
+    private String deepZoom(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params params, boolean northUp, String name,
+                            long startedMs, List<ZoomShot> out) {
+        if (o.video == null || o.solution == null) {
+            st.log("decision: no Deep Space Zoom: " + (o.solution == null ? "the photo wasn't placed on the sky, so what's in it isn't known"
+                    : "the frames can't be read again"));
+            return o.solution == null ? "No close-ups: the photo couldn't be matched to the sky's map." : "";
+        }
+        List<String> notes = new ArrayList<String>();
+        List<DeepZoom.Target> plan;
+        try {
+            plan = DeepZoom.plan(o.solution, o.solutionJd, o.image, o.analysis, o.video.ground(), northUp, notes);
+        } catch (RuntimeException e) {
+            st.log("decision: no Deep Space Zoom: planning it failed: " + e);
+            return "";
+        }
+        for (String s : notes) st.log("deep space zoom: no close-up of " + s);
+        if (plan.isEmpty()) {
+            st.log("decision: no Deep Space Zoom: no galaxy, nebula, cluster or planet in the photo stands out enough for a close-up");
+            return "No close-ups this time: no galaxy, nebula, cluster or planet in the photo stood out enough.";
+        }
+        Date when = startedMs > 0 ? new Date(startedMs) : new Date();
+        Progress pr = new Progress() {
+            long last;
+
+            @Override
+            public void update(String stage, float fraction) {
+                long now = SystemClock.elapsedRealtime();
+                if (now - last < 300 && fraction < 1f) return;
+                last = now;
+                post(Phase.DEVELOPING, "Saving", stage, fraction);
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelDevelop;
+            }
+        };
+        int k = 0;
+        for (DeepZoom.Target t : plan) {
+            k++;
+            String file = name + "_zoom" + k;
+            long need = DeepZoom.heapNeeded(t, sp.width) + ZOOM_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                st.log(String.format(Locale.US, "decision: no close-up of %s: not enough memory (%d MB needed, %d MB free)", t.name, need >> 20,
+                        free >> 20));
+                continue;
+            }
+            post(Phase.DEVELOPING, "Saving", "Deep Space Zoom: " + t.name, -1f);
+            try {
+                DeepZoom.CloseUp cu = DeepZoom.make(t, o.video, o.image, o.analysis, params, pr);
+                Bitmap b = Bitmap.createBitmap(cu.size, cu.size, Bitmap.Config.ARGB_8888);
+                b.setPixels(cu.argb, 0, cu.size, 0, 0, cu.size, cu.size);
+                // Mission Replay's copy, without the card
+                int rs = Math.min(cu.size, MissionReplay.SIDE);
+                int[] forReplay = MissionReplay.shrink(cu.argb, cu.size, cu.size, rs, rs);
+                cu.argb = null;
+                DeepZoom.card(cu, new CanvasPainter(b));
+                MediaSaver.Exif ex = new MediaSaver.Exif();
+                ex.make = sp.deviceMake;
+                ex.model = sp.deviceModel;
+                ex.description = cu.title + ": " + cu.how;
+                ex.time = when;
+                ex.width = cu.size;
+                ex.height = cu.size;
+                ZoomShot z = new ZoomShot();
+                z.replay = forReplay;
+                z.replaySide = rs;
+                z.title = cu.title;
+                z.what = cu.what;
+                z.line = cu.distance;
+                z.x = t.px;
+                z.y = t.py;
+                z.side = t.side();
+                z.uri = MediaSaver.saveJpeg(ctx, b, file, ex);
+                File small = new File(st.dir, file + ".jpg");
+                try {
+                    Bitmap sb = Bitmap.createScaledBitmap(b, ZOOM_SMALL, ZOOM_SMALL, true);
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(small);
+                    try {
+                        sb.compress(Bitmap.CompressFormat.JPEG, 88, fo);
+                    } finally {
+                        fo.close();
+                    }
+                    sb.recycle();
+                    z.small = small;
+                } catch (IOException | RuntimeException e) {
+                    st.log("deep space zoom: its small copy for the result screen wasn't kept: " + e);
+                }
+                b.recycle();
+                out.add(z);
+                st.log("deep space zoom: " + cu.note + "; in the gallery as " + file + ".jpg" + (ex.failed != null ? " (without its EXIF: "
+                        + ex.failed + ")" : ""));
+            } catch (CancelledException e) {
+                st.log("decision: Deep Space Zoom stopped: cancelled while " + t.name + " was being made");
+                break;
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                st.log("decision: no close-up of " + t.name + ": making it failed: " + e);
+            }
+        }
+        return out.isEmpty() ? "No close-ups this time: they couldn't be made (the log says why)." : "";
+    }
 
     /**
      * The Earth's turn (2.2): the photo ({@code bmp}, one pixel every {@code f} of the stack's) turned as the frames

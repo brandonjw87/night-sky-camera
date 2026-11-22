@@ -87,6 +87,15 @@ public final class Framing {
         return new Framing(crop, w, h, ow, oh, (w - ow) / 2, (h - oh) / 2, 0, -1, false);
     }
 
+    /** Where the photo's point (x, y) (its pixels, continuous) lands in the framed photo: {x, y} (2.4, Mission Replay). */
+    public double[] forward(double x, double y) {
+        if (!turned) return new double[]{x - x0, y - y0};
+        // the inverse of apply()'s turn: a rotation, so its transpose
+        double dx = x - w / 2.0, dy = y - h / 2.0;
+        double qx = -ny * dx + nx * dy, qy = -nx * dx - ny * dy;
+        return new double[]{outW / 2.0 + qx, outH / 2.0 + qy};
+    }
+
     /** A crop's ratio as long side : short side; the photo's own for "full". */
     static int[] ratio(String crop, int w, int h) {
         int i = crop.indexOf(':');

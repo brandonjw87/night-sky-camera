@@ -3007,6 +3007,8 @@ public final class MainActivity extends Activity {
         row2.addView(open, weight());
         row2.addView(again, weight());
         col.addView(row2, gap(6));
+        if (r != null && r.replay != null) addReplay(col, r);
+        if (r != null && (!r.zooms.isEmpty() || !r.zoomWords.isEmpty())) addDeepZoom(col, r);
         if (r != null && r.earth != null) addEarthTurn(col, r);
         if (r != null && r.song != null && !r.trails) addSong(col, r);
         // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
@@ -6530,6 +6532,123 @@ public final class MainActivity extends Activity {
     /** The result whose Earth's turn has played by itself (its name), so it plays once, not every time the screen is drawn. */
     private String earthPlayed = "";
 
+    /**
+     * The result's Mission Replay (2.4): the GIF playing (as it will in a message), opened full size by a tap, and
+     * shared. A phone that can't play GIFs here shows its first picture.
+     */
+    private void addReplay(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Mission Replay", 17, RED, true));
+        card.addView(text("The whole night as a GIF: the frames adding up, the targets locked, a zoom into each close-up. Saved in "
+                + "your gallery; it loops in any message.", 13, RED_DIM, false), gap(6));
+        ImageView iv = new ImageView(this);
+        iv.setAdjustViewBounds(true);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setContentDescription("Mission Replay");
+        boolean shown = false;
+        if (Build.VERSION.SDK_INT >= 28) {
+            try {
+                android.graphics.drawable.Drawable d = android.graphics.ImageDecoder.decodeDrawable(
+                        android.graphics.ImageDecoder.createSource(r.replay));
+                iv.setImageDrawable(d);
+                if (d instanceof android.graphics.drawable.AnimatedImageDrawable) ((android.graphics.drawable.AnimatedImageDrawable) d).start();
+                shown = true;
+            } catch (IOException | RuntimeException e) {
+                shown = false;
+            }
+        }
+        if (!shown) {
+            Bitmap b = BitmapFactory.decodeFile(r.replay.getPath());
+            if (b != null) {
+                iv.setImageBitmap(b);
+                shown = true;
+            }
+        }
+        if (shown) {
+            iv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (r.replayGif != null) view(r.replayGif, "image/gif");
+                }
+            });
+            card.addView(iv, gap(8));
+        }
+        if (r.replayGif != null) {
+            Button share = smallButton("Share the GIF", true);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(r.replayGif, "image/gif", "Share the Mission Replay");
+                }
+            });
+            card.addView(share, gap(8));
+        }
+        col.addView(card, gap(12));
+    }
+
+    /**
+     * The result's Deep Space Zoom (2.4): its close-ups side by side, each opened full size by a tap, and all of them
+     * shared at once; or, with none, why.
+     */
+    private void addDeepZoom(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Deep Space Zoom", 17, RED, true));
+        if (r.zooms.isEmpty()) {
+            card.addView(text(r.zoomWords, 13, RED_DIM, false), gap(6));
+            col.addView(card, gap(12));
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < r.zooms.size(); i++) {
+            if (i > 0) names.append(i == r.zooms.size() - 1 ? " and " : ", ");
+            names.append(r.zooms.get(i).title);
+        }
+        card.addView(text((r.zooms.size() == 1 ? "A close-up of " : "Close-ups of ") + names + ", sharper than the photo: drizzled "
+                + "again from your own frames, the stars drawn back crisp. Tap one to see it.", 13, RED_DIM, false), gap(6));
+        LinearLayout row = row();
+        final ArrayList<Uri> uris = new ArrayList<Uri>();
+        for (final SessionController.ZoomShot z : r.zooms) {
+            if (z.uri != null) uris.add(z.uri);
+            Bitmap b = z.small != null ? BitmapFactory.decodeFile(z.small.getPath()) : null;
+            if (b == null) continue;
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(b);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            iv.setContentDescription(z.title);
+            iv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (z.uri != null) view(z.uri);
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(110), 1f);
+            lp.rightMargin = dp(6);
+            row.addView(iv, lp);
+        }
+        if (row.getChildCount() > 0) card.addView(row, gap(8));
+        if (!uris.isEmpty()) {
+            Button share = smallButton(uris.size() == 1 ? "Share the close-up" : "Share the close-ups", false);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (uris.size() == 1) {
+                        share(uris.get(0), "image/jpeg", "Share the close-up");
+                        return;
+                    }
+                    try {
+                        Intent i = new Intent(Intent.ACTION_SEND_MULTIPLE).setType("image/jpeg")
+                                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        startActivity(Intent.createChooser(i, "Share the close-ups"));
+                    } catch (RuntimeException e) {
+                        toastish("No app can share them");
+                    }
+                }
+            });
+            card.addView(share, gap(8));
+        }
+        col.addView(card, gap(12));
+    }
+
     // ------------------------------------------------------------------------------------------------
     // Hear the Stars (2.3)
     // ------------------------------------------------------------------------------------------------
@@ -6850,8 +6969,12 @@ public final class MainActivity extends Activity {
     }
 
     private void view(Uri uri) {
+        view(uri, "image/jpeg");
+    }
+
+    private void view(Uri uri, String mime) {
         try {
-            Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent i = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(i);
         } catch (RuntimeException e) {
             toastish("No app can open the photo");

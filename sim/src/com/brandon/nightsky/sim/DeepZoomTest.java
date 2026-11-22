@@ -6,6 +6,10 @@ import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.ColorMath;
 import com.brandon.nightsky.processing.DeepZoom;
 import com.brandon.nightsky.processing.Master;
+import com.brandon.nightsky.processing.MissionReplay;
+import com.brandon.nightsky.processing.Painter;
+import com.brandon.nightsky.processing.PhotoVideo;
+import com.brandon.nightsky.processing.Recipe;
 import com.brandon.nightsky.processing.PostProcessor;
 import com.brandon.nightsky.processing.Renderer;
 import com.brandon.nightsky.processing.Rot;
@@ -30,6 +34,8 @@ import java.util.Locale;
  * <li>Around the galaxy the stars come out smaller still, and the galaxy keeps its light.
  * <li>Every close-up is 1080 x 1080 and its middle stands out of its sky; words and the Moon's scale are filled in.
  * <li>A nebula too faint to see gets no close-up, and says so; no plate solution, no close-ups.
+ * <li>Mission Replay: the frames adding up (kept from the photo's video as it's made), the photo, its targets, a zoom
+ * into each close-up and the end, as one looping GIF that Java's own decoder reads back frame by frame.
  * </ul>
  * Arguments: output folder, scale (2: 2040 x 1536), frames.
  */
@@ -144,8 +150,18 @@ public final class DeepZoomTest {
         check("the Heart Nebula, faint but there, isn't called too faint", !heartFaint, heart ? "planned" : "left out for another reason");
 
         int k = 0;
+        List<MissionReplay.Shot> shots = new ArrayList<MissionReplay.Shot>();
         for (DeepZoom.Target t : plan) {
             DeepZoom.CloseUp cu = DeepZoom.make(t, o.video, o.image, o.analysis, params, PhotoVideoTest.QUIET);
+            MissionReplay.Shot sh = new MissionReplay.Shot();
+            sh.x = t.px - o.analysis.cx0;
+            sh.y = t.py - o.analysis.cy0;
+            sh.side = t.side();
+            sh.argb = cu.argb.clone();
+            sh.size = cu.size;
+            sh.title = cu.title;
+            sh.line = cu.distance;
+            shots.add(sh);
             System.out.println("  " + cu.note);
             check(t.name + ": 1080 x 1080", cu.argb != null && cu.size == DeepZoom.OUT && cu.argb.length == cu.size * cu.size, "");
             double mid = luma(cu.argb, cu.size, 0.4, 0.6), edge = luma(cu.argb, cu.size, 0.0, 0.12);
@@ -172,7 +188,74 @@ public final class DeepZoomTest {
         List<String> none = new ArrayList<String>();
         check("no plate solution, no close-ups", DeepZoom.plan(null, o.solutionJd, o.image, o.analysis, null, false, none).isEmpty(),
                 none.isEmpty() ? "" : none.get(0));
+
+        // Mission Replay: the photo's video's frames adding up kept as it's made, then the film
+        PhotoVideo pv = PhotoVideo.of(o.video, o.image, o.analysis, params, Recipe.CROP_FULL, null, 960);
+        MissionReplay.Recorder rec = new MissionReplay.Recorder(null, pv.width(), pv.height(), pv.buildFrames());
+        pv.build(rec, PhotoVideoTest.QUIET);
+        check("the replay keeps the frames adding up", rec.kept() > 10 && rec.kept() <= MissionReplay.BUILD_FRAMES, rec.kept() + " pictures");
+        java.io.ByteArrayOutputStream gif = new java.io.ByteArrayOutputStream();
+        String note = MissionReplay.make(rec, photo, o.analysis.cw, o.analysis.ch, shots, new String[]{"MISSION COMPLETE",
+                frames + " frames, 3 min 12 s of light", shots.size() + " close-ups: Andromeda and two star clusters", "Night Sky · 15 Oct 2026"},
+                new AwtDraw(), gif, PhotoVideoTest.QUIET);
+        System.out.println("  replay: " + note);
+        java.nio.file.Files.write(new File(out, "replay.gif").toPath(), gif.toByteArray());
+        javax.imageio.ImageReader rd = javax.imageio.ImageIO.getImageReadersByFormatName("gif").next();
+        rd.setInput(javax.imageio.ImageIO.createImageInputStream(new java.io.ByteArrayInputStream(gif.toByteArray())), false);
+        int n = rd.getNumImages(true);
+        int want = rec.kept() + 2 + shots.size() * (8 + 3 + 1) + (shots.size() - 1) + 1;
+        check("the replay's frames all read back", n == want, n + " frames, " + want + " made");
+        check("the replay is a GIF that fits a message", gif.size() < 8 << 20, (gif.size() >> 10) + " KB");
+        // a few of its pictures, as a viewer lays them over each other
+        int[] screen = null;
+        int gw = 0, gh = 0;
+        for (int f = 0; f < n; f++) {
+            java.awt.image.BufferedImage im = rd.read(f);
+            org.w3c.dom.Node md = rd.getImageMetadata(f).getAsTree("javax_imageio_gif_image_1.0");
+            int left = 0, top = 0, trans = -1;
+            for (org.w3c.dom.Node c = md.getFirstChild(); c != null; c = c.getNextSibling()) {
+                org.w3c.dom.NamedNodeMap at = c.getAttributes();
+                if ("ImageDescriptor".equals(c.getNodeName())) {
+                    left = Integer.parseInt(at.getNamedItem("imageLeftPosition").getNodeValue());
+                    top = Integer.parseInt(at.getNamedItem("imageTopPosition").getNodeValue());
+                } else if ("GraphicControlExtension".equals(c.getNodeName()) && "TRUE".equals(at.getNamedItem("transparentColorFlag").getNodeValue())) {
+                    trans = Integer.parseInt(at.getNamedItem("transparentColorIndex").getNodeValue());
+                }
+            }
+            if (screen == null) {
+                gw = im.getWidth();
+                gh = im.getHeight();
+                screen = new int[gw * gh];
+            }
+            java.awt.image.IndexColorModel cm = (java.awt.image.IndexColorModel) im.getColorModel();
+            for (int y = 0; y < im.getHeight(); y++) {
+                for (int x = 0; x < im.getWidth(); x++) {
+                    int v = im.getRaster().getSample(x, y, 0);
+                    if (v != trans) screen[(top + y) * gw + left + x] = 0xFF000000 | cm.getRGB(v);
+                }
+            }
+            if (f == rec.kept() / 3 || f == rec.kept() || f == rec.kept() + 1 || f == rec.kept() + 6 || f == rec.kept() + 13 || f == n - 1) {
+                PhotoVideoTest.writePng(screen.clone(), gw, gh, new File(out, String.format(Locale.US, "replay%03d.png", f)));
+            }
+        }
         finish();
+    }
+
+    /** Mission Replay's captions drawn with AWT. */
+    static final class AwtDraw implements MissionReplay.Draw {
+        private AwtPainter p;
+
+        @Override
+        public Painter on(int[] argb, int w, int h) {
+            p = new AwtPainter(argb, w, h);
+            return p;
+        }
+
+        @Override
+        public void off(int[] argb) {
+            int[] px = p.pixels();
+            System.arraycopy(px, 0, argb, 0, argb.length);
+        }
     }
 
     /** The mean of R, G and B over the square from {@code a} to {@code b} of the way across, both ways. */

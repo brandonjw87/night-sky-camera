@@ -216,6 +216,11 @@ public final class PhotoVideo {
         return v.vw >= 16 && v.vh >= 16 ? v : null;
     }
 
+    /** How many pictures the frames adding up take ({@link #build} sends them first). */
+    public int buildFrames() {
+        return buildFrames;
+    }
+
     public int width() {
         return vw;
     }
