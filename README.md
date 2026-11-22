@@ -216,7 +216,8 @@ Under the photo:
   in `Pictures/NightSky` as `..._replay.gif`.
 - **Deep Space Zoom** (2.4): the close-ups side by side; tap one to open it, **Share the close-ups** sends them all.
   They're in `Pictures/NightSky` as `..._zoom1.jpg` and so on. When a photo has none, the card says why (nothing
-  bright enough in it, or the sky wasn't recognised).
+  bright enough in it, or the sky wasn't recognised). Both cards come back when you open the session again from
+  **Sessions**, and stay after an edit; one you've deleted from the gallery can't be opened or shared from there.
 - **Deep Space Network** (2.4): which of the far travellers were in the photo, which were up in your sky (how
   high, which way) and which were below your horizon, how far each one is, and how long a radio message takes:
   "one sent when you took this photo arrives at 6:31 pm the next day". **Show all** lists the rest.

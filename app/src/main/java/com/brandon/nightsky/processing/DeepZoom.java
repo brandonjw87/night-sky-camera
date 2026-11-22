@@ -1526,7 +1526,11 @@ public final class DeepZoom {
      * <p>
      * The fainter stars beside brighter ones are looked for a second time with the brighter ones' light taken out
      * ({@link #NEAR}): the band-pass of a bright star dips below the sky around it, and a faint neighbour in that dip
-     * would otherwise go unfound and lose half its light to the bright one's filled-in disc. Left as they are, their
+     * would otherwise go unfound and lose half its light to the bright one's filled-in disc. Their sky's ring leaves out
+     * where a brighter star's light was taken out (what's left of a star's middle isn't sky: a ring through it set the
+     * plane too low, and the faint star's disc was filled in darker than the sky around, a dark ring). Then every star's
+     * sky and light are fitted again with all the others' light taken out ({@link Redraw#refit}: in a tight group a ring
+     * lies on the neighbours' light, and a disc filled in too bright left a grey plate). Left as they are, their
      * light kept: stars that clipped in some frame ({@code left[0]}), lights wider than a star image (a galaxy's middle,
      * a knot of nebula; {@code left[1]}), and any within {@code keepR} px of ({@code ox}, {@code oy}) ({@code left[2]});
      * the second and third marked in {@code glow} (a byte per pixel, for the noise reduction: light that isn't a star's).
@@ -1569,7 +1573,7 @@ public final class DeepZoom {
             for (double[] st : stars) rd.model(st, Mr, Mg, Mb, 1.0);
             // (the luminance from here on is theirs taken out too)
             float[] R2 = new float[np], G2 = new float[np], B2 = new float[np];
-            byte[] skip = keep.clone();
+            byte[] skip = keep.clone(), strong = new byte[np];
             float near = NEAR * rd.noise;
             for (int i = 0; i < np; i++) {
                 R2[i] = R[i] - Mr[i];
@@ -1577,16 +1581,31 @@ public final class DeepZoom {
                 B2[i] = B[i] - Mb[i];
                 float mL = rd.yr * Mr[i] + rd.yg * Mg[i] + rd.yb * Mb[i];
                 L[i] -= mL;
-                if (mL > near) skip[i] = 1;
+                if (mL > near) skip[i] = strong[i] = 1;
             }
             Mr = Mg = Mb = null;
             for (double[] s : seen) paint(skip, w, h, s[0], s[1], rd.pr + 1);
             D = bandPass(L, tmp, w, h, sigma);
+            // a faint star's sky isn't measured where a brighter one's light was taken out: what's left there isn't sky
+            rd.notSky = strong;
             rd.find(D, L, R2, G2, B2, skip, ox, oy, keepR, stars, null);
+            rd.notSky = null;
         }
         D = null;
         L = null;
         tmp = null;
+        // and every one's sky and light fitted again with the others' light taken out (as first fitted)
+        if (stars.size() > 1) {
+            float[] Mr = new float[np], Mg = new float[np], Mb = new float[np], mL = new float[np];
+            for (double[] st : stars) rd.model(st, Mr, Mg, Mb, 1.0);
+            for (int i = 0; i < np; i++) {
+                mL[i] = rd.yr * Mr[i] + rd.yg * Mg[i] + rd.yb * Mb[i];
+                Mr[i] = R[i] - Mr[i];
+                Mg[i] = G[i] - Mg[i];
+                Mb[i] = B[i] - Mb[i];
+            }
+            for (double[] st : stars) rd.refit(st, Mr, Mg, Mb, mL);
+        }
         // their pixels filled in with the sky around them; where their discs reach into light that stays, only their own
         // light (the Gaussian fitted to them) taken out of it, never below their sky
         int drawn = 0;
@@ -1699,6 +1718,8 @@ public final class DeepZoom {
         final int[] ringAt;
         /** The band-pass's median and the level a star stands over it. */
         float dMed, find;
+        /** Pixels no star's sky ring takes in (null: none): where a brighter star's light was taken out. */
+        byte[] notSky;
 
         Redraw(RgbImage img, Renderer.Analysis a, float sigma, byte[] keep, byte[] glow, int[] left) {
             w = img.width;
@@ -1726,8 +1747,9 @@ public final class DeepZoom {
         /**
          * The stars standing out of band-pass {@code D} (of luminance {@code L}; colours {@code R}, {@code G}, {@code B}),
          * none where {@code skip} is set (null: anywhere): the ones to draw again added to {@code stars} (x, y, amplitude in
-         * r, g, b, in luminance, signal to noise, disc radius, the sky's plane in r, g and b: three numbers each), every one
-         * found to {@code seen} (null: none kept), the rest counted in {@code left} and their light kept.
+         * r, g, b, in luminance, signal to noise, disc radius, the sky's plane in r, g and b: three numbers each, and the
+         * peak's pixel x and y), every one found to {@code seen} (null: none kept), the rest counted in {@code left} and
+         * their light kept.
          */
         void find(float[] D, float[] L, float[] R, float[] G, float[] B, byte[] skip, double ox, double oy, double keepR,
                   List<double[]> stars, List<double[]> seen) {
@@ -1777,42 +1799,15 @@ public final class DeepZoom {
                             int d2 = dx * dx + dy * dy;
                             if (d2 < rIn * rIn || d2 > rOut * rOut || x + dx < 0 || x + dx >= w) continue;
                             int j = i + dy * w + dx;
+                            if (notSky != null && notSky[j] != 0) continue;
                             ring[n] = L[j];
                             ringAt[n++] = j;
                         }
                     }
-                    float[] rs = Arrays.copyOf(ring, n);
-                    float rMed = Stats.median(rs, n);
-                    float lim = rMed + 3 * noise;
-                    double[] A = new double[6];
-                    double[][] bv = new double[3][3];
-                    int used = 0;
-                    for (int t = 0; t < n; t++) {
-                        if (ring[t] > lim) continue;
-                        int j = ringAt[t];
-                        double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy;
-                        A[0] += 1;
-                        A[1] += ex;
-                        A[2] += ey;
-                        A[3] += ex * ex;
-                        A[4] += ex * ey;
-                        A[5] += ey * ey;
-                        for (int c = 0; c < 3; c++) {
-                            float val = c == 0 ? R[j] : c == 1 ? G[j] : B[j];
-                            bv[c][0] += val;
-                            bv[c][1] += val * ex;
-                            bv[c][2] += val * ey;
-                        }
-                        used++;
-                    }
-                    if (used < 12) continue;
-                    double[][] plane = new double[3][];
-                    boolean ok = true;
-                    for (int c = 0; c < 3 && ok; c++) {
-                        plane[c] = solve3(A[0], A[1], A[2], A[3], A[4], A[5], bv[c]);
-                        ok = plane[c] != null;
-                    }
-                    if (!ok) continue;
+                    if (n < 12) continue;
+                    double[][] plane = plane(n, cx, cy, R, G, B, null);
+                    if (plane == null) continue;
+                    float rMed = ringMed;
                     // its light in each colour: a Gaussian's height fitted over the plane; what's within 3 sigma, for its width
                     double sp2 = 0, ap = 0, apModel = 0;
                     double[] amp = new double[3];
@@ -1859,13 +1854,120 @@ public final class DeepZoom {
                         continue;
                     }
                     double snr = aL * Math.sqrt(sp2) / (CORR * noise);
-                    // out to where it falls under half the noise
-                    double rr = sigma * Math.sqrt(2 * Math.log(Math.max(1.0, 2 * aL / noise))) + 1;
-                    rr = Math.max(rFit, Math.min(rOut, rr));
-                    stars.add(new double[]{cx, cy, amp[0], amp[1], amp[2], aL, snr, rr, plane[0][0], plane[0][1], plane[0][2],
-                            plane[1][0], plane[1][1], plane[1][2], plane[2][0], plane[2][1], plane[2][2]});
+                    stars.add(new double[]{cx, cy, amp[0], amp[1], amp[2], aL, snr, reach(aL), plane[0][0], plane[0][1],
+                            plane[0][2], plane[1][0], plane[1][1], plane[1][2], plane[2][0], plane[2][1], plane[2][2], x, y});
                 }
             }
+        }
+
+        /** The sky ring's median, as {@link #plane} last found it. */
+        float ringMed;
+
+        /**
+         * The sky's plane in each colour about (cx, cy), fitted through the ring's first {@code n} pixels ({@code ring}:
+         * their luminance, {@code ringAt}: where), the brighter ones (neighbours) and the darker (what's left of a brighter
+         * star's middle) left out; {@code own} (null: none), a star's light in r, g and b to put back into the colours, its
+         * Gaussian about (cx, cy). Null where too few are left to fit.
+         */
+        double[][] plane(int n, double cx, double cy, float[] R, float[] G, float[] B, double[] own) {
+            float rMed = ringMed = Stats.median(Arrays.copyOf(ring, n), n);
+            float lim = rMed + 3 * noise, low = rMed - 3 * noise;
+            double[] A = new double[6];
+            double[][] bv = new double[3][3];
+            int used = 0;
+            for (int t = 0; t < n; t++) {
+                if (ring[t] > lim || ring[t] < low) continue;
+                int j = ringAt[t];
+                double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy;
+                double P = own == null ? 0 : Math.exp(-(ex * ex + ey * ey) / s2);
+                A[0] += 1;
+                A[1] += ex;
+                A[2] += ey;
+                A[3] += ex * ex;
+                A[4] += ex * ey;
+                A[5] += ey * ey;
+                for (int c = 0; c < 3; c++) {
+                    float v = c == 0 ? R[j] : c == 1 ? G[j] : B[j];
+                    double val = own == null ? v : v + own[c] * P;
+                    bv[c][0] += val;
+                    bv[c][1] += val * ex;
+                    bv[c][2] += val * ey;
+                }
+                used++;
+            }
+            if (used < 12) return null;
+            double[][] plane = new double[3][];
+            for (int c = 0; c < 3; c++) {
+                plane[c] = solve3(A[0], A[1], A[2], A[3], A[4], A[5], bv[c]);
+                if (plane[c] == null) return null;
+            }
+            return plane;
+        }
+
+        /** A star's disc, {@code aL} high: out to where it falls under half the noise, from rFit to rOut. */
+        double reach(double aL) {
+            double rr = sigma * Math.sqrt(2 * Math.log(Math.max(1.0, 2 * aL / noise))) + 1;
+            return Math.max(rFit, Math.min(rOut, rr));
+        }
+
+        /**
+         * Star {@code st}'s sky and light fitted again (2.4) on {@code R}, {@code G}, {@code B}: the colours with every
+         * star's light taken out ({@code mL}: that light, in luminance), its own put back. In a tight group (the Pleiades'
+         * middle) a star's sky ring lies on its neighbours' light: the plane came out too high, and its disc was filled in
+         * brighter than the sky around it, a grey plate. The ring here leaves out where another star's light stands
+         * {@link #NEAR} times over the noise (what's left of its middle isn't sky). A star alone is fitted as before; one
+         * with too little ring left is kept as it was.
+         */
+        void refit(double[] st, float[] R, float[] G, float[] B, float[] mL) {
+            double cx = st[0], cy = st[1], aL = st[5];
+            double[] own = {st[2], st[3], st[4]};
+            int x = (int) st[17], y = (int) st[18];
+            float near = NEAR * noise;
+            int n = 0;
+            for (int dy = -rOut; dy <= rOut; dy++) {
+                if (y + dy < 0 || y + dy >= h) continue;
+                for (int dx = -rOut; dx <= rOut; dx++) {
+                    int d2 = dx * dx + dy * dy;
+                    if (d2 < rIn * rIn || d2 > rOut * rOut || x + dx < 0 || x + dx >= w) continue;
+                    int j = (y + dy) * w + x + dx;
+                    double ex = x + dx + 0.5 - cx, ey = y + dy + 0.5 - cy;
+                    double P = aL * Math.exp(-(ex * ex + ey * ey) / s2);
+                    if (mL[j] - P > near) continue;
+                    ring[n] = (float) (yr * R[j] + yg * G[j] + yb * B[j] + P);
+                    ringAt[n++] = j;
+                }
+            }
+            if (n < 12) return;
+            double[][] plane = plane(n, cx, cy, R, G, B, own);
+            if (plane == null) return;
+            // its light in each colour, a Gaussian's height over the plane, as find fits it
+            double sp2 = 0;
+            double[] amp = new double[3];
+            for (int dy = -rAp; dy <= rAp; dy++) {
+                if (y + dy < 0 || y + dy >= h) continue;
+                for (int dx = -rAp; dx <= rAp; dx++) {
+                    if (x + dx < 0 || x + dx >= w) continue;
+                    int j = (y + dy) * w + x + dx;
+                    double ex = x + dx + 0.5 - cx, ey = y + dy + 0.5 - cy, d2 = ex * ex + ey * ey;
+                    if (d2 > rFit * rFit) continue;
+                    double P = Math.exp(-d2 / s2);
+                    amp[0] += (R[j] + own[0] * P - (plane[0][0] + plane[0][1] * ex + plane[0][2] * ey)) * P;
+                    amp[1] += (G[j] + own[1] * P - (plane[1][0] + plane[1][1] * ex + plane[1][2] * ey)) * P;
+                    amp[2] += (B[j] + own[2] * P - (plane[2][0] + plane[2][1] * ex + plane[2][2] * ey)) * P;
+                    sp2 += P * P;
+                }
+            }
+            if (sp2 < 0.25 * Math.PI * sigma * sigma) return;
+            for (int c = 0; c < 3; c++) amp[c] /= sp2;
+            double a2 = yr * amp[0] + yg * amp[1] + yb * amp[2];
+            if (!(a2 > 0)) return;
+            st[2] = amp[0];
+            st[3] = amp[1];
+            st[4] = amp[2];
+            st[5] = a2;
+            st[6] = a2 * Math.sqrt(sp2) / (CORR * noise);
+            st[7] = reach(a2);
+            for (int c = 0; c < 3; c++) System.arraycopy(plane[c], 0, st, 8 + 3 * c, 3);
         }
 
         /**

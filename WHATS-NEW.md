@@ -1,5 +1,123 @@
 # Night Sky Camera: what's new
 
+## Version 2.4: the NASA version
+
+Three big things and two quiet ones, all made from the same five minutes of starlight, and all automatic: take a
+photo the way you always do, and they're waiting on the result screen when it's developed. Nothing to switch on.
+
+### What's new
+
+**The three big ones**
+
+- **Deep Space Zoom: close-ups sharper than the photo.** After developing, the phone looks for the showpieces in your
+  photo (galaxies like Andromeda, nebulae like Orion's, star clusters like the Pleiades, and planets) and makes up to
+  three close-ups of them. Not a crop: it goes back to every frame and builds each close-up again on pixels half the
+  size, the trick that made the Hubble Deep Field ("drizzling"). The sky drifts a tiny bit across the camera between
+  frames, so every patch of sky landed on lots of slightly different spots, and all of those pieces fit together into
+  more detail than any single frame has. Then the stars are lifted off the glow and drawn back crisp and small, so
+  the galaxy or the nebula itself stands out. Each close-up is a card made to show off: its name, what it is, how
+  far away, when its light set off ("this light left it around the year 1582"), a full Moon drawn to the same scale,
+  and something to know ("It's coming our way at 110 km a second and will meet the Milky Way in about 4.5 billion
+  years"). Jupiter's card also draws its four big moons where they are that night, as a telescope would show them,
+  and says if one is hiding behind Jupiter. They're in the gallery; **Share the close-ups** sends them all at once.
+- **Mission Replay: the whole night as a GIF.** A looping GIF saved to the phone's gallery at the end of every
+  session: the frames adding up into the photo, the finished photo, the far-away spacecraft in it marked with green
+  diamonds, each close-up's target locked in brackets, then a zoom into each one that "enhances" into its card, and a
+  MISSION COMPLETE card with the night's numbers. Then round again. It plays on the result screen; tap it to open it
+  full size, **Share the GIF** to send it. It's about 25 seconds and about 5 MB, so it goes in any message.
+- **Deep Space Network: the farthest things people have made, in your photo.** The phone now knows where the five
+  spacecraft leaving the Solar System are: Voyager 1 and 2, New Horizons, Pioneer 10 and 11. When one is in your
+  photo, the **Names** view marks it with a green target diamond and its distance, and the result screen's **Deep
+  Space Network** card says where each one is tonight (in your photo, up in your sky and which way, or below your
+  horizon), how far ("25.9 billion km away, 173 times farther than the Sun"), how fast, and how long a radio message
+  takes to reach it, with the time it would arrive if you'd sent one when you took the photo. Voyager 1 is the star
+  of the show: on 18 November 2026 it became the first thing people ever made to be a whole light-day away, so a
+  message to it takes 24 hours. Also marked: **Pluto** (a dashed ring: it's there, just far too faint for a phone)
+  and **L2**, the point the Webb space telescope circles, 1.5 million km straight away from the Sun. In Hear the
+  Stars a spacecraft goes **beep beep BEEP**, Mission Control's Star Spotter has cards for them, and there are two
+  new patches: **Deep Space Network** and **Pluto Patrol** ("It's far too faint to see. It still counts.").
+
+**The two quiet ones (in every photo)**
+
+- **Light pollution out, the Milky Way kept.** The phone has always taken the town's orange glow out of the sky. It
+  did it by fitting a smooth slope to the whole picture, and a wide Milky Way looked like part of that slope, so
+  some of the Milky Way went too. Now the phone knows where the Milky Way is in your photo (from the stars it
+  recognises) and leaves it out when it works out the glow, and it follows a glow that rises steeply near the
+  horizon, which a plain slope couldn't. On a simulated night with a town on the horizon: 90% of the Milky Way's
+  light kept, where 2.3 kept 64%.
+- **No more purple halos around bright stars.** A phone's lens focuses blue light very slightly differently from
+  green, so bright stars got a purple or blue ring. The phone now measures how wide each colour's star images are
+  in your photo and evens them out, so a star is its own colour all the way to its edge. The ring went from 45% too
+  blue to 6%.
+
+### Try tonight
+
+Times are for late November in most of the US, with the phone lying flat as usual (it sees the top of the sky).
+
+1. **Around 9 pm: Andromeda.** The Andromeda Galaxy is almost straight overhead then, the best target Deep Space
+   Zoom has. Lay the phone down anywhere dark for a 5-minute photo and you should get its close-up, and maybe the
+   Double Cluster or the Triangulum Galaxy too.
+2. **Around midnight (a Friday, maybe): the Pleiades and Pioneer 10.** The Pleiades are high overhead, and that one
+   photo can hold four things at once: the Pleiades' close-up, Pioneer 10 (a green diamond between the bull's horns,
+   141 times farther away than the Sun), L2 (only 4 degrees from the Pleiades tonight) and the planet Uranus.
+3. **Any night: the Deep Space Network card.** After every photo it says where all five spacecraft are. Voyager 1,
+   the light-day one, is low in the west right after dark in late November, too low for a phone lying flat, but the
+   card still tells you where to look and when a message sent from your back yard would get there.
+4. Open **Mission Replay** and send the GIF to someone who'd like it.
+
+### Good to know
+
+- Close-ups and the replay are made after the photo is saved, in a few more seconds of developing. If the phone is
+  short of memory they're skipped (the session log says so) and the photo is exactly as before.
+- A close-up needs the sky recognised and a target bright enough: when there's none, the card says why. Star
+  trails photos get the replay but no close-ups.
+- Photos from before 2.4 say "Made by an older version's processing" in the edit screen; **Make it again with the
+  new processing** gives them the new sky and the halo fix.
+- The close-ups' one known flaw: two stars so close together that they blur into one can come out as a single
+  star with a thin arc beside it.
+- The spacecraft's places come from their published positions on 22 November 2026, moved along their paths; they're
+  good to well under a degree for years (none of them can be seen, of course: what's marked is where they are).
+
+### Install it
+
+Exactly as before (same signing key, so it installs over 2.3 and keeps everything): the steps are in the README,
+under **Install it on your phone**.
+
+### Tested
+
+All on the simulator and the app off the phone, as before (nothing here has run on the Pixel yet):
+
+- **The whole test gate: 45 of 45.** All 39 simulator tests pass, and the six simulated nights (clear, partly
+  cloudy, cloudy, few stars, branches in the way, the sensor's pattern) stack exactly as they did in 2.3.
+- **Light pollution:** with a town's glow rising steeply over the horizon, 90% of the Milky Way's light kept (2.3
+  kept 64%). **Purple halos:** a lens that spreads blue wider than green gave rings 45% too blue; now 6%.
+- **Deep Space Zoom:** a simulated night under Andromeda gets three close-ups (Andromeda, the Alpha Persei Cluster
+  and the Double Cluster). Andromeda lands 0.00 pixels from where the sky says it is, its stars come out a third
+  smaller, and all of its own light is still there. A photo that can't be placed on the sky gets no close-ups, and a
+  galaxy too faint to show isn't promised one.
+- **Mission Replay:** every picture the GIF maker writes reads back exactly, noise and all, and that night's replay
+  is 65 pictures, 21.5 seconds a loop, 4.5 MB.
+- **Deep Space Network:** all five spacecraft within 0.13 degrees of Heavens-Above's table, Voyager 1 a light-day
+  away on 18 November 2026 (24.006 hours), Pluto within 0.1 degrees of in-the-sky.org, and Jupiter's moons exactly
+  where Meeus's worked example has them.
+- **A whole night through the app itself** (Start, five minutes of frames, developing, the close-ups, the replay,
+  the Deep Space Network card, Names, Save this copy): 0 problems. It caught a real bug on the way: a session opened
+  again from **Sessions** had lost its GIF and its close-ups. Fixed: they're kept with the session now.
+- **Every button tapped:** 43 screens, 1,070 taps, 0 problems.
+- **The close-ups checked by eye**, star by star, on the Pleiades, the Hyades and the Alpha Persei Cluster from that
+  night. That found two things, both fixed: a dark ring round a faint star right beside a bright one, and a grey
+  patch round a star squeezed in among its neighbours in the middle of the Pleiades (each star's sky is now measured
+  with its neighbours' light taken out).
+
+### Where the facts come from
+
+The spacecraft: [Heavens-Above's table of spacecraft leaving the Solar System](https://www.heavens-above.com/SolarEscape.aspx),
+checked against [Wikipedia's list](https://en.wikipedia.org/wiki/List_of_artificial_objects_leaving_the_Solar_System)
+and [EarthSky on Voyager 1's light-day](https://earthsky.org/space/voyager-1-1-light-day-from-earth-november-17-18-2026/).
+Pluto: JPL's orbit for it, checked against [in-the-sky.org](https://in-the-sky.org/data/object.php?id=A134340).
+Jupiter's moons: J. Meeus, *Astronomical Algorithms*, chapter 44. The light-pollution and halo fixes follow what
+[GraXpert](https://github.com/Steffenhir/GraXpert) and [Siril](https://siril.org/) do on a computer.
+
 ## Version 2.3: Mission Control, and five things to show an 11-year-old
 
 ### What's new
