@@ -141,6 +141,7 @@ public class Night {
         namesCheck();
         songCheck();
         missionCheck();
+        nasaCheck();
     }
 
     /**
@@ -2030,6 +2031,126 @@ public class Night {
         }
         if (lap != null && !patches.matches("(?s).*\"id\":\"commander\"[^}]*\"got\":true.*")) {
             Monkey.problem(scenario + ": a night watched from a laptop earned no Mission Commander patch");
+        }
+    }
+
+    /**
+     * The NASA version (2.4) on the result screen: Mission Replay's GIF in the gallery, read back frame by frame, and
+     * shared; Deep Space Zoom's close-ups in the gallery (1080 x 1080 pictures), on the screen and shared all at once;
+     * Deep Space Network's card, with this sky's Pioneer 10 in the photo, and Show all filling in the rest.
+     */
+    static void nasaCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result for 2.4's checks");
+            return;
+        }
+        // Mission Replay
+        File gif = r.replayGif != null ? FakeMediaStore.file(r.replayGif) : null;
+        if (r.replay == null || gif == null || !gif.isFile()) {
+            Monkey.problem(scenario + ": no Mission Replay in the gallery (" + r.replayWords + ")");
+        } else {
+            javax.imageio.ImageReader rd = javax.imageio.ImageIO.getImageReadersByFormatName("gif").next();
+            javax.imageio.stream.ImageInputStream in = javax.imageio.ImageIO.createImageInputStream(gif);
+            int frames;
+            try {
+                rd.setInput(in);
+                frames = rd.getNumImages(true);
+                java.awt.image.BufferedImage last = rd.read(frames - 1);
+                Monkey.say(String.format(Locale.US, "  Mission Replay: %s, %d KB, %d frames of %d x %d", gif.getName(), gif.length() / 1024, frames,
+                        last.getWidth(), last.getHeight()));
+            } finally {
+                in.close();
+            }
+            if (frames < 10) Monkey.problem(scenario + ": Mission Replay has only " + frames + " frames");
+            if (gif.length() > (8L << 20)) Monkey.problem(scenario + ": Mission Replay is " + gif.length() / 1024 + " KB, too big for a message");
+            if (findLabel("Mission Replay") == null) Monkey.problem(scenario + ": Mission Replay isn't on the result screen");
+            shareCheck("Share the GIF", Intent.ACTION_SEND, "image/gif", r.replayGif);
+        }
+        // Deep Space Zoom
+        if (r.zooms.isEmpty()) {
+            Monkey.problem(scenario + ": no Deep Space Zoom close-ups: " + r.zoomWords);
+        } else {
+            StringBuilder names = new StringBuilder();
+            for (SessionController.ZoomShot z : r.zooms) {
+                File f = z.uri != null ? FakeMediaStore.file(z.uri) : null;
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                if (f != null) BitmapFactory.decodeFile(f.getPath(), o);
+                names.append(names.length() > 0 ? ", " : "").append(z.title).append(f != null ? " (" + f.length() / 1024 + " KB)" : "");
+                if (f == null || o.outWidth != 1080 || o.outHeight != 1080) {
+                    Monkey.problem(scenario + ": the close-up of " + z.title + " isn't a 1080 x 1080 picture in the gallery: " + o.outWidth + " x " + o.outHeight);
+                }
+                if (findLabel(z.title) == null) Monkey.problem(scenario + ": " + z.title + " isn't on the result screen");
+            }
+            Monkey.say("  Deep Space Zoom: " + names);
+            if (r.zooms.size() == 1) shareCheck("Share the close-up", Intent.ACTION_SEND, "image/jpeg", r.zooms.get(0).uri);
+            else shareCheck("Share the close-ups", Intent.ACTION_SEND_MULTIPLE, "image/jpeg", null);
+        }
+        // Deep Space Network: this sky has Pioneer 10 (and L2) in the photo
+        List<String> before = networkHeads();
+        if (before.isEmpty()) {
+            Monkey.problem(scenario + ": no Deep Space Network card: " + labels());
+            return;
+        }
+        boolean pioneer = false;
+        for (String hd : before) pioneer |= hd.startsWith("Pioneer 10: in your photo");
+        if (!pioneer) Monkey.problem(scenario + ": Pioneer 10 isn't in this photo's Deep Space Network card: " + before);
+        View more = findLabel("Show all ");
+        if (more == null) {
+            if (before.size() < 7) Monkey.problem(scenario + ": the Deep Space Network card shows " + before.size() + " of 7, and no Show all");
+        } else {
+            press("Show all ");
+            List<String> after = networkHeads();
+            if (findLabel("Show all ") != null) Monkey.problem(scenario + ": Show all is still there after a tap");
+            if (after.size() != 7) Monkey.problem(scenario + ": Show all shows " + after.size() + " of the 7 far travellers: " + after);
+            before = after;
+        }
+        for (String hd : before) Monkey.say("    " + hd);
+    }
+
+    /** The Deep Space Network card's lines on the screen: "Voyager 1: up in your sky, ..." */
+    static List<String> networkHeads() {
+        List<String> out = new ArrayList<String>();
+        String[] names = {"Voyager 1:", "Voyager 2:", "New Horizons:", "Pioneer 10:", "Pioneer 11:", "L2, Webb's home:", "Pluto:"};
+        collectTexts(Monkey.a.getWindow().getDecorView(), names, out);
+        return out;
+    }
+
+    static void collectTexts(View v, String[] starts, List<String> out) {
+        if (v instanceof android.widget.TextView) {
+            String t = String.valueOf(((android.widget.TextView) v).getText());
+            for (String s : starts) if (t.startsWith(s)) out.add(t);
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) collectTexts(g.getChildAt(i), starts, out);
+        }
+    }
+
+    /** Taps {@code label}; the share sheet it opens must offer {@code action} of {@code type} with {@code uri} (null: any). */
+    static void shareCheck(String label, String action, String type, android.net.Uri uri) throws Exception {
+        if (findLabel(label) == null) {
+            Monkey.problem(scenario + ": no " + label + " on the result screen");
+            return;
+        }
+        org.robolectric.shadows.ShadowActivity sa = Shadows.shadowOf(Monkey.a);
+        while (sa.getNextStartedActivity() != null) {
+            // what was started before
+        }
+        press(label);
+        Intent chooser = sa.getNextStartedActivity();
+        Intent i = chooser != null ? (Intent) chooser.getParcelableExtra(Intent.EXTRA_INTENT) : null;
+        if (i == null || !action.equals(i.getAction()) || !type.equals(i.getType())) {
+            Monkey.problem(scenario + ": " + label + " offered " + (i == null ? "nothing" : i.getAction() + " of " + i.getType()));
+            return;
+        }
+        if (Intent.ACTION_SEND.equals(action) && uri != null && !uri.equals(i.getParcelableExtra(Intent.EXTRA_STREAM))) {
+            Monkey.problem(scenario + ": " + label + " shared " + i.getParcelableExtra(Intent.EXTRA_STREAM) + ", not " + uri);
+        }
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            java.util.ArrayList<android.net.Uri> all = i.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (all == null || all.size() < 2) Monkey.problem(scenario + ": " + label + " shared " + (all == null ? 0 : all.size()) + " pictures");
         }
     }
 

@@ -554,14 +554,15 @@ public final class DeepZoom {
         float sgImg = cu.starSigma > 0 ? (float) (cu.starSigma * used.s) : 1.2f * used.s;
         // a galaxy's middle (and a ball of stars', too crowded to tell apart) stays as it is
         double keep = glow ? Math.max(4 * sgImg, 0.15 * or) : t.kind == 'c' ? 0.3 * or : 0;
-        int[] left = new int[3];
+        int[] left = new int[4];
         byte[] notStar = new byte[used.n * used.n];
         int redrawn = redrawStars(img, a, sgImg, glow ? SHRINK_GLOW : SHRINK, o[0], o[1], keep, left, notStar);
         cu.starsRedrawn = redrawn;
         cu.smallerStarSigma = starSigma(img, a) / used.s;
         if (glow) cu.objectKept = before > 0 ? objectLight(img, a, o[0], o[1], rIn) / before : Double.NaN;
-        String reduced = String.format(Locale.US, "%d stars drawn again at %.0f%% of their size (left as they were: %d clipped, %d wider than "
-                + "a star, %d in its middle)", redrawn, 100 * (glow ? SHRINK_GLOW : SHRINK), left[0], left[1], left[2]);
+        String reduced = String.format(Locale.US, "%d stars drawn again at %.0f%% of their size (%d of them beside light kept as it was; left "
+                + "as they were: %d clipped, %d wider than a star, %d in its middle)", redrawn, 100 * (glow ? SHRINK_GLOW : SHRINK), left[3],
+                left[0], left[1], left[2]);
         Renderer.Analysis ra = regionAnalysis(a, used, img);
         float[] nz = noise(img, ra);
         float noise = nz[0];
@@ -660,7 +661,7 @@ public final class DeepZoom {
             cu.distance = distance(t.distLy);
         }
         double field = t.side() / Math.max(1e-6, t.pxPerDeg);
-        cu.width = String.format(Locale.US, "This picture is %.1f degrees across: %s full Moons side by side", field, moons(field / MOON_DEG));
+        cu.width = String.format(Locale.US, "%.1f degrees of sky, %s full Moons side by side", field, moons(field / MOON_DEG));
         cu.fact = t.fact != null ? t.fact : "";
         cu.how = drizzled ? String.format(Locale.US, "Drizzled at %dx from %d frames, the trick the Hubble Deep Field used", ZOOM, frames)
                 : String.format(Locale.US, "Cut from the %d-frame stack at full detail", frames);
@@ -1492,7 +1493,7 @@ public final class DeepZoom {
     // ------------------------------------------------------------------------------------------------
 
     /** A star: the band-pass (the light smoothed at a star image's size less it smoothed three times wider) FIND times its noise. */
-    static final float FIND = 4f;
+    static final float FIND = 3f;
     /**
      * A star's colour: its own (the nearest a star's can be, a blackbody's) from COLOUR_SNR1 times its light's noise,
      * white under COLOUR_SNR0, a mix between.
@@ -1507,6 +1508,12 @@ public final class DeepZoom {
     static final float SHRINK_GLOW = 0.7f, SHRINK = 0.9f;
     /** The drizzle's drops spread a frame's noise over neighbouring pixels: a fit's noise is about this much a white noise's. */
     private static final float CORR = 1.5f;
+    /**
+     * The fainter stars beside brighter ones are looked for again with the brighter ones' light taken out, except where
+     * that light stands NEAR times over the noise (a bright star's own middle: what's left of it there can't be told
+     * from a star).
+     */
+    static final float NEAR = 3f;
 
     /**
      * The picture's stars taken apart from the glow and drawn back in (2.4), the way the image makers behind NASA's
@@ -1515,198 +1522,108 @@ public final class DeepZoom {
      * plane fitted to a ring around it, the brighter neighbours left out), its pixels out to where it falls under half
      * the noise filled in with that plane, and drawn back as a round Gaussian {@code shrink} times as wide holding the
      * same light, in the colour of the blackbody nearest its own (a star's colour is its temperature's), pulled towards
-     * white as far as the noise could have made it ({@link #COLOUR_SNR0}). Left as they are: stars that clipped in some
-     * frame ({@code left[0]}), lights wider than a star image (a galaxy's middle, a knot of nebula; {@code left[1]}), and
-     * any within {@code keepR} px of ({@code ox}, {@code oy}) ({@code left[2]}); the last two marked in {@code glow} (a
-     * byte per pixel, for the noise reduction: light that isn't a star's). Returns how many were drawn again.
+     * white as far as the noise could have made it ({@link #COLOUR_SNR0}).
+     * <p>
+     * The fainter stars beside brighter ones are looked for a second time with the brighter ones' light taken out
+     * ({@link #NEAR}): the band-pass of a bright star dips below the sky around it, and a faint neighbour in that dip
+     * would otherwise go unfound and lose half its light to the bright one's filled-in disc. Left as they are, their
+     * light kept: stars that clipped in some frame ({@code left[0]}), lights wider than a star image (a galaxy's middle,
+     * a knot of nebula; {@code left[1]}), and any within {@code keepR} px of ({@code ox}, {@code oy}) ({@code left[2]});
+     * the second and third marked in {@code glow} (a byte per pixel, for the noise reduction: light that isn't a star's).
+     * A star whose disc reaches into that light has only its own Gaussian taken out there, not the sky filled in
+     * ({@code left[3]} counts them). Stars partly outside the picture are fitted on the part inside. Returns how many
+     * were drawn again.
      */
     static int redrawStars(RgbImage img, Renderer.Analysis a, float sigma, float shrink, double ox, double oy, double keepR, int[] left,
                            byte[] glow) {
         final int w = img.width, h = img.height, np = w * h;
+        // light that stays as it is: no star drawn again fills its disc over it
+        byte[] keep = new byte[np];
         // the object's own middle
         if (keepR > 0) {
-            int ya = Math.max(0, (int) Math.floor(oy - keepR)), yb = Math.min(h - 1, (int) Math.ceil(oy + keepR));
-            int xa = Math.max(0, (int) Math.floor(ox - keepR)), xb = Math.min(w - 1, (int) Math.ceil(ox + keepR));
-            for (int y = ya; y <= yb; y++) {
-                for (int x = xa; x <= xb; x++) if (Math.hypot(x + 0.5 - ox, y + 0.5 - oy) <= keepR) glow[y * w + x] = 1;
-            }
+            paint(glow, w, h, ox, oy, keepR);
+            paint(keep, w, h, ox, oy, keepR);
         }
         if (!(sigma > 0.3f)) return 0;
-        float[] m = a.m;
-        final float yr = KR * m[0] + KG * m[3] + KB * m[6], yg = KR * m[1] + KG * m[4] + KB * m[7], yb = KR * m[2] + KG * m[5] + KB * m[8];
+        Redraw rd = new Redraw(img, a, sigma, keep, glow, left);
         final float[] R = img.r, G = img.g, B = img.b;
-        float noise = lumaNoise(img, a);
         float[] L = new float[np];
-        for (int i = 0; i < np; i++) L[i] = yr * R[i] + yg * G[i] + yb * B[i];
-        // the band-pass, and its noise over the whole picture (the stars are few enough not to move a median)
-        float[] D = L.clone(), wide = L.clone(), tmp = new float[np];
-        gaussBlur(D, tmp, w, h, sigma);
-        gaussBlur(wide, tmp, w, h, 3 * sigma);
-        for (int i = 0; i < np; i++) D[i] -= wide[i];
-        wide = null;
+        for (int i = 0; i < np; i++) L[i] = rd.yr * R[i] + rd.yg * G[i] + rd.yb * B[i];
+        float[] tmp = new float[np];
+        float[] D = bandPass(L, tmp, w, h, sigma);
+        // the band-pass's noise over the whole picture (the stars are few enough not to move a median)
         float[] smp = new float[(np + 3) / 4];
         int k = 0;
         for (int i = 0; i < np && k < smp.length; i += 4) smp[k++] = D[i];
         float dMed = Stats.median(smp, k);
         float dSig = Math.max(1e-6f, Stats.madSigma(smp, k, dMed));
-        float find = dMed + FIND * dSig;
-        final int pr = Math.max(1, Math.round(sigma));
-        final int rFit = (int) Math.ceil(2.5 * sigma), rAp = (int) Math.ceil(3 * sigma), rIn = rAp + 1;
-        final int rOut = rIn + Math.max(3, (int) Math.ceil(2 * sigma));
-        final int edge = rOut + 1;
-        final double s2 = 2.0 * sigma * sigma;
-        float[] white = neutral(m);
-        byte[] clip = img.clip;
+        smp = null;
+        rd.dMed = dMed;
+        rd.find = dMed + FIND * dSig;
         List<double[]> stars = new ArrayList<double[]>();
-        float[] ring = new float[(2 * rOut + 1) * (2 * rOut + 1)];
-        int[] ringAt = new int[ring.length];
-        for (int y = edge; y < h - edge; y++) {
-            for (int x = edge; x < w - edge; x++) {
-                int i = y * w + x;
-                float v = D[i];
-                if (v < find) continue;
-                boolean top = true;
-                for (int dy = -pr; dy <= pr && top; dy++) {
-                    for (int dx = -pr; dx <= pr; dx++) {
-                        if (dx == 0 && dy == 0) continue;
-                        float q = D[i + dy * w + dx];
-                        if (q > v || (q == v && (dy < 0 || (dy == 0 && dx < 0)))) {
-                            top = false;
-                            break;
-                        }
-                    }
-                }
-                if (!top) continue;
-                // its middle: the band-pass's light around the peak
-                double sw = 0, sx = 0, sy = 0;
-                for (int dy = -pr; dy <= pr; dy++) {
-                    for (int dx = -pr; dx <= pr; dx++) {
-                        double q = Math.max(0, D[i + dy * w + dx] - dMed);
-                        sw += q;
-                        sx += q * dx;
-                        sy += q * dy;
-                    }
-                }
-                double cx = x + 0.5 + sx / sw, cy = y + 0.5 + sy / sw;
-                if (keepR > 0 && Math.hypot(cx - ox, cy - oy) < keepR) {
-                    left[2]++;
-                    continue;
-                }
-                // the sky around it: a ring, the brighter pixels (neighbours) left out, fitted as a plane in each colour
-                int n = 0;
-                for (int dy = -rOut; dy <= rOut; dy++) {
-                    for (int dx = -rOut; dx <= rOut; dx++) {
-                        int d2 = dx * dx + dy * dy;
-                        if (d2 < rIn * rIn || d2 > rOut * rOut) continue;
-                        int j = i + dy * w + dx;
-                        ring[n] = L[j];
-                        ringAt[n++] = j;
-                    }
-                }
-                float[] rs = Arrays.copyOf(ring, n);
-                float rMed = Stats.median(rs, n);
-                float lim = rMed + 3 * noise;
-                double[] A = new double[6];
-                double[][] bv = new double[3][3];
-                int used = 0;
-                for (int t = 0; t < n; t++) {
-                    if (ring[t] > lim) continue;
-                    int j = ringAt[t];
-                    double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy;
-                    A[0] += 1;
-                    A[1] += ex;
-                    A[2] += ey;
-                    A[3] += ex * ex;
-                    A[4] += ex * ey;
-                    A[5] += ey * ey;
-                    for (int c = 0; c < 3; c++) {
-                        float val = c == 0 ? R[j] : c == 1 ? G[j] : B[j];
-                        bv[c][0] += val;
-                        bv[c][1] += val * ex;
-                        bv[c][2] += val * ey;
-                    }
-                    used++;
-                }
-                if (used < 12) continue;
-                double[][] plane = new double[3][];
-                boolean ok = true;
-                for (int c = 0; c < 3 && ok; c++) {
-                    plane[c] = solve3(A[0], A[1], A[2], A[3], A[4], A[5], bv[c]);
-                    ok = plane[c] != null;
-                }
-                if (!ok) continue;
-                // its light in each colour: a Gaussian's height fitted over the plane; what's within 3 sigma, for its width
-                double sp2 = 0, ap = 0, apModel = 0;
-                double[] amp = new double[3];
-                boolean clipped = false;
-                int nAp = 0;
-                for (int dy = -rAp; dy <= rAp; dy++) {
-                    for (int dx = -rAp; dx <= rAp; dx++) {
-                        int j = i + dy * w + dx;
-                        double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy, d2 = ex * ex + ey * ey;
-                        if (d2 > rAp * rAp) continue;
-                        double P = Math.exp(-d2 / s2);
-                        double sr = R[j] - (plane[0][0] + plane[0][1] * ex + plane[0][2] * ey);
-                        double sg = G[j] - (plane[1][0] + plane[1][1] * ex + plane[1][2] * ey);
-                        double sb = B[j] - (plane[2][0] + plane[2][1] * ex + plane[2][2] * ey);
-                        ap += yr * sr + yg * sg + yb * sb;
-                        apModel += P;
-                        nAp++;
-                        if (d2 <= rFit * rFit) {
-                            amp[0] += sr * P;
-                            amp[1] += sg * P;
-                            amp[2] += sb * P;
-                            sp2 += P * P;
-                            if (clip != null && clip[j] != 0) clipped = true;
-                        }
-                    }
-                }
-                if (clipped) {
-                    left[0]++;
-                    continue;
-                }
-                for (int c = 0; c < 3; c++) amp[c] /= sp2;
-                double aL = yr * amp[0] + yg * amp[1] + yb * amp[2];
-                if (!(aL > 0)) continue;
-                // wider than a star image: more light within 3 sigma than a star this bright holds, past the noise
-                if (ap > WIDE * aL * apModel + 3 * CORR * noise * Math.sqrt(nAp)) {
-                    left[1]++;
-                    for (int dy = -rIn; dy <= rIn; dy++) {
-                        for (int dx = -rIn; dx <= rIn; dx++) if (dx * dx + dy * dy <= rIn * rIn) glow[i + dy * w + dx] = 1;
-                    }
-                    continue;
-                }
-                double snr = aL * Math.sqrt(sp2) / (CORR * noise);
-                // out to where it falls under half the noise
-                double rr = sigma * Math.sqrt(2 * Math.log(Math.max(1.0, 2 * aL / noise))) + 1;
-                rr = Math.max(rFit, Math.min(rOut, rr));
-                stars.add(new double[]{cx, cy, amp[0], amp[1], amp[2], aL, snr, rr, plane[0][0], plane[0][1], plane[0][2], plane[1][0],
-                        plane[1][1], plane[1][2], plane[2][0], plane[2][1], plane[2][2]});
+        List<double[]> seen = new ArrayList<double[]>();
+        rd.find(D, L, R, G, B, null, ox, oy, keepR, stars, seen);
+        // the fainter ones beside them, found again with the light of those found taken out
+        if (!stars.isEmpty()) {
+            float[] Mr = new float[np], Mg = new float[np], Mb = new float[np];
+            for (double[] st : stars) rd.model(st, Mr, Mg, Mb, 1.0);
+            // (the luminance from here on is theirs taken out too)
+            float[] R2 = new float[np], G2 = new float[np], B2 = new float[np];
+            byte[] skip = keep.clone();
+            float near = NEAR * rd.noise;
+            for (int i = 0; i < np; i++) {
+                R2[i] = R[i] - Mr[i];
+                G2[i] = G[i] - Mg[i];
+                B2[i] = B[i] - Mb[i];
+                float mL = rd.yr * Mr[i] + rd.yg * Mg[i] + rd.yb * Mb[i];
+                L[i] -= mL;
+                if (mL > near) skip[i] = 1;
             }
+            Mr = Mg = Mb = null;
+            for (double[] s : seen) paint(skip, w, h, s[0], s[1], rd.pr + 1);
+            D = bandPass(L, tmp, w, h, sigma);
+            rd.find(D, L, R2, G2, B2, skip, ox, oy, keepR, stars, null);
         }
         D = null;
         L = null;
         tmp = null;
-        // their pixels filled in with the sky around them
+        // their pixels filled in with the sky around them; where their discs reach into light that stays, only their own
+        // light (the Gaussian fitted to them) taken out of it, never below their sky
+        int drawn = 0;
         for (double[] st : stars) {
             double cx = st[0], cy = st[1], rr = st[7];
             int x0 = Math.max(0, (int) Math.floor(cx - rr)), x1 = Math.min(w - 1, (int) Math.ceil(cx + rr));
             int y0 = Math.max(0, (int) Math.floor(cy - rr)), y1 = Math.min(h - 1, (int) Math.ceil(cy + rr));
+            boolean beside = false;
             for (int y = y0; y <= y1; y++) {
                 for (int x = x0; x <= x1; x++) {
-                    double ex = x + 0.5 - cx, ey = y + 0.5 - cy;
-                    if (ex * ex + ey * ey > rr * rr) continue;
+                    double ex = x + 0.5 - cx, ey = y + 0.5 - cy, d2 = ex * ex + ey * ey;
+                    if (d2 > rr * rr) continue;
                     int j = y * w + x;
-                    R[j] = (float) (st[8] + st[9] * ex + st[10] * ey);
-                    G[j] = (float) (st[11] + st[12] * ex + st[13] * ey);
-                    B[j] = (float) (st[14] + st[15] * ex + st[16] * ey);
+                    float pr = (float) (st[8] + st[9] * ex + st[10] * ey);
+                    float pg = (float) (st[11] + st[12] * ex + st[13] * ey);
+                    float pb = (float) (st[14] + st[15] * ex + st[16] * ey);
+                    if (keep[j] == 0) {
+                        R[j] = pr;
+                        G[j] = pg;
+                        B[j] = pb;
+                    } else {
+                        double P = Math.exp(-d2 / rd.s2);
+                        R[j] = Math.max(pr, (float) (R[j] - st[2] * P));
+                        G[j] = Math.max(pg, (float) (G[j] - st[3] * P));
+                        B[j] = Math.max(pb, (float) (B[j] - st[4] * P));
+                        beside = true;
+                    }
                 }
             }
+            if (beside) left[3]++;
+            drawn++;
         }
         // and drawn back, round, with the same light
         double sd = shrink * sigma, sd2 = 2 * sd * sd, scale = 1.0 / (shrink * shrink);
-        int rd = (int) Math.ceil(4 * sd) + 1;
-        float[] inv = inverse(m);
+        int rdr = (int) Math.ceil(4 * sd) + 1;
+        float[] m = a.m;
+        float[] inv = inverse(m), white = neutral(m);
         for (double[] st : stars) {
             double cx = st[0], cy = st[1], aL = st[5];
             float t = smooth((float) st[6], COLOUR_SNR0, COLOUR_SNR1);
@@ -1714,8 +1631,8 @@ public final class DeepZoom {
             float[] own = t > 0 ? starColour(m, inv, st[2], st[3], st[4]) : white;
             double[] amp = new double[3];
             for (int c = 0; c < 3; c++) amp[c] = scale * aL * (t * own[c] + (1 - t) * white[c]);
-            int x0 = Math.max(0, (int) Math.floor(cx) - rd), x1 = Math.min(w - 1, (int) Math.floor(cx) + rd);
-            int y0 = Math.max(0, (int) Math.floor(cy) - rd), y1 = Math.min(h - 1, (int) Math.floor(cy) + rd);
+            int x0 = Math.max(0, (int) Math.floor(cx) - rdr), x1 = Math.min(w - 1, (int) Math.floor(cx) + rdr);
+            int y0 = Math.max(0, (int) Math.floor(cy) - rdr), y1 = Math.min(h - 1, (int) Math.floor(cy) + rdr);
             for (int y = y0; y <= y1; y++) {
                 for (int x = x0; x <= x1; x++) {
                     double ex = x + 0.5 - cx, ey = y + 0.5 - cy;
@@ -1728,7 +1645,293 @@ public final class DeepZoom {
                 }
             }
         }
-        return stars.size();
+        return drawn;
+    }
+
+    /** The light smoothed at a star image's size {@code sigma} less it smoothed three times wider. */
+    private static float[] bandPass(float[] L, float[] tmp, int w, int h, float sigma) {
+        float[] D = L.clone(), wide = L.clone();
+        gaussBlur(D, tmp, w, h, sigma);
+        gaussBlur(wide, tmp, w, h, 3 * sigma);
+        for (int i = 0; i < D.length; i++) D[i] -= wide[i];
+        return D;
+    }
+
+    /** Sets {@code mask} within {@code r} px of (cx, cy). */
+    static void paint(byte[] mask, int w, int h, double cx, double cy, double r) {
+        int ya = Math.max(0, (int) Math.floor(cy - r)), yb = Math.min(h - 1, (int) Math.ceil(cy + r));
+        int xa = Math.max(0, (int) Math.floor(cx - r)), xb = Math.min(w - 1, (int) Math.ceil(cx + r));
+        double r2 = r * r;
+        for (int y = ya; y <= yb; y++) {
+            double ey = y + 0.5 - cy;
+            for (int x = xa; x <= xb; x++) {
+                double ex = x + 0.5 - cx;
+                if (ex * ex + ey * ey <= r2) mask[y * w + x] = 1;
+            }
+        }
+    }
+
+    /** Whether {@code mask} is set anywhere within {@code r} px of (cx, cy). */
+    static boolean touches(byte[] mask, int w, int h, double cx, double cy, double r) {
+        int ya = Math.max(0, (int) Math.floor(cy - r)), yb = Math.min(h - 1, (int) Math.ceil(cy + r));
+        int xa = Math.max(0, (int) Math.floor(cx - r)), xb = Math.min(w - 1, (int) Math.ceil(cx + r));
+        double r2 = r * r;
+        for (int y = ya; y <= yb; y++) {
+            double ey = y + 0.5 - cy;
+            for (int x = xa; x <= xb; x++) {
+                double ex = x + 0.5 - cx;
+                if (ex * ex + ey * ey <= r2 && mask[y * w + x] != 0) return true;
+            }
+        }
+        return false;
+    }
+
+    /** {@link #redrawStars}'s picture, star size and what it keeps. */
+    private static final class Redraw {
+        final int w, h;
+        final float sigma, noise, yr, yg, yb;
+        /** The peak's neighbourhood, the fit's reach, the aperture, and the sky ring's inner and outer radii. */
+        final int pr, rFit, rAp, rIn, rOut;
+        final double s2;
+        final byte[] keep, glow, clip;
+        final int[] left;
+        final float[] ring;
+        final int[] ringAt;
+        /** The band-pass's median and the level a star stands over it. */
+        float dMed, find;
+
+        Redraw(RgbImage img, Renderer.Analysis a, float sigma, byte[] keep, byte[] glow, int[] left) {
+            w = img.width;
+            h = img.height;
+            this.sigma = sigma;
+            float[] m = a.m;
+            yr = KR * m[0] + KG * m[3] + KB * m[6];
+            yg = KR * m[1] + KG * m[4] + KB * m[7];
+            yb = KR * m[2] + KG * m[5] + KB * m[8];
+            noise = lumaNoise(img, a);
+            pr = Math.max(1, Math.round(sigma));
+            rFit = (int) Math.ceil(2.5 * sigma);
+            rAp = (int) Math.ceil(3 * sigma);
+            rIn = rAp + 1;
+            rOut = rIn + Math.max(3, (int) Math.ceil(2 * sigma));
+            s2 = 2.0 * sigma * sigma;
+            this.keep = keep;
+            this.glow = glow;
+            this.left = left;
+            clip = img.clip;
+            ring = new float[(2 * rOut + 1) * (2 * rOut + 1)];
+            ringAt = new int[ring.length];
+        }
+
+        /**
+         * The stars standing out of band-pass {@code D} (of luminance {@code L}; colours {@code R}, {@code G}, {@code B}),
+         * none where {@code skip} is set (null: anywhere): the ones to draw again added to {@code stars} (x, y, amplitude in
+         * r, g, b, in luminance, signal to noise, disc radius, the sky's plane in r, g and b: three numbers each), every one
+         * found to {@code seen} (null: none kept), the rest counted in {@code left} and their light kept.
+         */
+        void find(float[] D, float[] L, float[] R, float[] G, float[] B, byte[] skip, double ox, double oy, double keepR,
+                  List<double[]> stars, List<double[]> seen) {
+            // out to the picture's edges: a star partly outside it is fitted on the part inside
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int i = y * w + x;
+                    float v = D[i];
+                    if (v < find || skip != null && skip[i] != 0) continue;
+                    boolean top = true;
+                    for (int dy = -pr; dy <= pr && top; dy++) {
+                        if (y + dy < 0 || y + dy >= h) continue;
+                        for (int dx = -pr; dx <= pr; dx++) {
+                            if (dx == 0 && dy == 0 || x + dx < 0 || x + dx >= w) continue;
+                            float q = D[i + dy * w + dx];
+                            if (q > v || (q == v && (dy < 0 || (dy == 0 && dx < 0)))) {
+                                top = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!top) continue;
+                    // its middle: the band-pass's light around the peak
+                    double sw = 0, sx = 0, sy = 0;
+                    for (int dy = -pr; dy <= pr; dy++) {
+                        if (y + dy < 0 || y + dy >= h) continue;
+                        for (int dx = -pr; dx <= pr; dx++) {
+                            if (x + dx < 0 || x + dx >= w) continue;
+                            double q = Math.max(0, D[i + dy * w + dx] - dMed);
+                            sw += q;
+                            sx += q * dx;
+                            sy += q * dy;
+                        }
+                    }
+                    if (!(sw > 0)) continue;
+                    double cx = x + 0.5 + sx / sw, cy = y + 0.5 + sy / sw;
+                    if (seen != null) seen.add(new double[]{cx, cy});
+                    if (keepR > 0 && Math.hypot(cx - ox, cy - oy) < keepR) {
+                        left[2]++;
+                        continue;
+                    }
+                    // the sky around it: a ring, the brighter pixels (neighbours) left out, fitted as a plane in each colour
+                    int n = 0;
+                    for (int dy = -rOut; dy <= rOut; dy++) {
+                        if (y + dy < 0 || y + dy >= h) continue;
+                        for (int dx = -rOut; dx <= rOut; dx++) {
+                            int d2 = dx * dx + dy * dy;
+                            if (d2 < rIn * rIn || d2 > rOut * rOut || x + dx < 0 || x + dx >= w) continue;
+                            int j = i + dy * w + dx;
+                            ring[n] = L[j];
+                            ringAt[n++] = j;
+                        }
+                    }
+                    float[] rs = Arrays.copyOf(ring, n);
+                    float rMed = Stats.median(rs, n);
+                    float lim = rMed + 3 * noise;
+                    double[] A = new double[6];
+                    double[][] bv = new double[3][3];
+                    int used = 0;
+                    for (int t = 0; t < n; t++) {
+                        if (ring[t] > lim) continue;
+                        int j = ringAt[t];
+                        double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy;
+                        A[0] += 1;
+                        A[1] += ex;
+                        A[2] += ey;
+                        A[3] += ex * ex;
+                        A[4] += ex * ey;
+                        A[5] += ey * ey;
+                        for (int c = 0; c < 3; c++) {
+                            float val = c == 0 ? R[j] : c == 1 ? G[j] : B[j];
+                            bv[c][0] += val;
+                            bv[c][1] += val * ex;
+                            bv[c][2] += val * ey;
+                        }
+                        used++;
+                    }
+                    if (used < 12) continue;
+                    double[][] plane = new double[3][];
+                    boolean ok = true;
+                    for (int c = 0; c < 3 && ok; c++) {
+                        plane[c] = solve3(A[0], A[1], A[2], A[3], A[4], A[5], bv[c]);
+                        ok = plane[c] != null;
+                    }
+                    if (!ok) continue;
+                    // its light in each colour: a Gaussian's height fitted over the plane; what's within 3 sigma, for its width
+                    double sp2 = 0, ap = 0, apModel = 0;
+                    double[] amp = new double[3];
+                    boolean clipped = false;
+                    int nAp = 0;
+                    for (int dy = -rAp; dy <= rAp; dy++) {
+                        if (y + dy < 0 || y + dy >= h) continue;
+                        for (int dx = -rAp; dx <= rAp; dx++) {
+                            if (x + dx < 0 || x + dx >= w) continue;
+                            int j = i + dy * w + dx;
+                            double ex = (j % w) + 0.5 - cx, ey = (j / w) + 0.5 - cy, d2 = ex * ex + ey * ey;
+                            if (d2 > rAp * rAp) continue;
+                            double P = Math.exp(-d2 / s2);
+                            double sr = R[j] - (plane[0][0] + plane[0][1] * ex + plane[0][2] * ey);
+                            double sg = G[j] - (plane[1][0] + plane[1][1] * ex + plane[1][2] * ey);
+                            double sb = B[j] - (plane[2][0] + plane[2][1] * ex + plane[2][2] * ey);
+                            ap += yr * sr + yg * sg + yb * sb;
+                            apModel += P;
+                            nAp++;
+                            if (d2 <= rFit * rFit) {
+                                amp[0] += sr * P;
+                                amp[1] += sg * P;
+                                amp[2] += sb * P;
+                                sp2 += P * P;
+                                if (clip != null && clip[j] != 0) clipped = true;
+                            }
+                        }
+                    }
+                    if (clipped) {
+                        left[0]++;
+                        keepAround(L, cx, cy, rMed, Math.min(64, 6 * rOut));
+                        continue;
+                    }
+                    // too little of it inside the picture to fit
+                    if (sp2 < 0.25 * Math.PI * sigma * sigma) continue;
+                    for (int c = 0; c < 3; c++) amp[c] /= sp2;
+                    double aL = yr * amp[0] + yg * amp[1] + yb * amp[2];
+                    if (!(aL > 0)) continue;
+                    // wider than a star image: more light within 3 sigma than a star this bright holds, past the noise
+                    if (ap > WIDE * aL * apModel + 3 * CORR * noise * Math.sqrt(nAp)) {
+                        left[1]++;
+                        paint(glow, w, h, cx, cy, rIn);
+                        keepAround(L, cx, cy, rMed, 3 * rOut);
+                        continue;
+                    }
+                    double snr = aL * Math.sqrt(sp2) / (CORR * noise);
+                    // out to where it falls under half the noise
+                    double rr = sigma * Math.sqrt(2 * Math.log(Math.max(1.0, 2 * aL / noise))) + 1;
+                    rr = Math.max(rFit, Math.min(rOut, rr));
+                    stars.add(new double[]{cx, cy, amp[0], amp[1], amp[2], aL, snr, rr, plane[0][0], plane[0][1], plane[0][2],
+                            plane[1][0], plane[1][1], plane[1][2], plane[2][0], plane[2][1], plane[2][2]});
+                }
+            }
+        }
+
+        /**
+         * The light around (cx, cy) kept as it is: out to where its rings' median comes within half the noise of the
+         * faintest ring's (the sky around it), and two pixels more; at least the sky ring's inner radius, at most
+         * {@code rMax} px. {@code bg}: the sky ring's median, the level when no ring is fainter.
+         */
+        void keepAround(float[] L, double cx, double cy, float bg, int rMax) {
+            int ya = Math.max(0, (int) Math.floor(cy - rMax - 1)), yb = Math.min(h - 1, (int) Math.ceil(cy + rMax + 1));
+            int xa = Math.max(0, (int) Math.floor(cx - rMax - 1)), xb = Math.min(w - 1, (int) Math.ceil(cx + rMax + 1));
+            int[] count = new int[rMax + 1];
+            for (int y = ya; y <= yb; y++) {
+                for (int x = xa; x <= xb; x++) {
+                    int r = (int) Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+                    if (r <= rMax) count[r]++;
+                }
+            }
+            int[] at = new int[rMax + 2];
+            for (int r = 0; r <= rMax; r++) at[r + 1] = at[r] + count[r];
+            float[] all = new float[at[rMax + 1]];
+            int[] fill = Arrays.copyOf(at, rMax + 1);
+            for (int y = ya; y <= yb; y++) {
+                for (int x = xa; x <= xb; x++) {
+                    int r = (int) Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+                    if (r <= rMax) all[fill[r]++] = L[y * w + x];
+                }
+            }
+            float[] med = new float[rMax + 1];
+            float[] buf = new float[all.length];
+            float low = bg;
+            int last = rIn;
+            for (int r = rIn; r <= rMax; r++) {
+                int k = count[r];
+                if (k < 8) break;
+                System.arraycopy(all, at[r], buf, 0, k);
+                med[r] = Stats.median(buf, k);
+                low = Math.min(low, med[r]);
+                last = r;
+            }
+            int reach = last;
+            for (int r = rIn; r <= last; r++) {
+                if (med[r] < low + 0.5f * noise) {
+                    reach = r;
+                    break;
+                }
+            }
+            paint(keep, w, h, cx, cy, reach + 2);
+        }
+
+        /** Adds star {@code st}'s Gaussian, {@code k} times its light, to the colours' pictures. */
+        void model(double[] st, float[] Mr, float[] Mg, float[] Mb, double k) {
+            double cx = st[0], cy = st[1];
+            int r = (int) Math.ceil(4 * sigma) + 1;
+            int x0 = Math.max(0, (int) Math.floor(cx) - r), x1 = Math.min(w - 1, (int) Math.floor(cx) + r);
+            int y0 = Math.max(0, (int) Math.floor(cy) - r), y1 = Math.min(h - 1, (int) Math.floor(cy) + r);
+            for (int y = y0; y <= y1; y++) {
+                for (int x = x0; x <= x1; x++) {
+                    double ex = x + 0.5 - cx, ey = y + 0.5 - cy;
+                    double P = k * Math.exp(-(ex * ex + ey * ey) / s2);
+                    int j = y * w + x;
+                    Mr[j] += (float) (st[2] * P);
+                    Mg[j] += (float) (st[3] * P);
+                    Mb[j] += (float) (st[4] * P);
+                }
+            }
+        }
     }
 
     /**

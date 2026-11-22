@@ -6,9 +6,11 @@ and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws ea
 Earth's turn mode, it adds a few seconds of looping video of the whole sky wheeling round the pole. And while it
 works, a laptop on the same Wi-Fi becomes **Mission Control**: a countdown, a computer voice calling the mission,
 satellites named live as they cross the picture, star cards, a 3D flight through the stars, and the sky played as
-music.
+music. When the photo is done: sharp close-ups of the galaxies, nebulae and planets in it (**Deep Space Zoom**), the
+whole night as a looping GIF in the gallery (**Mission Replay**), and where NASA's farthest spacecraft were in your
+sky (**Deep Space Network**).
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.4.
 
 ## What it does
 
@@ -47,11 +49,27 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
   stack shows. Hot pixels are taken out too, the ones that come in pairs and threes as well as single ones.
 - **The Milky Way brought out.** The sky's own detail under the grain, the Milky Way's dark lanes and star
   clouds, is made stronger, and never darker than the plain sky; **Sky detail** in the edit screen sets how much.
-  The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture.
+  The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture, and
+  since 2.4 it's told apart from the Milky Way's own glow (the app knows where the Milky Way runs through the
+  picture), so the glow goes and the Milky Way stays.
 - **Sharp stars without coloured edges.** How big the lens and the air drew the stars is measured in each photo,
   on its own stars, and part of that blur is taken back out: stars come out smaller and brighter in the middle,
   with exactly the light they had. The red and blue edges a lens gives the stars towards the corners are measured
   on the stars too, and taken out as the frames are stacked. **Star sharpness** in the edit screen sets how much.
+  Since 2.4 the purple halo a phone lens leaves round bright stars (its blue and red light focus a little apart
+  from its green) is measured on the photo's own stars and taken out too.
+- **Deep Space Zoom.** Up to three close-ups of the best things in the photo: galaxies (Andromeda!), nebulae,
+  star clusters, and Jupiter, Saturn, Uranus or Neptune. Each one is made again from the frames at twice the
+  detail (a drizzle, as the Hubble team does it), its stars drawn smaller and rounder so the galaxy or nebula
+  shows, and saved as a card with its name, how far away it is (and when its light left), how big it is, and a
+  fact. Jupiter's card shows where its four big moons were that night.
+- **Mission Replay.** The whole night as one looping GIF in `Pictures/NightSky`: the frames adding up, the photo,
+  the spacecraft in it marked, its close-up targets locked in green brackets, a zoom into each one that "enhances"
+  into its card, and MISSION COMPLETE. It plays on the result screen and loops in any message.
+- **Deep Space Network.** Where the farthest things people have made were when you took the photo: Voyager 1 and
+  2, New Horizons, Pioneer 10 and 11, L2 (where the Webb telescope loops), and Pluto. The ones in the photo are
+  marked on it (with **Names**); a card on the result screen says which were in it, which were up in your sky and
+  where, how far away each one is, and when a radio message sent as you took the photo would get there.
 - **HDR photos.** Photos are saved as Ultra HDR photos: on this phone's screen, in Google Photos and in the app,
   the stars shine up to four times brighter than white. Anywhere else they look exactly as before.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
@@ -89,7 +107,8 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
   from another star you can look back home at the Sun.
 - **Hear the Stars.** The photo played as music: a line sweeps across it and each star sings as it's reached, blue
   stars high and red stars low. On the computer, and on the phone's result screen with a video to share.
-- **Mission patches.** 18 badges earned over many nights (First Light, Space Station, Meteor Hunter, Night Owl...).
+- **Mission patches.** 20 badges earned over many nights (First Light, Space Station, Meteor Hunter, Night Owl,
+  and since 2.4 Deep Space Network and Pluto Patrol...).
 - **Viewer.** Watch the photo build up from a laptop, tablet or another phone on the same Wi-Fi.
 - **Files.** JPEG with its video inside, named `.MP.jpg` (and optionally a RAW DNG) in `Pictures/NightSky`, so
   they show up in Google Photos. Logs, settings files and sky readings go in `Documents/NightSky`.
@@ -193,6 +212,14 @@ from its icon; a tap skips it) can be shown in dim red too, or turned off: **Adv
 
 Under the photo:
 
+- **Mission Replay** (2.4): the night's GIF, playing. Tap it to open it full size; **Share the GIF** sends it. It's
+  in `Pictures/NightSky` as `..._replay.gif`.
+- **Deep Space Zoom** (2.4): the close-ups side by side; tap one to open it, **Share the close-ups** sends them all.
+  They're in `Pictures/NightSky` as `..._zoom1.jpg` and so on. When a photo has none, the card says why (nothing
+  bright enough in it, or the sky wasn't recognised).
+- **Deep Space Network** (2.4): which of the far travellers were in the photo, which were up in your sky (how
+  high, which way) and which were below your horizon, how far each one is, and how long a radio message takes:
+  "one sent when you took this photo arrives at 6:31 pm the next day". **Show all** lists the rest.
 - **Hear the Stars**: **Hear it** plays the photo as music where the photo is: a line sweeps across it and each
   star rings as it's reached, in its own colour, blue stars high and red stars low, the brightest loudest; the
   planets, the Moon and the stars you named say their names (tap to stop). **Share the song** makes a 27-second
@@ -382,6 +409,12 @@ The page has six tabs along the top:
   light left a star 600 years ago, you're seeing that star as it was 600 years ago. The photo is a time machine.
 - **Blue stars** are the hottest (over 10,000 degrees), **red stars** the coolest (about 3,000). That's why they
   sing high and low in Hear the Stars.
+- **Voyager 1** is the farthest thing people have ever made: in November 2026 it became the first spacecraft a
+  whole **light-day** from Earth, so a radio message to it takes 24 hours. It's still talking to us, 49 years after
+  launch, on about as much power as a fridge light. If a green diamond in your photo says Voyager 1, it's right
+  there, 26 billion km away. (In Hear the Stars, spacecraft go beep-beep-BEEP.)
+- **Jupiter's moons** are the four tiny dots in a line beside it that Galileo found in 1610. They move every night:
+  compare two nights' close-ups.
 
 A phone or tablet can scan the QR code on the phone's screen instead of typing anything. From the viewer you
 can start early, add 5 minutes, mute the beeps, stop and develop, and download the finished files. It also
@@ -451,6 +484,17 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWIS
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+Deep Space Network (2.4) places the spacecraft from [Heavens-Above](https://www.heavens-above.com/SolarEscape.aspx)'s
+table of spacecraft leaving the Solar System (their directions, distances and speeds on 2026-11-22), checked against
+[Wikipedia's list](https://en.wikipedia.org/wiki/List_of_artificial_objects_leaving_the_Solar_System) and
+[EarthSky](https://earthsky.org/space/voyager-1-1-light-day-from-earth-november-17-18-2026/) (Voyager 1 one
+light-day from the Earth on 2026-11-18). Pluto's orbit is E. M. Standish's (JPL) mean elements for it, checked against
+[in-the-sky.org](https://in-the-sky.org/data/object.php?id=A134340); Jupiter's moons are J. Meeus's, *Astronomical
+Algorithms* (2nd ed., 1998), chapter 44. The close-ups' drizzle is A. S. Fruchter and R. N. Hook's (2002, the Hubble
+Deep Field's); the background model follows [GraXpert](https://github.com/Steffenhir/GraXpert)'s idea of a smooth
+surface through the sky's own samples, and the halo fix the purple fringe that [Siril](https://siril.org/)'s tools
+take out. No code was taken from any of them.
+
 ## For developers
 
 ### Layout
@@ -478,7 +522,8 @@ app/src/main/java/com/brandon/nightsky/
     SkyReadings         the sky reading log
     FrameStrip          the frame strip on the report and edit screens
     ZoomImageView       pinch-zoom picture with taps, painting and overlays
-    TrackPainter        satellite tracks, star names and constellation figures drawn on the photo
+    TrackPainter        satellite tracks, star names, constellation figures, spacecraft and Pluto drawn on the photo
+    CanvasPainter       Deep Space Zoom's cards and Mission Replay's captions drawn with Canvas (2.4)
     MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo, as an HDR photo)
     HdrScreen           HDR photos on this phone's screen, and its decoder reading a saved one back
     IntroView           the opening film (res/raw/intro.mp4) over the first screen
@@ -533,6 +578,12 @@ app/src/main/java/com/brandon/nightsky/
         StarBrackets    the short frames: the stack's clipped star cores given their light and colour from them
         HdrGain, UltraHdr  how much brighter than white the stars may show; the Ultra HDR file that says so
         Framing         crops and north up
+        SkyBackground   the sky's glow taken out with the Milky Way kept (2.4): the band left out of the fit
+        StarHalo        purple star halos (2.4): each colour's star size measured, the colours matched
+        DeepZoom        Deep Space Zoom (2.4): the frames drizzled again at twice the resolution into close-ups
+        MissionReplay, GifWriter  Mission Replay (2.4): the night as a looping GIF; the GIF89a encoder
+        DeepSpace       Deep Space Network (2.4): the Voyagers, Pioneers, New Horizons, L2, Pluto, Jupiter's moons
+        Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
                         a night through Mission Control; MissionDemo: the page served from a simulated night)
@@ -587,6 +638,10 @@ named wrong, nothing made up), then a quiet night with clouds, banding, a branch
 nothing; its story, its patches and its song are checked too. `MissionDemo` serves the page from a simulated night
 (`MissionDemo app/src/main/res/raw 8765 3 2 37`: the pages' folder, the port, the clock's speed, the scale and the
 frames) for working on the page in a browser.
+The 2.4 tests each take an output folder for their pictures: `BackgroundTest` (light pollution out, the Milky Way
+kept), `PurpleTest` (purple halos), `DeepZoomTest` (the close-ups sharper than the photo, and the replay),
+`GifTest` (the GIF read back frame by frame) and `DeepSpaceTest` (the spacecraft, Pluto and Jupiter's moons against
+published positions).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
