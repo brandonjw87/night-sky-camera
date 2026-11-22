@@ -1141,7 +1141,7 @@ final class SessionController {
         o.image = l.image;
         SensorSpec cs = Master.colourSpec(sp, l.meta);
         if (l.meta.colourFromStars) o.colourSpec = cs;
-        o.analysis = Master.analyze(l.image, cs, l.meta.trails);
+        o.analysis = Master.analyze(l.image, cs, l.meta.trails, l.meta.solution());
         o.summary = l.meta.summary;
         o.integrationSeconds = l.meta.integrationSeconds;
         o.unitsUsed = l.meta.unitsUsed;

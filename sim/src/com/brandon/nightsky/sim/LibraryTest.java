@@ -294,7 +294,7 @@ public final class LibraryTest {
 
     static String renderHash(Master.Loaded l, SensorSpec spec, Recipe r) {
         if (l == null) return "none";
-        Renderer.Analysis a = Master.analyze(l.image, Master.colourSpec(spec, l.meta), l.meta.trails);
+        Renderer.Analysis a = Master.analyze(l.image, Master.colourSpec(spec, l.meta), l.meta.trails, l.meta.solution());
         return Master.pixelHash(Master.render(l.image, a, r.params()));
     }
 

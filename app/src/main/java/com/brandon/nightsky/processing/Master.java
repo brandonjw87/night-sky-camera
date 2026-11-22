@@ -138,16 +138,32 @@ public final class Master {
      */
     public static void quantize(PostProcessor.Output o, SensorSpec spec, boolean trails) {
         quantize(o.image);
-        o.analysis = analyze(o.image, o.colourSpec != null ? o.colourSpec : spec, trails);
+        o.analysis = analyze(o.image, o.colourSpec != null ? o.colourSpec : spec, trails, o.solution);
     }
 
-    /** The picture's measurements for rendering, as the develop step makes them. */
+    /** The picture's measurements for rendering, as the develop step makes them (without a plate solution). */
     public static Renderer.Analysis analyze(RgbImage img, SensorSpec colourSpec, boolean trails) {
-        Renderer.Analysis a = Renderer.analyze(img, colourSpec);
+        return analyze(img, colourSpec, trails, null);
+    }
+
+    /**
+     * The picture's measurements for rendering, as the develop step makes them: with the plate solution {@code sol}
+     * (null: none) the background is fitted around the Milky Way (2.4); star trails' isn't (their sky turned).
+     */
+    public static Renderer.Analysis analyze(RgbImage img, SensorSpec colourSpec, boolean trails, SkySolver.Solution sol) {
+        Renderer.Analysis a = Renderer.analyze(img, colourSpec, trails ? null : sol);
         // star trails: colour over a longer window, as the trails' colour flickers with the sampling phase
         if (trails) {
             a.colorSigma = 3f;
             a.trails = true;
+        } else {
+            // purple halos (2.4): each colour's star size measured, the colours' windows matched to them
+            try {
+                a.halo = StarHalo.measure(img, a);
+                if (a.halo != null) a.colorWindows = a.halo.windows;
+            } catch (RuntimeException e) {
+                a.halo = null;
+            }
         }
         return a;
     }

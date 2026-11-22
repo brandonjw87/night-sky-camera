@@ -710,8 +710,8 @@ public final class PostProcessor {
         out.referenceStars = refDetections != null ? refDetections : ref != null ? ref.stars : null;
         if (brackets && out.aligned) bracketStars(out, sr.image, plans, model, hot, st.chroma, recs, progress);
         out.image = sr.image;
-        out.video = PhotoVideo.Source.deepSky(spec, model, fs, hot, plans, target, st.minTransparency, st.ground);
-        out.analysis = Renderer.analyze(sr.image, spec);
+        out.video = PhotoVideo.Source.deepSky(spec, model, fs, hot, plans, target, st.minTransparency, st.ground).withChroma(st.chroma);
+        out.analysis = Renderer.analyze(sr.image, spec, out.solution);
         calibrateColour(out);
         StringBuilder sb = new StringBuilder();
         if (out.aligned) {
@@ -803,7 +803,7 @@ public final class PostProcessor {
                 if (n != null) cs.camNeutral = n;
                 cs.wbCct = (float) ColorCalibration.WHITE_K;
                 out.colourSpec = cs;
-                out.analysis = Renderer.analyze(out.image, cs);
+                out.analysis = Renderer.analyze(out.image, cs, out.solution);
             }
             decide(out, r.describe(spec.wbCct) + String.format(Locale.US, " (%d ms)", System.currentTimeMillis() - t0));
         } catch (RuntimeException e) {
