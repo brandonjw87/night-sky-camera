@@ -1101,6 +1101,10 @@ public final class MissionControl {
             }
             double[] core = m.corePixel(p.crop[0], p.crop[1], p.crop[2], p.crop[3]);
             f.core = core != null;
+            for (DeepSpace.Seen s : m.craft(p.crop[0], p.crop[1], p.crop[2], p.crop[3])) {
+                if ("probe".equals(s.kind)) f.craft.add(s.name);
+                else if ("pluto".equals(s.kind)) f.pluto = true;
+            }
         }
         f.named = n.named;
         f.watched = n.watched;

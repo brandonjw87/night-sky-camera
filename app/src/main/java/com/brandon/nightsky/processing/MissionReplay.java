@@ -8,9 +8,10 @@ import java.util.Locale;
 
 /**
  * Mission Replay (2.4): the whole night as one looping GIF saved to the phone, made to be shared. The frames adding up
- * into the photo (kept from the photo's video as it's made, {@link Recorder}), the photo itself, its Deep Space Zoom
- * targets locked in brackets, a zoom into each one that "enhances" into its close-up with its name and distance, and
- * the mission's numbers at the end; then round again.
+ * into the photo (kept from the photo's video as it's made, {@link Recorder}), the photo itself, the spacecraft in it
+ * marked where they are (Deep Space Network, {@link Tag}), its Deep Space Zoom targets locked in brackets, a zoom into
+ * each one that "enhances" into its close-up with its name and distance, and the mission's numbers at the end; then
+ * round again.
  * <p>
  * Written with {@link GifWriter}: one palette for the whole film, cut from samples of every picture in it, ordered
  * dithering (a still part of the picture keeps its pixels from frame to frame, so only what moves is stored), and a
@@ -86,12 +87,32 @@ public final class MissionReplay {
     }
 
     /**
-     * Makes the replay and writes it to {@code os} as a GIF: the build {@code rec} kept (null or empty: none), the
-     * photo {@code photo} ({@code pw} x {@code ph}, as saved), the close-ups {@code shots} and the end card's lines
-     * ({@code end}: a headline, then smaller ones). Returns what it made, for the log.
+     * Something in the photo too far away to see, for the replay's Deep Space Network frame (2.4): a spacecraft (or Pluto),
+     * where it is (the photo's pixels), its name and a word on how far.
      */
+    public static final class Tag {
+        public double x, y;
+        public String name = "", line = "";
+    }
+
+    /** How long the Deep Space Network frame shows (centiseconds). */
+    static final int NETWORK_CS = 260;
+
+    /** {@link #make} without a Deep Space Network frame. */
     public static String make(Recorder rec, int[] photo, int pw, int ph, List<Shot> shots, String[] end, Draw draw, OutputStream os,
                               Progress progress) throws IOException {
+        return make(rec, photo, pw, ph, shots, null, end, draw, os, progress);
+    }
+
+    /**
+     * Makes the replay and writes it to {@code os} as a GIF: the build {@code rec} kept (null or empty: none), the
+     * photo {@code photo} ({@code pw} x {@code ph}, as saved), the spacecraft in it {@code tags} (null or empty: no Deep
+     * Space Network frame), the close-ups {@code shots} and the end card's lines ({@code end}: a headline, then smaller
+     * ones). Returns what it made, for the log.
+     */
+    public static String make(Recorder rec, int[] photo, int pw, int ph, List<Shot> shots, List<Tag> tags, String[] end, Draw draw,
+                              OutputStream os, Progress progress) throws IOException {
+        if (tags == null) tags = new ArrayList<Tag>();
         long t0 = System.currentTimeMillis();
         double s = Math.min(1.0, SIDE / (double) Math.max(pw, ph));
         final int W = Math.max(2, (int) Math.round(pw * s)), H = Math.max(2, (int) Math.round(ph * s));
@@ -113,7 +134,7 @@ public final class MissionReplay {
         samples = null;
         GifWriter gif = new GifWriter(os, W, H, pal.rgb, 0);
         Film film = new Film(gif, pal, W, H, draw);
-        int total = build.size() + 2 + shots.size() * (ZOOM_FRAMES + FADE_FRAMES + 2) + 1, done = 0;
+        int total = build.size() + 2 + shots.size() * (ZOOM_FRAMES + FADE_FRAMES + 2) + 1 + (tags.isEmpty() ? 0 : 1), done = 0;
         int[] f = new int[W * H];
         // the frames adding up
         for (int i = 0; i < build.size(); i++) {
@@ -128,6 +149,15 @@ public final class MissionReplay {
         film.add(f, PHOTO_CS);
         done = tick(progress, ++done, total);
         double k = W / (double) pw;
+        if (!tags.isEmpty()) {
+            // the spacecraft in it, too far to see: where each one is
+            int[] net = small.clone();
+            film.caption(net, "DEEP SPACE NETWORK", tags.size() == 1 ? tags.get(0).name + " is in this photo"
+                    : tags.size() + " far travellers in this photo", Double.NaN);
+            film.tags(net, tags, k);
+            film.add(net, NETWORK_CS);
+            done = tick(progress, ++done, total);
+        }
         if (!shots.isEmpty()) {
             // its targets locked
             int[] locked = small.clone();
@@ -269,6 +299,33 @@ public final class MissionReplay {
                     if (ty < 16 * u) ty = cy + r + size + 4 * u;
                     p.text(s, tx, ty, size, true, LOCK);
                 }
+            }
+            draw.off(f);
+        }
+
+        /**
+         * A target diamond on each tag (2.4), with its name and how far beside it, on the side with room; the photo's
+         * pixels shown {@code k} frame pixels each.
+         */
+        void tags(int[] f, List<Tag> tags, double k) {
+            if (draw == null) return;
+            Painter p = draw.on(f, W, H);
+            float u = H / 360f, r = 7 * u, sw = 1.8f * u, size = 11 * u, small = 9 * u;
+            for (Tag t : tags) {
+                float cx = (float) (t.x * k), cy = (float) (t.y * k);
+                p.line(cx, cy - r, cx + r, cy, sw, LOCK);
+                p.line(cx + r, cy, cx, cy + r, sw, LOCK);
+                p.line(cx, cy + r, cx - r, cy, sw, LOCK);
+                p.line(cx - r, cy, cx, cy - r, sw, LOCK);
+                p.line(cx - 1.8f * r, cy, cx - 1.25f * r, cy, sw, LOCK);
+                p.line(cx + 1.25f * r, cy, cx + 1.8f * r, cy, sw, LOCK);
+                float w = Math.max(p.width(t.name, size, true), p.width(t.line, small, false));
+                boolean right = cx + 2.2f * r + w < W - 4 * u;
+                float tx = right ? cx + 2.2f * r : Math.max(4 * u, cx - 2.2f * r - w);
+                // clear of the captions at the top and the bottom
+                float ty = Math.max(34 * u, Math.min(H - 52 * u, cy - 1 * u));
+                p.text(t.name, tx, ty, size, true, LOCK);
+                if (!t.line.isEmpty()) p.text(t.line, tx, ty + small + 3 * u, small, false, WARM);
             }
             draw.off(f);
         }

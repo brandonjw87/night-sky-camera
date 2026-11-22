@@ -155,6 +155,8 @@ public final class DeepZoom {
         /** Points to name in the close-up (a planet and its moons): where they are in the stack (px), and their names. */
         final List<double[]> markPx = new ArrayList<double[]>();
         final List<String> markNames = new ArrayList<String>();
+        /** Jupiter's big moons (2.4), for the close-up's diagram of them; null for anything else. */
+        DeepSpace.Moon[] moons;
         Box box;
 
         Target(String name, char kind, double mag, double distLy, double sizeDeg, double fieldDeg, String fact) {
@@ -207,6 +209,14 @@ public final class DeepZoom {
         public float[] marks = new float[0];
         public String[] markNames = new String[0];
         /**
+         * Jupiter's big moons (2.4), for the diagram of them on its close-up: their places beside it along its equator (in
+         * Jupiter's widths, + to the right as the close-up shows them), names, and whether each is beside Jupiter (0), in
+         * front of it (1) or behind it (2). Empty for anything else.
+         */
+        public float[] moonX = new float[0];
+        public String[] moonNames = new String[0];
+        public byte[] moonState = new byte[0];
+        /**
          * For the log and the tests: how the stars' sizes came out (Gaussian sigma in stack pixels: the drizzle's, the
          * stack's at the same place and scale, and after the stars were made smaller), and the share of the object's own
          * light the smaller stars kept (NaN: not made smaller).
@@ -256,10 +266,18 @@ public final class DeepZoom {
             double jdTt = Astro.jdTt(jdUtc);
             for (int k : PLANETS) {
                 Planets.Seen s = Planets.seen(k, jdTt);
-                Target t = new Target(s.name, 'p', s.mag, Double.NaN, 0.05, 0.5, PLANET_FACTS[k]);
+                // Jupiter's four big moons (2.4): each named where it is, and any in front of Jupiter or behind it said so
+                DeepSpace.Moon[] moons = k == 3 ? DeepSpace.jupiterMoons(jdTt) : new DeepSpace.Moon[0];
+                StringBuilder fact = new StringBuilder(PLANET_FACTS[k]);
+                for (DeepSpace.Moon m : moons) {
+                    if (m.onDisc()) fact.append(" Tonight ").append(m.name).append(m.front ? " is in front of Jupiter, lost in its glare." : " is hidden behind it.");
+                }
+                Target t = new Target(s.name, 'p', s.mag, Double.NaN, 0.05, 0.5, fact.toString());
                 t.distAu = s.distAu;
                 if (!place(t, s.dir, sol, a)) continue;
                 t.mark(s.dir, s.name, sol);
+                for (DeepSpace.Moon m : moons) if (!m.onDisc()) t.mark(m.dir, m.name, sol);
+                if (moons.length > 0) t.moons = moons;
                 cand.add(t);
             }
         }
@@ -566,6 +584,7 @@ public final class DeepZoom {
         double k = OUT / (double) used.side;
         cu.moonPx = (float) (MOON_DEG * t.pxPerDeg * k);
         if (!t.markPx.isEmpty()) marks(cu, t, used, k / used.s);
+        if (t.moons != null) moons(cu, t.moons);
         words(cu, t, src != null ? src.frames() : 0, drizzle);
         cu.note = String.format(Locale.US, "%s: %s %d px box at (%.0f, %.0f)%s, %s; stars sigma %.2f px (the stack's %.2f)%s%s, "
                         + "noise %.4f (%.1fx the photo's), %d ms", t.name, drizzle ? "drizzled at " + used.s + "x from the frames," : "cut from the stack,",
@@ -602,6 +621,31 @@ public final class DeepZoom {
             double[] o = b.at(p[0], p[1]);
             cu.marks[2 * i] = (float) (o[0] * k);
             cu.marks[2 * i + 1] = (float) (o[1] * k);
+        }
+    }
+
+    /**
+     * Jupiter's moons for the close-up's diagram (2.4): which way along the close-up their line runs, from the moon farthest
+     * out (marked where it is: right of Jupiter or left of it), and each one's place along it.
+     */
+    static void moons(CloseUp cu, DeepSpace.Moon[] moons) {
+        if (cu.marks.length < 2) return;
+        float flip = 1;
+        double far = 0;
+        for (DeepSpace.Moon m : moons) {
+            for (int i = 1; i < cu.markNames.length && 2 * i + 1 < cu.marks.length; i++) {
+                if (!cu.markNames[i].equals(m.name) || Math.abs(m.x) <= far) continue;
+                far = Math.abs(m.x);
+                flip = (cu.marks[2 * i] - cu.marks[0]) * m.x >= 0 ? 1 : -1;
+            }
+        }
+        cu.moonX = new float[moons.length];
+        cu.moonNames = new String[moons.length];
+        cu.moonState = new byte[moons.length];
+        for (int i = 0; i < moons.length; i++) {
+            cu.moonX[i] = (float) (flip * moons[i].x);
+            cu.moonNames[i] = moons[i].name;
+            cu.moonState[i] = (byte) (!moons[i].onDisc() ? 0 : moons[i].front ? 1 : 2);
         }
     }
 
@@ -704,18 +748,8 @@ public final class DeepZoom {
         if (p.width(brand, bs, false) < S - 2 * m - p.width(cu.title, ts, true) - 0.04f * S || cu.title.length() < 18) {
             p.text(brand, S - m - p.width(brand, bs, false), m + 0.6f * ts, bs, false, 0x99FFFFFF);
         }
-        // the planet's moons and the planet, named where they are
-        for (int i = 0; i + 1 < cu.marks.length && i / 2 < cu.markNames.length; i += 2) {
-            float x = cu.marks[i], y = cu.marks[i + 1];
-            if (x < 0 || y < 0 || x >= S || y >= 0.6f * S + 0.4f * S) continue;
-            float r = i == 0 ? 0.035f * S : 0.016f * S;
-            p.ring(x, y, r, Math.max(1.5f, 0.0025f * S), 0xCC9FE3FF);
-            String name = cu.markNames[i / 2];
-            float ns = 0.026f * S, nw = p.width(name, ns, i == 0);
-            float lx = x + r + 0.01f * S;
-            if (lx + nw > S - m) lx = x - r - 0.01f * S - nw;
-            p.text(name, lx, y - (i / 2 % 2 == 0 ? r : -r - ns * 0.8f), ns, i == 0, 0xFFE7F6FF);
-        }
+        marks(cu, p, S, m);
+        moonDiagram(cu, p, S, m);
         // along the bottom, from the last line up
         float y = S - m;
         p.text(cu.how, m, y, 0.022f * S, false, grey);
@@ -749,6 +783,88 @@ public final class DeepZoom {
             float ls = 0.022f * S;
             p.text(l, cx - p.width(l, ls, false) / 2, cy + r + ls * 1.4f, ls, false, soft);
         }
+    }
+
+    /**
+     * The planet ringed and named where it is; and its moons (2.4) far enough out from it to tell apart in small rings of
+     * their own (the diagram above names them all, in the same order across the picture).
+     */
+    static void marks(CloseUp cu, Painter p, float S, float m) {
+        int n = Math.min(cu.marks.length / 2, cu.markNames.length);
+        if (n == 0) return;
+        float lw = Math.max(1.5f, 0.0025f * S);
+        int ring = 0xCC9FE3FF;
+        float px = cu.marks[0], py = cu.marks[1], pr = 0.03f * S, ns = 0.026f * S;
+        if (px < 0 || py < 0 || px >= S || py >= S) return;
+        p.ring(px, py, pr, lw, ring);
+        String name = cu.markNames[0];
+        float nw = p.width(name, ns, true), lx = px + pr + 0.01f * S;
+        if (lx + nw > S - m) lx = px - pr - 0.01f * S - nw;
+        p.text(name, lx, py - pr, ns, true, 0xFFE7F6FF);
+        float mr = Math.max(4f, 0.01f * S);
+        for (int i = 1; i < n; i++) {
+            float x = cu.marks[2 * i], y = cu.marks[2 * i + 1];
+            if (Math.hypot(x - px, y - py) > pr + 2.2f * mr && x >= 0 && y >= 0 && x < S && y < S) p.ring(x, y, mr, lw, ring);
+        }
+    }
+
+    /**
+     * Jupiter's moons tonight as a telescope shows them (2.4): a line with Jupiter in the middle and each moon where it is
+     * along it, named, the same way round as the close-up. A phone's pixel is wider than most of their distances from
+     * Jupiter, so the diagram says what the photo can't quite.
+     */
+    static void moonDiagram(CloseUp cu, Painter p, float S, float m) {
+        int n = cu.moonNames.length;
+        if (n == 0) return;
+        float y0 = 0.255f * S, cx = S / 2f, unit = (S / 2f - m - 0.03f * S) / 27f, jr = 0.012f * S, dr = Math.max(2.5f, 0.0045f * S);
+        p.gradient(0, 0.17f * S, S, 0.33f * S, 0x70000000, 0x00000000);
+        p.text("Its big moons tonight, as a telescope shows them:", m, 0.2f * S, 0.022f * S, false, 0xFFA4B0C2);
+        p.line(m, y0, S - m, y0, Math.max(1f, 0.0012f * S), 0x40CFE8FF);
+        p.disc(cx, y0, jr, 0xFFF3E3C8);
+        // the names above and below in turn where they'd run into each other
+        Integer[] ord = new Integer[n];
+        for (int i = 0; i < n; i++) ord[i] = i;
+        final float[] xs = cu.moonX;
+        Arrays.sort(ord, new Comparator<Integer>() {
+            @Override
+            public int compare(Integer a, Integer b) {
+                return Float.compare(xs[a], xs[b]);
+            }
+        });
+        float ns = 0.022f * S, aboveEnd = -1e9f, belowEnd = -1e9f;
+        List<String> hidden = new ArrayList<String>();
+        for (int i : ord) {
+            if (cu.moonState[i] == 2) {
+                hidden.add(cu.moonNames[i]);
+                continue;
+            }
+            float x = cx + xs[i] * unit;
+            p.disc(x, y0, dr, cu.moonState[i] == 1 ? 0xFF2A2F3A : 0xFFFFFFFF);
+            if (cu.moonState[i] == 1) p.ring(x, y0, dr, Math.max(1f, 0.0012f * S), 0xFFFFFFFF);
+            String name = cu.moonNames[i] + (cu.moonState[i] == 1 ? " (in front)" : "");
+            float w = p.width(name, ns, false), left = Math.max(m, Math.min(S - m - w, x - w / 2)), gap = 0.012f * S;
+            // above where there's room, else below, else on the side with more room, moved along
+            boolean up = left > aboveEnd + gap || !(left > belowEnd + gap) && aboveEnd <= belowEnd;
+            left = Math.max(left, (up ? aboveEnd : belowEnd) + gap);
+            if (up) {
+                p.text(name, left, y0 - dr - 0.012f * S, ns, false, 0xFFE7F6FF);
+                aboveEnd = left + w;
+            } else {
+                p.text(name, left, y0 + dr + 0.012f * S + ns * 0.8f, ns, false, 0xFFE7F6FF);
+                belowEnd = left + w;
+            }
+        }
+        if (!hidden.isEmpty()) {
+            String h = list(hidden) + (hidden.size() == 1 ? " is" : " are") + " behind Jupiter";
+            p.text(h, S - m - p.width(h, 0.02f * S, false), y0 + 0.055f * S, 0.02f * S, false, 0xFFA4B0C2);
+        }
+    }
+
+    private static String list(List<String> s) {
+        if (s.size() == 1) return s.get(0);
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < s.size(); i++) b.append(i == 0 ? "" : i == s.size() - 1 ? " and " : ", ").append(s.get(i));
+        return b.toString();
     }
 
     /** {@code text} broken into lines no wider than {@code width}, at whole words. */

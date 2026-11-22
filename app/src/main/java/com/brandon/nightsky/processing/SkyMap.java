@@ -178,6 +178,21 @@ public final class SkyMap {
         }
         j.end();
 
+        // the spacecraft leaving the Solar System, L2 and Pluto (2.4): in the picture, with how far and what to say
+        j.arr("craft");
+        if (!Double.isNaN(jdUtc)) {
+            for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+                double[] uv = f.near(s.dir);
+                if (uv == null || !within(uv, 0)) continue;
+                j.obj().put("n", s.name).put("k", s.kind).put("au", s.distAu, 5).put("lh", s.lightHours(), 4);
+                if (!Double.isNaN(s.mag)) j.put("m", s.mag, 3);
+                if (!Double.isNaN(s.kmPerS)) j.put("kms", s.kmPerS, 4);
+                if (s.launched > 0) j.put("launched", s.launched).put("talking", s.talking);
+                j.put("fact", s.fact).put("x", x0 + uv[0] * w, 6).put("y", y0 + uv[1] * h, 6).end();
+            }
+        }
+        j.end();
+
         for (SkyGuide.Item it : g.items) {
             if ("moon".equals(it.kind)) {
                 j.obj("moon");
@@ -229,9 +244,27 @@ public final class SkyMap {
         return j.end().toString();
     }
 
+    /**
+     * The spacecraft leaving the Solar System, L2 and Pluto (2.4) in the crop (x0, y0, w, h): as {@link DeepSpace#all}
+     * has them, those in it only; none if the time isn't known.
+     */
+    public List<DeepSpace.Seen> craft(int x0, int y0, int w, int h) {
+        List<DeepSpace.Seen> out = new java.util.ArrayList<DeepSpace.Seen>();
+        if (Double.isNaN(jdUtc)) return out;
+        SkyGuide.Frame f = new SkyGuide.Frame(sol, x0, y0, w, h);
+        for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+            double[] uv = f.near(s.dir);
+            if (uv != null && within(uv, 0)) out.add(s);
+        }
+        return out;
+    }
+
     /** Something in the picture, for its song and its 3D flight: where it is (shares of the crop) and what it is. */
     public static final class Thing {
-        /** "star", "planet", "moon", "object" (a cluster, nebula or galaxy) or "mine" (a star named by you). */
+        /**
+         * "star", "planet", "moon", "object" (a cluster, nebula or galaxy), "mine" (a star named by you) or "craft" (a
+         * spacecraft leaving the Solar System, 2.4).
+         */
         public String kind = "star";
         public String name = "";
         public double u, v, mag = Double.NaN, bv = Double.NaN, ly = Double.NaN;
@@ -302,6 +335,22 @@ public final class SkyMap {
                     t.ly = 4.06e-8;
                     out.add(t);
                 }
+            }
+        }
+        // the spacecraft leaving the Solar System (2.4): too far to see, but they sing, as radio beeps
+        if (!Double.isNaN(jdUtc)) {
+            for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+                if (!"probe".equals(s.kind)) continue;
+                double[] uv = f.near(s.dir);
+                if (uv == null || !within(uv, 0)) continue;
+                Thing t = new Thing();
+                t.kind = "craft";
+                t.name = s.name;
+                t.u = uv[0];
+                t.v = uv[1];
+                t.dir = s.dir;
+                t.ly = s.distAu * 1.58125e-5;
+                out.add(t);
             }
         }
         for (Object[] o : SkyGuide.OBJECTS) {

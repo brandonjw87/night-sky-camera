@@ -5580,7 +5580,7 @@ final class SessionController {
         Uri replayGif = null;
         String replayWords = "";
         if (m.merge == null && !m.edit && m.again == null) {
-            Object[] rp = makeReplay(home, o, replayRec, framed, f, pf, zooms, m, name);
+            Object[] rp = makeReplay(home, o, replayRec, framed, f, pf, zooms, card != null ? card.sky : null, m, name);
             replay = (File) rp[0];
             replayGif = (Uri) rp[1];
             replayWords = (String) rp[2];
@@ -6120,7 +6120,7 @@ final class SessionController {
      * file, its gallery Uri, words}, nulls when it wasn't made (the log says why).
      */
     private Object[] makeReplay(SessionStore st, PostProcessor.Output o, MissionReplay.Recorder rec, Bitmap framed, int f, Framing pf,
-                                List<ZoomShot> zooms, Made m, String name) {
+                                List<ZoomShot> zooms, SkyGuide sky, Made m, String name) {
         Object[] none = {null, null, ""};
         int pw = framed.getWidth(), ph = framed.getHeight();
         long need = (long) pw * ph * 4 * 2 + (long) MissionReplay.SIDE * MissionReplay.SIDE * 4 * (8 + zooms.size()) + REPLAY_SPARE;
@@ -6150,6 +6150,24 @@ final class SessionController {
                 sh.line = z.line;
                 shots.add(sh);
             }
+            // the spacecraft (and Pluto) in it, for the Deep Space Network frame (2.4): the sky guide's places are shares of the crop
+            List<MissionReplay.Tag> tags = new ArrayList<MissionReplay.Tag>();
+            List<String> far = new ArrayList<String>();
+            if (sky != null) {
+                for (SkyGuide.Item it : sky.items) {
+                    if (!("spacecraft".equals(it.kind) || "dwarf planet".equals(it.kind)) || Double.isNaN(it.x)) continue;
+                    double u = it.x * a.cw / f, v = it.y * a.ch / f;
+                    double[] at = pf != null ? pf.forward(u, v) : new double[]{u, v};
+                    if (at[0] < 0 || at[1] < 0 || at[0] >= pw || at[1] >= ph) continue;
+                    MissionReplay.Tag t = new MissionReplay.Tag();
+                    t.x = at[0];
+                    t.y = at[1];
+                    t.name = it.name;
+                    t.line = it.note.isEmpty() ? "" : it.note + " away";
+                    tags.add(t);
+                    far.add(it.name);
+                }
+            }
             long started = parseLong(m.props.getProperty("capture.startWallMs"));
             String when = new java.text.SimpleDateFormat("d MMM yyyy", Locale.US).format(new Date(started > 0 ? started : System.currentTimeMillis()));
             String light = o.integrationSeconds > 0 ? durationWords((int) Math.round(o.integrationSeconds)) + " of light" : "";
@@ -6164,11 +6182,16 @@ final class SessionController {
                 }
                 lines.add(sb.toString());
             }
+            if (!far.isEmpty()) {
+                StringBuilder sb = new StringBuilder("Also in it: ");
+                for (int i = 0; i < far.size(); i++) sb.append(i == 0 ? "" : i == far.size() - 1 ? " and " : ", ").append(far.get(i));
+                lines.add(sb.toString());
+            }
             lines.add("Night Sky \u00b7 " + when);
             String note;
             java.io.OutputStream os = new java.io.BufferedOutputStream(new java.io.FileOutputStream(gif), 1 << 16);
             try {
-                note = MissionReplay.make(rec, photo, pw, ph, shots, lines.toArray(new String[0]), new CanvasDraw(), os, new Progress() {
+                note = MissionReplay.make(rec, photo, pw, ph, shots, tags, lines.toArray(new String[0]), new CanvasDraw(), os, new Progress() {
                     long last;
 
                     @Override

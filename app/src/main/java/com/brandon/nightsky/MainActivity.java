@@ -56,6 +56,7 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import com.brandon.nightsky.processing.CameraFacts;
+import com.brandon.nightsky.processing.DeepSpace;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusModel;
 import com.brandon.nightsky.processing.FramePreview;
@@ -3009,6 +3010,7 @@ public final class MainActivity extends Activity {
         col.addView(row2, gap(6));
         if (r != null && r.replay != null) addReplay(col, r);
         if (r != null && (!r.zooms.isEmpty() || !r.zoomWords.isEmpty())) addDeepZoom(col, r);
+        if (r != null && r.songFrom != null && !r.trails) addNetwork(col, r);
         if (r != null && r.earth != null) addEarthTurn(col, r);
         if (r != null && r.song != null && !r.trails) addSong(col, r);
         // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
@@ -6647,6 +6649,56 @@ public final class MainActivity extends Activity {
             card.addView(share, gap(8));
         }
         col.addView(card, gap(12));
+    }
+
+    /** Whether the Deep Space Network card shows all its lines (else the first few). */
+    private boolean networkAll;
+
+    /**
+     * The result's Deep Space Network (2.4): where the Voyagers, New Horizons, the Pioneers, Webb's L2 and Pluto were when
+     * the photo was taken (in it, up in the sky, or below the horizon), how far, and how long a radio message takes;
+     * those in the photo first, the rest behind "Show all".
+     */
+    private void addNetwork(LinearLayout col, final SessionController.Result r) {
+        SessionController.SongSource src = r.songFrom;
+        List<DeepSpace.Contact> all;
+        try {
+            all = DeepSpace.network(src.sol, src.jdUtc, src.sky, src.crop[0], src.crop[1], src.crop[2], src.crop[3],
+                    java.util.TimeZone.getDefault());
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (all.isEmpty()) return;
+        LinearLayout card = card();
+        card.addView(text("Deep Space Network", 17, RED, true));
+        int inPhoto = 0;
+        for (DeepSpace.Contact c : all) if (c.inPhoto) inPhoto++;
+        card.addView(text(inPhoto == 0 ? "Where the farthest things people have made were when you took this photo. None was in it "
+                + "this time; aim where one is up to catch it." : inPhoto == 1 ? "One of the farthest things people have made is in "
+                + "this photo. You can't see it, but it's there:" : inPhoto + " of the farthest things people have made are in this "
+                + "photo. You can't see them, but they're there:", 13, RED_DIM, false), gap(6));
+        final int shown = networkAll ? all.size() : Math.max(2, inPhoto);
+        for (int i = 0; i < all.size() && i < shown; i++) contact(card, all.get(i));
+        if (shown < all.size()) {
+            final LinearLayout box = card;
+            final List<DeepSpace.Contact> rest = all.subList(shown, all.size());
+            final Button more = smallButton("Show all " + all.size(), false);
+            more.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    networkAll = true;
+                    box.removeView(more);
+                    for (DeepSpace.Contact c : rest) contact(box, c);
+                }
+            });
+            card.addView(more, gap(8));
+        }
+        col.addView(card, gap(12));
+    }
+
+    private void contact(LinearLayout card, DeepSpace.Contact c) {
+        card.addView(text(c.head, 14, c.inPhoto ? RED : RED_DIM, true), gap(10));
+        card.addView(text(c.words, 12, RED_DIM, false), gap(2));
     }
 
     // ------------------------------------------------------------------------------------------------
