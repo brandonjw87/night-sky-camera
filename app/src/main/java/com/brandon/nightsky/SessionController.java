@@ -1107,6 +1107,7 @@ final class SessionController {
         if (video.isFile()) r.video = video;
         File earth = earthFile(st.dir, r.name);
         if (earth.isFile()) r.earth = earth;
+        readExtras(st, r);
         r.motion = rc != null && rc.motion;
         r.jpegFactor = rc != null && rc.quick ? 2 : 1;
         r.canAdjust = true;
@@ -1759,6 +1760,12 @@ final class SessionController {
         r.songFrom = was.songFrom;
         r.song = was.song;
         r.songNamed = was.songNamed;
+        // the close-ups and the replay are the night's, made from its frames, whatever the edit (2.4)
+        r.zooms.addAll(was.zooms);
+        r.zoomWords = was.zoomWords;
+        r.replay = was.replay;
+        r.replayGif = was.replayGif;
+        r.replayWords = was.replayWords;
         return r;
     }
 
@@ -5608,6 +5615,7 @@ final class SessionController {
         r.replay = replay;
         r.replayGif = replayGif;
         r.replayWords = replayWords;
+        if (m.merge == null && !m.edit && m.again == null) saveExtras(home, r);
         r.summary = o.summary;
         r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
         r.session = home.dir.getName();
@@ -6111,6 +6119,89 @@ final class SessionController {
     /** Mission Replay's GIF in a session's folder. */
     static File replayFile(File dir, String name) {
         return new File(dir, name + "_replay.gif");
+    }
+
+    /** A session folder's note of the close-ups and the replay its develop step made (2.4), for opening it again. */
+    static final String EXTRAS = "closeups.properties";
+
+    /**
+     * Notes in the session's folder what the develop step made beside the photo (2.4's close-ups, with their words, and
+     * the replay), so the result screen shows them again when the session is opened from the sessions page.
+     */
+    private static void saveExtras(SessionStore st, Result r) {
+        Properties p = new Properties();
+        p.setProperty("zoom.words", r.zoomWords);
+        p.setProperty("zooms", Integer.toString(r.zooms.size()));
+        for (int i = 0; i < r.zooms.size(); i++) {
+            ZoomShot z = r.zooms.get(i);
+            String k = "zoom." + (i + 1) + ".";
+            p.setProperty(k + "title", z.title);
+            p.setProperty(k + "what", z.what);
+            p.setProperty(k + "line", z.line);
+            if (z.uri != null) p.setProperty(k + "uri", z.uri.toString());
+            if (z.small != null) p.setProperty(k + "small", z.small.getName());
+        }
+        if (r.replay != null) p.setProperty("replay", r.replay.getName());
+        if (r.replayGif != null) p.setProperty("replay.uri", r.replayGif.toString());
+        p.setProperty("replay.words", r.replayWords);
+        try {
+            java.io.StringWriter w = new java.io.StringWriter();
+            p.store(w, "Deep Space Zoom and Mission Replay (Night Sky 2.4)");
+            st.writeText(EXTRAS, w.toString());
+        } catch (IOException | RuntimeException e) {
+            st.log("the close-ups and the replay not noted for opening the session again: " + e);
+        }
+    }
+
+    /**
+     * What {@link #saveExtras} noted, into {@code r}: the copies still in the session's folder, and their gallery
+     * copies while the gallery still has them (one deleted there isn't offered for opening or sharing).
+     */
+    private void readExtras(SessionStore st, Result r) {
+        String text = st.readText(EXTRAS);
+        if (text == null) return;
+        Properties p = new Properties();
+        try {
+            p.load(new java.io.StringReader(text));
+        } catch (IOException | IllegalArgumentException e) {
+            return;
+        }
+        r.zoomWords = p.getProperty("zoom.words", "");
+        int n = (int) Math.min(9, parseLong(p.getProperty("zooms")));
+        for (int i = 1; i <= n; i++) {
+            String k = "zoom." + i + ".";
+            ZoomShot z = new ZoomShot();
+            z.title = p.getProperty(k + "title", "");
+            z.what = p.getProperty(k + "what", "");
+            z.line = p.getProperty(k + "line", "");
+            z.uri = inGallery(p.getProperty(k + "uri"));
+            String small = p.getProperty(k + "small");
+            File f = small != null ? new File(st.dir, small) : null;
+            if (f != null && f.isFile()) z.small = f;
+            if (z.uri != null || z.small != null) r.zooms.add(z);
+        }
+        String replay = p.getProperty("replay");
+        File gif = replay != null ? new File(st.dir, replay) : null;
+        if (gif != null && gif.isFile()) {
+            r.replay = gif;
+            r.replayGif = inGallery(p.getProperty("replay.uri"));
+        }
+        r.replayWords = p.getProperty("replay.words", "");
+    }
+
+    /** {@code s} as a Uri while the gallery still has it (null: none, or deleted there); kept when the gallery can't say. */
+    private Uri inGallery(String s) {
+        if (s == null || s.isEmpty()) return null;
+        Uri u = Uri.parse(s);
+        android.database.Cursor c = null;
+        try {
+            c = ctx.getContentResolver().query(u, new String[]{android.provider.MediaStore.MediaColumns._ID}, null, null, null);
+            return c == null || c.moveToFirst() ? u : null;
+        } catch (RuntimeException e) {
+            return u;
+        } finally {
+            if (c != null) c.close();
+        }
     }
 
     /**

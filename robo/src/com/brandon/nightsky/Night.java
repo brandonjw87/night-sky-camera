@@ -2192,6 +2192,28 @@ public class Night {
         if (!r.video.equals(o.video) || !o.motion) Monkey.problem(scenario + ": opened again, the photo has no video (" + o.video + ", inside: " + o.motion + ")");
         if (findLabel("Play its video") == null) Monkey.problem(scenario + ": opened again, there's no Play its video: " + labels());
         Monkey.say("  opened again from the sessions page: " + labels());
+        // 2.4: the night's Mission Replay and close-ups come back with it, the same gallery copies
+        if (r.replay != null) {
+            if (o.replay == null || !String.valueOf(r.replayGif).equals(String.valueOf(o.replayGif)) || findLabel("Mission Replay") == null) {
+                Monkey.problem(scenario + ": opened again, no Mission Replay (" + o.replay + ", " + o.replayGif + ")");
+            }
+        }
+        StringBuilder back = new StringBuilder();
+        if (o.zooms.size() != r.zooms.size()) {
+            Monkey.problem(scenario + ": opened again, " + o.zooms.size() + " close-ups where it had " + r.zooms.size());
+        } else {
+            for (int i = 0; i < r.zooms.size(); i++) {
+                SessionController.ZoomShot a = r.zooms.get(i), b = o.zooms.get(i);
+                if (!a.title.equals(b.title) || !String.valueOf(a.uri).equals(String.valueOf(b.uri)) || b.small == null || findLabel(b.title) == null) {
+                    Monkey.problem(scenario + ": opened again, close-up " + (i + 1) + " is " + b.title + " " + b.uri + " (was " + a.title + " " + a.uri + ")");
+                }
+                back.append(i > 0 ? ", " : "").append(b.title);
+            }
+        }
+        if (r.replay != null || !r.zooms.isEmpty()) {
+            Monkey.say("  opened again, still there: " + (o.replay != null ? "Mission Replay" : "no replay") + "; " + o.zooms.size() + " close-ups"
+                    + (back.length() > 0 ? " (" + back + ")" : ""));
+        }
     }
 
     /**
