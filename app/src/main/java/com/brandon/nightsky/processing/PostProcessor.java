@@ -1327,6 +1327,23 @@ public final class PostProcessor {
 
     // ------------------------------------------------------------------------------------------------
 
+    /**
+     * A developed session's defective pixels found again from the average its capture kept (the time lapse of a session
+     * opened again, 2.5): as developing found them, but for a session whose average had to be rebuilt from its frames;
+     * null when the average isn't kept (its frames were deleted).
+     */
+    public static HotPixels storedHotPixels(SessionStore store, SensorSpec spec) {
+        int W = spec.width, H = spec.height;
+        int[] cnt = new int[1];
+        float[] sum = store.readSum(W * H, cnt);
+        int n = cnt[0];
+        if (sum == null || n < 1) return null;
+        if (n < 2) return HotPixels.empty(W, H);
+        float inv = 1f / n;
+        for (int i = 0; i < sum.length; i++) sum[i] *= inv;
+        return HotPixels.detect(sum, W, H, spec.cfa, n >= 8 ? 8f : 12f);
+    }
+
     private HotPixels hotPixels(List<Unit> units, FrameStore fs, Progress progress) throws IOException {
         int[] cnt = new int[1];
         float[] sum = store.readSum(W * H, cnt);

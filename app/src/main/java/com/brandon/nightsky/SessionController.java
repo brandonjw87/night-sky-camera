@@ -35,6 +35,7 @@ import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.ClearSky;
 import com.brandon.nightsky.processing.DeepZoom;
+import com.brandon.nightsky.processing.XRayVision;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
@@ -79,6 +80,7 @@ import com.brandon.nightsky.processing.SkyMap;
 import com.brandon.nightsky.processing.StarSong;
 import com.brandon.nightsky.processing.StarGlow;
 import com.brandon.nightsky.processing.Stats;
+import com.brandon.nightsky.processing.TimeLapse;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
@@ -213,6 +215,12 @@ final class SessionController {
          * looping clip of the Earth turning under it (an MP4 and an animated WebP), with the turn's axis and speed.
          */
         boolean earth;
+        /**
+         * The time lapse (2.5, {@link TimeLapse}): a deep photo, and the whole night as a video, every unit a moment of it
+         * in the order they were taken, in the look {@link #lapseStyle} says ("sky", "trails" or "comet").
+         */
+        boolean timelapse;
+        String lapseStyle = "sky";
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -312,6 +320,30 @@ final class SessionController {
         File replay;
         Uri replayGif;
         String replayWords = "";
+        /**
+         * The time lapse (2.5): its MP4 in the session's folder (null if none), its copy in the gallery, the look it was made
+         * in (a {@link TimeLapse.Style} id, "" for none) and what it is in words ("" for none).
+         */
+        File lapse;
+        Uri lapseVideo;
+        String lapseStyle = "", lapseWords = "";
+        /**
+         * How the session's frames are read for a time lapse, kept while the result is shown so it can be made (again, in
+         * another look) without reading the session again; null when it wasn't kept (the session opened from the sessions
+         * page: made from the frames then, while they're kept).
+         */
+        volatile TimeLapse.Source lapseSource;
+        /** A session opened again whose frames are kept, enough for a time lapse; and a time lapse made just now (plays once). */
+        boolean lapseFrames;
+        volatile boolean lapseFresh;
+        /**
+         * X-Ray Vision (2.5): the photo as an X-ray film with the black holes, neutron stars, exploded stars and planet
+         * hosts in it marked and named, kept in the session's folder (null: none, as when nothing on its list is in the
+         * photo) and saved in the gallery; what's marked on it in words ("" for none).
+         */
+        File xray;
+        Uri xrayUri;
+        String xrayWords = "";
         /**
          * Hear the Stars (2.3): where the photo points, for its song (null for star trails, or a sky not found); the song
          * as last made, with the version of the named stars it was made with; its video, once saved to the gallery.
@@ -1108,6 +1140,15 @@ final class SessionController {
         File earth = earthFile(st.dir, r.name);
         if (earth.isFile()) r.earth = earth;
         readExtras(st, r);
+        // a time lapse can be made (again) from one session's frames while they're kept (2.5)
+        if (l.meta.sessions.size() <= 1 && framesKept(st)) {
+            try {
+                int n = 0;
+                for (UnitRecord u : st.readUnits()) if (!u.disturbed) n++;
+                r.lapseFrames = n >= TimeLapse.MIN_UNITS;
+            } catch (IOException | RuntimeException ignored) {
+            }
+        }
         r.motion = rc != null && rc.motion;
         r.jpegFactor = rc != null && rc.quick ? 2 : 1;
         r.canAdjust = true;
@@ -1766,6 +1807,16 @@ final class SessionController {
         r.replay = was.replay;
         r.replayGif = was.replayGif;
         r.replayWords = was.replayWords;
+        // and so are the time lapse and X-Ray Vision (2.5)
+        r.lapse = was.lapse;
+        r.lapseVideo = was.lapseVideo;
+        r.lapseStyle = was.lapseStyle;
+        r.lapseWords = was.lapseWords;
+        r.lapseSource = was.lapseSource;
+        r.lapseFrames = was.lapseFrames;
+        r.xray = was.xray;
+        r.xrayUri = was.xrayUri;
+        r.xrayWords = was.xrayWords;
         return r;
     }
 
@@ -1911,6 +1962,11 @@ final class SessionController {
 
     /** Skip waiting for the phone to lie screen-down and the countdown. */
     String remoteStartNow() {
+        return remoteStartNow("the viewer");
+    }
+
+    /** "Start now" from {@code who} ("the viewer", "the watch"). */
+    String remoteStartNow(final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
@@ -1922,7 +1978,7 @@ final class SessionController {
                     case PREFLIGHT:
                     case COUNTDOWN:
                         forced = true;
-                        log("start now: asked from the viewer");
+                        log("start now: asked from " + who);
                         if (phase == Phase.COUNTDOWN && countdownLeft > 0) {
                             countdownLeft = 0;
                             nextBeepMs = SystemClock.elapsedRealtime();
@@ -1936,11 +1992,16 @@ final class SessionController {
     }
 
     String remoteStop() {
+        return remoteStop("the viewer");
+    }
+
+    /** Stop (develop what's taken) from {@code who} ("the viewer", "the watch"). */
+    String remoteStop(final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
                 if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
-                    finishCapture("you", "stopped from the viewer");
+                    finishCapture("you", "stopped from " + who);
                     return "Stopped. Developing the frames taken so far.";
                 }
                 return "It is not capturing";
@@ -1963,10 +2024,14 @@ final class SessionController {
     }
 
     String remoteAddTime(final int seconds) {
+        return remoteAddTime(seconds, "the viewer");
+    }
+
+    String remoteAddTime(final int seconds, final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
-                return remoteAddTimeNow(seconds, "the viewer");
+                return remoteAddTimeNow(seconds, who);
             }
         });
     }
@@ -4291,6 +4356,8 @@ final class SessionController {
         bracketEvery = Math.max(StarBrackets.EVERY, (plan.frames + StarBrackets.MAX_FRAMES - 1) / StarBrackets.MAX_FRAMES);
         p.setProperty("brackets", Long.toString(bracketNs));
         p.setProperty("earth", Boolean.toString(settings.earth && !settings.trails));
+        p.setProperty("timelapse", Boolean.toString(settings.timelapse && !settings.trails && !settings.earth));
+        p.setProperty("lapseStyle", TimeLapse.Style.parse(settings.lapseStyle).id);
         if (settings.brackets && !settings.trails) {
             store.log(bracketNs > 0 ? String.format(Locale.US, "bright stars: a %.2f s frame after every %d long ones, for the brightest stars' cores",
                     bracketNs / 1e9, bracketEvery) : "bright stars: the frames are too short to bracket");
@@ -5528,6 +5595,17 @@ final class SessionController {
             zoomWords = deepZoom(home, o, sp, params, m.recipe != null && m.recipe.northUp && north != null, name,
                     parseLong(m.props.getProperty("capture.startWallMs")), zooms);
         }
+        // the time lapse (2.5): how the frames are read for it, as developing read them (kept with the result, small)
+        final boolean plain = m.merge == null && !m.edit && m.again == null;
+        TimeLapse.Source lapseSrc = null;
+        if (plain) {
+            try {
+                lapseSrc = TimeLapse.Source.of(sp, st.frames(sp.width, sp.height), o.video, st.readUnits(), o.analysis, params,
+                        parseLong(m.props.getProperty("capture.startWallMs")));
+            } catch (IOException | RuntimeException e) {
+                st.log("time lapse: the frames couldn't be listed: " + e);
+            }
+        }
         o.video = null; // how the frames were read for it: let go
         logNoise(home, o, params);
         if (m.again != null) {
@@ -5573,8 +5651,16 @@ final class SessionController {
                 }
             }
         }
+        // the time lapse of a time lapse session (2.5), while its frames are certainly still there
+        Lapse lapse = null;
+        if (plain && "true".equals(m.props.getProperty("timelapse"))) {
+            post(Phase.DEVELOPING, "Saving", "The time lapse", 0f);
+            lapse = makeTimeLapse(st, lapseSrc, TimeLapse.Style.parse(m.props.getProperty("lapseStyle")), name, "Saving");
+        }
         // the photo is saved: the frames stay for editing and merging while the budget allows (an edit leaves them be)
         if (!m.edit && (m.merge == null || home != st)) keepOrDeleteFrames(st, home);
+        // another look can be made from the frames only while they're kept
+        if (lapseSrc != null && (!lapseSrc.enough() || !framesKept(st))) lapseSrc = null;
         // on-screen copy, about 1600 pixels wide, kept with the stack for brightness changes and edits
         int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
         RgbImage sm = o.image.binned(f);
@@ -5594,6 +5680,11 @@ final class SessionController {
         }
         replayRec = null;
         for (ZoomShot z : zooms) z.replay = null;
+        // X-Ray Vision (2.5): the invisible things in the photo, marked on it as on an X-ray film
+        Object[] xray = {null, null, ""};
+        if (!m.trails && m.merge == null && !m.edit && m.again == null) {
+            xray = makeXRay(home, o, sp, framed, f, pf, sm, m.sky, parseLong(m.props.getProperty("capture.startWallMs")), name);
+        }
         if (framed != bmp) framed.recycle();
         framed = null;
         // Mission Control's end of the story (2.3): a capture's photo ends its mission; an edit or a merge of nights is
@@ -5615,6 +5706,17 @@ final class SessionController {
         r.replay = replay;
         r.replayGif = replayGif;
         r.replayWords = replayWords;
+        r.xray = (File) xray[0];
+        r.xrayUri = (Uri) xray[1];
+        r.xrayWords = (String) xray[2];
+        if (lapse != null) {
+            r.lapse = lapse.mp4;
+            r.lapseVideo = lapse.uri;
+            r.lapseStyle = lapse.style.id;
+            r.lapseWords = lapse.words;
+            r.lapseFresh = true;
+        }
+        r.lapseSource = lapseSrc;
         if (m.merge == null && !m.edit && m.again == null) saveExtras(home, r);
         r.summary = o.summary;
         r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
@@ -5667,7 +5769,7 @@ final class SessionController {
             detail = check.headline;
         } else {
             headline = m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
-                    : m.trails ? "Your star trails are ready" : "Your photo is ready";
+                    : m.trails ? "Your star trails are ready" : lapse != null ? "Your time lapse is ready" : "Your photo is ready";
             detail = r.summary;
         }
         final RgbImage smf = sm;
@@ -6111,6 +6213,15 @@ final class SessionController {
 
     /** Spare heap the Earth's turn leaves beyond its own needs (bytes): the encoder's and the WebPs' buffers. */
     private static final long EARTH_SPARE = 48L << 20;
+    /** Spare heap the time lapse leaves beyond its own needs (bytes): the encoder's buffers and the caption's bitmap. */
+    private static final long LAPSE_SPARE = 40L << 20;
+    /** The time lapse's long sides tried in turn (2.5): the full size, then smaller while the memory or the encoder can't take it. */
+    private static final int[] LAPSE_SIDES = {TimeLapse.MAX_SIDE, TimeLapse.SMALL_SIDE, 1080};
+
+    /** The time lapse's video in a session's folder (2.5): one, the latest made. */
+    static File lapseFile(File dir, String name) {
+        return new File(dir, name + "_timelapse.mp4");
+    }
     /** Spare heap a close-up leaves beyond its own needs (bytes): its bitmap, its card, the JPEG's encoding. */
     private static final long ZOOM_SPARE = 24L << 20;
     /** Spare heap Mission Replay leaves beyond its own needs (bytes). */
@@ -6144,9 +6255,13 @@ final class SessionController {
         if (r.replay != null) p.setProperty("replay", r.replay.getName());
         if (r.replayGif != null) p.setProperty("replay.uri", r.replayGif.toString());
         p.setProperty("replay.words", r.replayWords);
+        if (r.xray != null) p.setProperty("xray", r.xray.getName());
+        if (r.xrayUri != null) p.setProperty("xray.uri", r.xrayUri.toString());
+        p.setProperty("xray.words", r.xrayWords);
+        lapseNote(p, r);
         try {
             java.io.StringWriter w = new java.io.StringWriter();
-            p.store(w, "Deep Space Zoom and Mission Replay (Night Sky 2.4)");
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5)");
             st.writeText(EXTRAS, w.toString());
         } catch (IOException | RuntimeException e) {
             st.log("the close-ups and the replay not noted for opening the session again: " + e);
@@ -6187,6 +6302,45 @@ final class SessionController {
             r.replayGif = inGallery(p.getProperty("replay.uri"));
         }
         r.replayWords = p.getProperty("replay.words", "");
+        String xray = p.getProperty("xray");
+        File xf = xray != null ? new File(st.dir, xray) : null;
+        if (xf != null && xf.isFile()) {
+            r.xray = xf;
+            r.xrayUri = inGallery(p.getProperty("xray.uri"));
+            r.xrayWords = p.getProperty("xray.words", "");
+        }
+        String lapse = p.getProperty("lapse");
+        File mp4 = lapse != null ? new File(st.dir, lapse) : null;
+        if (mp4 != null && mp4.isFile()) {
+            r.lapse = mp4;
+            r.lapseVideo = inGallery(p.getProperty("lapse.uri"));
+            r.lapseStyle = p.getProperty("lapse.style", "");
+            r.lapseWords = p.getProperty("lapse.words", "");
+        }
+    }
+
+    /** The time lapse's lines in a session's note of its extras (2.5). */
+    private static void lapseNote(Properties p, Result r) {
+        if (r.lapse == null) return;
+        p.setProperty("lapse", r.lapse.getName());
+        if (r.lapseVideo != null) p.setProperty("lapse.uri", r.lapseVideo.toString());
+        p.setProperty("lapse.style", r.lapseStyle);
+        p.setProperty("lapse.words", r.lapseWords);
+    }
+
+    /** Notes a time lapse made after developing (2.5) with the session's other extras, leaving theirs as they were. */
+    private static void saveLapseNote(SessionStore st, Result r) {
+        Properties p = new Properties();
+        String text = st.readText(EXTRAS);
+        try {
+            if (text != null) p.load(new java.io.StringReader(text));
+            lapseNote(p, r);
+            java.io.StringWriter w = new java.io.StringWriter();
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5)");
+            st.writeText(EXTRAS, w.toString());
+        } catch (IOException | RuntimeException e) {
+            st.log("the time lapse not noted for opening the session again: " + e);
+        }
     }
 
     /** {@code s} as a Uri while the gallery still has it (null: none, or deleted there); kept when the gallery can't say. */
@@ -6343,6 +6497,97 @@ final class SessionController {
             b.getPixels(argb, 0, w, 0, 0, w, h);
         }
     }
+    /** Heap kept free beside X-Ray Vision's picture (its pixels twice over are counted besides). */
+    private static final long XRAY_SPARE = 24L << 20;
+
+    /**
+     * X-Ray Vision (2.5): the photo as saved ({@code framed}: the stack's crop binned {@code f} times into {@code sm},
+     * framed by {@code pf}) turned into an X-ray film, with what NASA's X-ray, radio and planet-hunting telescopes see in
+     * it marked and named (black holes, neutron stars, exploded stars, stars with planets...); kept in the session's
+     * folder for the result screen and saved in the gallery. Returns {the file, its gallery Uri, what's marked in
+     * words}, nulls and "" when it wasn't made (the log says why).
+     */
+    private Object[] makeXRay(SessionStore st, PostProcessor.Output o, SensorSpec sp, Bitmap framed, int f, final Framing pf,
+                              RgbImage sm, SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, ""};
+        if (o.solution == null || o.analysis == null) {
+            st.log("decision: no X-Ray Vision: the photo wasn't placed on the sky, so what's in it isn't known");
+            return none;
+        }
+        long t0 = SystemClock.elapsedRealtime();
+        Renderer.Analysis a = o.analysis;
+        final double cw = sm.cropWidth(), ch = sm.cropHeight();
+        List<XRayVision.Spot> spots;
+        try {
+            spots = XRayVision.find(o.solution, o.solutionJd, sky, a.cx0, a.cy0, sm.cropWidth() * f, sm.cropHeight() * f,
+                    java.util.TimeZone.getDefault());
+        } catch (RuntimeException e) {
+            st.log("decision: no X-Ray Vision: finding what's in the photo failed: " + e);
+            return none;
+        }
+        int in = XRayVision.inPhoto(spots);
+        if (in == 0) {
+            st.log(String.format(Locale.US, "x-ray vision: nothing on its list in the photo (%d of them up in the sky, for aiming at "
+                    + "next time)", spots.size()));
+            return none;
+        }
+        int pw = framed.getWidth(), ph = framed.getHeight();
+        long need = (long) pw * ph * 4 * 2 + XRAY_SPARE, free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no X-Ray Vision: not enough memory (%d MB needed, %d MB free)", need >> 20, free >> 20));
+            return none;
+        }
+        post(Phase.DEVELOPING, "Saving", "X-Ray Vision", -1f);
+        File file = new File(st.dir, name + "_xray.jpg");
+        Bitmap b = null;
+        try {
+            int[] px = new int[pw * ph];
+            framed.getPixels(px, 0, pw, 0, 0, pw, ph);
+            XRayVision.tint(px);
+            b = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888);
+            b.setPixels(px, 0, pw, 0, 0, pw, ph);
+            //noinspection UnusedAssignment
+            px = null;
+            XRayVision.Drawn d = XRayVision.paint(new CanvasPainter(b), pw, ph, spots, new XRayVision.Place() {
+                @Override
+                public double[] at(double u, double v) {
+                    return pf != null ? pf.forward(u * cw, v * ch) : new double[]{u * cw, v * ch};
+                }
+            });
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(file);
+            try {
+                b.compress(Bitmap.CompressFormat.JPEG, 90, fo);
+            } finally {
+                fo.close();
+            }
+            String words = XRayVision.summary(spots);
+            MediaSaver.Exif ex = new MediaSaver.Exif();
+            ex.make = sp.deviceMake;
+            ex.model = sp.deviceModel;
+            ex.description = "X-Ray Vision: " + words;
+            ex.time = startedMs > 0 ? new Date(startedMs) : new Date();
+            ex.width = pw;
+            ex.height = ph;
+            Uri uri = null;
+            try {
+                uri = MediaSaver.saveJpeg(ctx, b, name + "_xray", ex);
+            } catch (IOException | RuntimeException e) {
+                st.log("x-ray vision: not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "x-ray vision: %s; %d marks, %d named, %dx%d%s (%d ms)", words, d.marks, d.labels, pw, ph,
+                    uri != null ? ", in the gallery as " + name + "_xray.jpg" : "", SystemClock.elapsedRealtime() - t0));
+            return new Object[]{file, uri, words};
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no X-Ray Vision: making it failed: " + e);
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            return none;
+        } finally {
+            if (b != null) b.recycle();
+        }
+    }
+
     /** The result screen's copy of a close-up: this many pixels a side. */
     private static final int ZOOM_SMALL = 360;
 
@@ -6589,6 +6834,245 @@ final class SessionController {
             c.drawText(String.format(Locale.US, "%s   %.1f\u00b0", time, degrees), pad, h - pad, big);
             b.getPixels(argb, 0, w, 0, 0, w, h);
         }
+    }
+
+    /** A time lapse made (2.5): its video in the session's folder, its copy in the gallery, its look and what it is in words. */
+    private static final class Lapse {
+        File mp4;
+        Uri uri;
+        TimeLapse.Style style;
+        String words = "";
+    }
+
+    /** Why the last time lapse wasn't made, in words for the screen ("" when it was). */
+    private volatile String lapseWhy = "";
+
+    /**
+     * The time lapse (2.5) of {@code src} in {@code style}: an MP4 kept in the session's folder (the latest only: a new look
+     * replaces it, and only once it's whole) and saved in the gallery. At the full size when the memory and the phone's
+     * encoder allow it, else smaller; null when it can't be made at all ({@link #lapseWhy} and the log say why). The
+     * progress shows under {@code verb}; a cancel stops it with nothing kept.
+     */
+    private Lapse makeTimeLapse(SessionStore st, TimeLapse.Source src, TimeLapse.Style style, String name, final String verb) {
+        lapseWhy = "";
+        if (src == null || !src.enough()) {
+            int n = src == null ? 0 : src.frames.size();
+            lapseWhy = String.format(Locale.US, "a time lapse needs at least %d frames, and this session has %d", TimeLapse.MIN_UNITS, n);
+            st.log("decision: no time lapse: " + lapseWhy);
+            return null;
+        }
+        TimeLapse tl = null;
+        String why = "";
+        for (int side : LAPSE_SIDES) {
+            TimeLapse t = TimeLapse.of(src, style, side);
+            if (t == null) {
+                why = "the picture is too small for a video";
+                break;
+            }
+            long need = t.heapNeeded() + LAPSE_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                why = String.format(Locale.US, "not enough memory (%d MB needed at %dx%d, %d MB free)", need >> 20, t.width(), t.height(), free >> 20);
+                continue;
+            }
+            if (!Mp4Writer.factory.supports(t.width(), t.height())) {
+                why = "the phone has no video encoder for " + t.width() + "x" + t.height();
+                continue;
+            }
+            if (side != LAPSE_SIDES[0]) st.log("time lapse: made smaller than it might be: " + why);
+            tl = t;
+            break;
+        }
+        if (tl == null) {
+            lapseWhy = why;
+            st.log("decision: no time lapse: " + why);
+            return null;
+        }
+        int w = tl.width(), hh = tl.height();
+        File mp4 = lapseFile(st.dir, name);
+        // made beside the one kept, which it replaces only once it's whole
+        File part = new File(st.dir, name + "_timelapse.part.mp4");
+        VideoEncoder enc = null;
+        long t0 = SystemClock.elapsedRealtime();
+        try {
+            enc = Mp4Writer.factory.open(part, w, hh, TimeLapse.FPS, TimeLapse.bitRate(w, hh));
+            tl.build(enc, new LapseCaption(), new Progress() {
+                long last;
+
+                @Override
+                public void update(String stage, float fraction) {
+                    noteHeap();
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - last < 300 && fraction < 1f) return;
+                    last = now;
+                    post(Phase.DEVELOPING, verb, stage, fraction);
+                }
+
+                @Override
+                public boolean cancelled() {
+                    return cancelDevelop;
+                }
+            });
+            enc.finish();
+            enc = null;
+            //noinspection ResultOfMethodCallIgnored
+            mp4.delete();
+            if (!part.renameTo(mp4)) throw new IOException("the finished video couldn't be put in place");
+            Lapse l = new Lapse();
+            l.mp4 = mp4;
+            l.style = style;
+            l.words = lapseWords(tl, src);
+            Date when = src.startWallMs > 0 ? new Date(src.startWallMs) : new Date();
+            try {
+                l.uri = MediaSaver.saveVideo(ctx, mp4, name + "_timelapse_" + style.id, when);
+            } catch (IOException | RuntimeException e) {
+                st.log("time lapse: not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "time lapse (%s): %dx%d, %d frames of the night, %.1f s at %d fps, %.0f times faster than the sky, "
+                            + "%d KB%s, made in %.1f s; %s", style.id, w, hh, src.frames.size(), tl.durationMs() / 1000.0, TimeLapse.FPS,
+                    tl.speedUp(), mp4.length() >> 10, l.uri != null ? " in the gallery as " + name + "_timelapse_" + style.id + ".mp4" : "",
+                    (SystemClock.elapsedRealtime() - t0) / 1000.0, tl.note()));
+            return l;
+        } catch (CancelledException e) {
+            lapseWhy = "it was cancelled";
+            st.log("decision: no time lapse: cancelled while it was being made");
+            return null;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            lapseWhy = "making it failed (" + (e instanceof OutOfMemoryError ? "out of memory" : e.getMessage()) + ")";
+            st.log("decision: no time lapse: making it failed: " + e);
+            return null;
+        } finally {
+            if (enc != null) enc.close();
+            //noinspection ResultOfMethodCallIgnored
+            part.delete();
+        }
+    }
+
+    /** What a time lapse is, in words: "47 minutes of sky in 12 seconds, 240 times faster than real life: comet tails." */
+    static String lapseWords(TimeLapse tl, TimeLapse.Source src) {
+        double min = src.spanSeconds() / 60.0;
+        String span = min >= 90 ? String.format(Locale.US, "%.1f hours", min / 60) : Math.max(1, Math.round(min)) + " minutes";
+        long secs = Math.max(1, Math.round(tl.durationMs() / 1000.0));
+        return String.format(Locale.US, "%s of sky in %d seconds, %d times faster than real life: %s.", span, secs,
+                Math.round(tl.speedUp()), tl.style().label.toLowerCase(Locale.US));
+    }
+
+    /** The time lapse's caption (2.5): the time of night each picture shows, and how much faster than the sky it plays (bottom left). */
+    private final class LapseCaption implements TimeLapse.Overlay {
+        private Bitmap b;
+        private Canvas c;
+        private final Paint big = new Paint(Paint.ANTI_ALIAS_FLAG), small = new Paint(Paint.ANTI_ALIAS_FLAG);
+        /** The phone's own clock format (12 or 24 hours, as its settings say). */
+        private final java.text.DateFormat clock = android.text.format.DateFormat.getTimeFormat(ctx);
+
+        @Override
+        public void draw(int[] argb, int w, int h, long wallMs, double minutes, double speedUp) {
+            if (b == null) {
+                b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                c = new Canvas(b);
+                float size = Math.max(14f, h / 17f);
+                big.setTextSize(size);
+                big.setColor(0xFFF2F4FF);
+                big.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+                big.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+                small.setTextSize(size * 0.62f);
+                small.setColor(0xFFC8CEE8);
+                small.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+            }
+            b.setPixels(argb, 0, w, 0, 0, w, h);
+            float pad = big.getTextSize() * 0.6f;
+            String time;
+            if (wallMs > 0) {
+                time = clock.format(new Date(wallMs));
+            } else {
+                int mins = (int) Math.round(minutes);
+                time = mins >= 60 ? String.format(Locale.US, "+%d h %02d min", mins / 60, mins % 60) : String.format(Locale.US, "+%d min", mins);
+            }
+            String top = speedUp >= 1.5 ? String.format(Locale.US, "TIME LAPSE \u00b7 %d\u00d7 FASTER", Math.round(speedUp)) : "TIME LAPSE";
+            c.drawText(top, pad, h - pad - big.getTextSize() * 1.15f, small);
+            c.drawText(time, pad, h - pad, big);
+            b.getPixels(argb, 0, w, 0, 0, w, h);
+        }
+    }
+
+    /**
+     * Whether the result shown can have a time lapse made (2.5): it was just developed (how its frames were read is kept),
+     * or it's a session opened again whose frames are still kept, enough of them.
+     */
+    boolean canTimeLapse() {
+        Status s = status;
+        Result r = s.result;
+        return s.phase == Phase.DONE && r != null && (r.lapseSource != null || r.lapseFrames);
+    }
+
+    /**
+     * Makes the time lapse of the result shown (2.5) in {@code style}: from how developing read the frames when it was just
+     * developed, else from the frames as they're kept (their defective pixels found again). Shown like developing, then the
+     * result again with the time lapse on it; the photo is untouched either way.
+     */
+    void timeLapse(final TimeLapse.Style style) {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (output == null || result == null || phase != Phase.DONE) {
+                    host.onIdle();
+                    return;
+                }
+                final Result r = result;
+                final PostProcessor.Output o = output;
+                final SensorSpec sp = outSpec;
+                phase = Phase.DEVELOPING;
+                cancelDevelop = false;
+                publish("Making the time lapse", style.label, -1);
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final SessionStore st = new SessionStore(new File(root, r.session));
+                        Lapse made = null;
+                        String why;
+                        try {
+                            // the look shown now: the brightness as it's set on the result screen
+                            Renderer.Params params = paramsOf(r.recipe, r.brightness);
+                            TimeLapse.Source src = r.lapseSource;
+                            if (src == null) {
+                                post(Phase.DEVELOPING, "Making the time lapse", "Finding the sensor's defective pixels", -1f);
+                                src = TimeLapse.Source.reread(sp, st.frames(sp.width, sp.height), PostProcessor.storedHotPixels(st, sp),
+                                        st.readUnits(), o.analysis, params, r.startedMs);
+                            } else {
+                                src = new TimeLapse.Source(src.spec, src.store, src.hot, src.frames, o.analysis, params, src.startWallMs);
+                            }
+                            made = makeTimeLapse(st, src, style, r.name, "Making the time lapse");
+                            if (made != null) r.lapseSource = src;
+                            why = lapseWhy;
+                        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                            why = "the frames couldn't be read (" + (e instanceof OutOfMemoryError ? "out of memory" : e.getMessage()) + ")";
+                            st.log("decision: no time lapse: " + e);
+                        }
+                        final Lapse l = made;
+                        final String w = why;
+                        h.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (l != null) {
+                                    r.lapse = l.mp4;
+                                    r.lapseVideo = l.uri;
+                                    r.lapseStyle = l.style.id;
+                                    r.lapseWords = l.words;
+                                    r.lapseFresh = true;
+                                    saveLapseNote(st, r);
+                                }
+                                phase = Phase.DONE;
+                                boolean cancelled = l == null && cancelDevelop;
+                                cancelDevelop = false;
+                                publish(l != null ? "Your time lapse is ready" : cancelled ? "Cancelled" : "No time lapse",
+                                        l != null ? l.words : cancelled ? "The photo is as it was." : "It couldn't be made: " + w + ".", -1);
+                                host.onIdle();
+                            }
+                        });
+                    }
+                }, "timelapse").start();
+            }
+        });
     }
 
     /** Ends the photo's video on the photo itself, {@code bmp} as it's saved; false (and the log says why) if it can't. */

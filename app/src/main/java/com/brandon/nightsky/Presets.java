@@ -115,6 +115,8 @@ final class Presets {
         s.blend = p.blend;
         s.quick = p.quick;
         s.earth = p.earth && !p.trails;
+        s.timelapse = p.timelapse && !p.trails && !p.earth;
+        s.lapseStyle = prefs.lapseStyle();
         s.brackets = prefs.brackets();
         // collect N clear minutes (A3): the session's length of clear sky, for at most three times as long
         s.clearTargetSec = p.collectClear ? s.durationSec : 0;

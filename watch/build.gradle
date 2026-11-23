@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Night Sky on the Pixel Watch (2.5): its own app, sharing the link's code (link/ and the JSON in remote/) with the phone's.
+android {
+    namespace 'com.brandon.nightsky.watch'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.brandon.nightsky.watch'
+        minSdk 30
+        targetSdk 34
+        versionCode 17
+        versionName '2.5'
+    }
+
+    sourceSets {
+        main {
+            java {
+                srcDir 'src/main/java'
+                srcDir '../app/src/main/java'
+                include 'com/brandon/nightsky/watch/**'
+                include 'com/brandon/nightsky/link/**'
+                include 'com/brandon/nightsky/remote/Json.java'
+                include 'com/brandon/nightsky/remote/JsonTree.java'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// No dependencies: only the Android platform's own APIs, as on the phone.

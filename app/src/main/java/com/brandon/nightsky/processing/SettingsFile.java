@@ -34,7 +34,7 @@ public final class SettingsFile {
             {"planSounds", "b"}, {"planMinBattery", "i"}, {"tileUnlocks", "b"}, {"sqmOffset", "f"}, {"preset", "s"},
             {"autoSite", "b"}, {"collectClear", "b"}, {"blend", "b"}, {"quick", "b"}, {"focusAssist", "b"},
             {"keepFramesGb", "i"}, {"remoteKey", "b"}, {"photoVideo", "b"}, {"hdrPhotos", "b"},
-            {"intro", "i"}, {"earth", "b"}, {"brackets", "b"},
+            {"intro", "i"}, {"earth", "b"}, {"brackets", "b"}, {"timelapse", "b"}, {"lapseStyle", "s"},
     };
     /** What the app learned about the camera: keys starting with these (camera and system build follow), or equal. */
     static final String[][] LEARNED = {
@@ -45,6 +45,8 @@ public final class SettingsFile {
     static final String[] TRANSIENT = {
             "askedBatteryExemption", "askedLocation", "lastResult", "lastResultMs", "lastThumb", "placeLat", "placeLon",
             "placeAlt", "placeAccuracy", "placeTime", "handPickedMs", "settingsMigrated", VERSION_KEY, PRESETS_KEY, SITES_KEY,
+            // the paired watch (2.5): its key never leaves the phone, not even in a settings file
+            "watch.key", "watch.name", "watch.pairedMs", "watch.relay",
     };
 
     private SettingsFile() {}
@@ -106,6 +108,7 @@ public final class SettingsFile {
         p.blend = bool(m, "blend", false);
         p.quick = bool(m, "quick", false);
         p.earth = bool(m, "earth", false) && !p.trails;
+        p.timelapse = bool(m, "timelapse", false) && !p.trails && !p.earth;
         return p;
     }
 

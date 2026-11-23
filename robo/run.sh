@@ -48,8 +48,10 @@ EOF
 
 echo "== tests"
 CP="$B/test:$B/cfg:$B/app:$(ls "$ROBO_HOME"/deps/*.jar | tr '\n' ':')$ROBO_HOME/androidx-test-stubs.jar:$ROBO_HOME/sdk/android-all-$SDK_VERSION.jar"
+# the watch app (2.5) too, with the relay's stand-in: Night's wrist scenario pairs it with the phone
 javac -source 8 -target 8 -Xlint:-options -nowarn -encoding UTF-8 -cp "$CP" -d "$B/test" robo/src/com/brandon/nightsky/*.java \
-    sim/src/com/brandon/nightsky/sim/SkySim.java 2>&1 | grep -v "^Note:" || true
+    sim/src/com/brandon/nightsky/sim/SkySim.java sim/src/com/brandon/nightsky/sim/MockNtfy.java \
+    $(find watch/src/main/java robo/src/com/brandon/nightsky/watch -name '*.java') 2>&1 | grep -v "^Note:" || true
 [ -f "$B/test/com/brandon/nightsky/$TEST.class" ] || { echo "the tests didn't compile"; exit 1; }
 
 echo "== $TEST $ONLY"

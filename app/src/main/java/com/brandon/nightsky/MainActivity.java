@@ -79,8 +79,10 @@ import com.brandon.nightsky.processing.SettingsFile;
 import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.StarSong;
+import com.brandon.nightsky.processing.TimeLapse;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitRecord;
+import com.brandon.nightsky.processing.XRayVision;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -159,7 +161,7 @@ public final class MainActivity extends Activity {
     /** Drops the sessions read for a page Brandon has left. */
     private int libraryToken;
     /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate or check. */
-    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9, REQ_CHECK_CAMERA = 10;
+    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9, REQ_CHECK_CAMERA = 10, REQ_WATCH_BT = 11;
     /** The daylight focus calibration's camera while its page shows (null otherwise); the camera sessions use. */
     private FocusCalibrator calibrator;
     /** The camera check while it runs on its page (null otherwise). */
@@ -202,6 +204,12 @@ public final class MainActivity extends Activity {
     private float shownBrightness = -1f;
     /** Holds the remote viewer's card on the session screens; rebuilt when its content changes. */
     private LinearLayout viewerBox;
+    /** The Pixel Watch card (2.5): its line and buttons, kept up to date while the home screen shows. */
+    private TextView watchLine;
+    private Button watchPair, watchUnpair;
+    private String shownWatch = "";
+    private long watchCheckedMs;
+    private int shownWatchSettings;
     private String shownViewer;
     private boolean viewerCompact;
     /** The result screen: the viewer outlives the session there, so it gets a stop button. */
@@ -220,6 +228,7 @@ public final class MainActivity extends Activity {
         @Override
         public void onServiceConnected(ComponentName name, IBinder b) {
             service = ((CaptureService.LocalBinder) b).service();
+            shownWatchSettings = service.watchSettings;
             shownVersion = -1;
             shownPhase = null;
             refresh();
@@ -241,6 +250,7 @@ public final class MainActivity extends Activity {
         public void run() {
             refresh();
             refreshViewer(false);
+            refreshWatch(false);
             main.postDelayed(this, 250);
         }
     };
@@ -756,37 +766,50 @@ public final class MainActivity extends Activity {
         col.addView(presetBox, gap(8));
         fillPresets();
 
-        // mode
+        // mode: two rows of two, the time lapse (2.5) with its looks below it
         col.addView(label("Mode"), gap(22));
-        final Button deep = chip("Deep sky", !prefs.trails() && !prefs.earth());
+        final Button deep = chip("Deep sky", !prefs.trails() && !prefs.earth() && !prefs.timelapse());
         final Button trails = chip("Star trails", prefs.trails());
         final Button earth = chip("Earth's turn", prefs.earth());
-        final TextView modeHelp = text(modeHelp(prefs.trails(), prefs.earth()), 13, RED_DIM, false);
+        final Button lapse = chip("Time lapse", prefs.timelapse());
+        final TextView modeHelp = text(modeHelp(prefs.trails(), prefs.earth(), prefs.timelapse()), 13, RED_DIM, false);
+        final LinearLayout looks = lapseLooks();
+        looks.setVisibility(prefs.timelapse() ? View.VISIBLE : View.GONE);
+        final LinearLayout lens = row();
         View.OnClickListener modeClick = new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean t = v == trails, e = v == earth;
-                prefs.setMode(t, e);
-                styleChip(deep, !t && !e);
+                boolean t = v == trails, e = v == earth, tl = v == lapse;
+                boolean was = prefs.timelapse();
+                prefs.setMode(t, e, tl);
+                styleChip(deep, !t && !e && !tl);
                 styleChip(trails, t);
                 styleChip(earth, e);
-                modeHelp.setText(modeHelp(t, e));
+                styleChip(lapse, tl);
+                modeHelp.setText(modeHelp(t, e, tl));
+                looks.setVisibility(tl ? View.VISIBLE : View.GONE);
+                if (was != tl) {
+                    // a time lapse has lengths of its own
+                    fitDuration(tl);
+                    fillLengths(lens);
+                }
                 showSatellites();
                 handChanged();
             }
         };
-        deep.setOnClickListener(modeClick);
-        trails.setOnClickListener(modeClick);
-        earth.setOnClickListener(modeClick);
-        deep.setTextSize(15);
-        trails.setTextSize(15);
-        earth.setTextSize(15);
-        LinearLayout modes = row();
+        LinearLayout modes = row(), modes2 = row();
+        for (Button b : new Button[]{deep, trails, earth, lapse}) {
+            b.setOnClickListener(modeClick);
+            b.setTextSize(15);
+        }
         modes.addView(deep, weight());
         modes.addView(trails, weight());
-        modes.addView(earth, weight());
+        modes2.addView(earth, weight());
+        modes2.addView(lapse, weight());
         col.addView(modes, gap(8));
+        col.addView(modes2, gap(6));
         col.addView(modeHelp, gap(6));
+        col.addView(looks, gap(10));
 
         // satellites in the camera's view: the passes, and the quietest stretch to start in (deep sky only)
         satBox = card();
@@ -801,24 +824,7 @@ public final class MainActivity extends Activity {
 
         // length
         col.addView(label("How long"), gap(22));
-        LinearLayout lens = row();
-        final Button[] lenChips = new Button[Prefs.DURATIONS_MIN.length];
-        for (int k = 0; k < Prefs.DURATIONS_MIN.length; k++) {
-            final int min = Prefs.DURATIONS_MIN[k];
-            Button b = chip(min + "m", prefs.durationMin() == min);
-            b.setTextSize(15);
-            lenChips[k] = b;
-            b.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    prefs.setDurationMin(min);
-                    for (int j = 0; j < lenChips.length; j++) styleChip(lenChips[j], Prefs.DURATIONS_MIN[j] == min);
-                    showSatellites();
-                    handChanged();
-                }
-            });
-            lens.addView(b, weight());
-        }
+        fillLengths(lens);
         col.addView(lens, gap(8));
 
         // brightness
@@ -879,6 +885,7 @@ public final class MainActivity extends Activity {
         col.addView(pre);
         col.addView(dng);
         col.addView(viewer);
+        addWatch(col);
         addAdvanced(col);
 
         Button start = button("Start", true);
@@ -1472,13 +1479,99 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private static String modeHelp(boolean trails, boolean earth) {
+    private static String modeHelp(boolean trails, boolean earth, boolean timelapse) {
         return trails
                 ? "Each star draws its arc across the sky. Longer is better: try 20 or 30 minutes."
                 : earth ? "A deep photo, plus a few seconds of video that loops for ever: the whole sky wheeling round the pole while "
                 + "the ground stays put, from the frames' own measured turn. It also works out the length of a day by the stars "
                 + "and your latitude. Longer turns further: try 15 or 30 minutes."
+                : timelapse ? "A deep photo, plus the whole night as a film: every frame is one real moment, so the stars wheel across, "
+                + "clouds drift by and satellites zip through. 30 minutes makes about 8 seconds of film, an hour about 15, 90 "
+                + "minutes about 20. Pick a look below; you can make the other two afterwards from the same night."
                 : "Lines up the stars between frames and stacks them into one deep, clean photo.";
+    }
+
+    /** A time lapse look's name on its button (2.5). */
+    static String lapseLabel(TimeLapse.Style st) {
+        return st == TimeLapse.Style.TRAILS ? "Trails growing" : st == TimeLapse.Style.COMET ? "Comet tails" : "Sky turning";
+    }
+
+    private static String lapseLookHelp(TimeLapse.Style st) {
+        return st == TimeLapse.Style.TRAILS ? "Every star draws its trail as the night goes on, until the film ends on a star-trails picture."
+                : st == TimeLapse.Style.COMET ? "Every star drags a glowing tail of where it was a moment ago, like a sky full of comets."
+                : "The night as it was: the stars wheel across, clouds drift by, satellites and planes zip through.";
+    }
+
+    /** The time lapse's three looks (2.5), the one set lit, and what it does. */
+    private LinearLayout lapseLooks() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(text("Time lapse look", 13, RED, true));
+        final TimeLapse.Style[] all = TimeLapse.Style.values();
+        final TimeLapse.Style cur = TimeLapse.Style.parse(prefs.lapseStyle());
+        final TextView help = text(lapseLookHelp(cur), 13, RED_DIM, false);
+        final Button[] chips = new Button[all.length];
+        LinearLayout r = row();
+        for (int k = 0; k < all.length; k++) {
+            final TimeLapse.Style st = all[k];
+            Button b = chip(lapseLabel(st), st == cur);
+            b.setTextSize(14);
+            chips[k] = b;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setLapseStyle(st.id);
+                    for (int j = 0; j < chips.length; j++) styleChip(chips[j], all[j] == st);
+                    help.setText(lapseLookHelp(st));
+                }
+            });
+            r.addView(b, weight());
+        }
+        box.addView(r, gap(6));
+        box.addView(help, gap(4));
+        return box;
+    }
+
+    /** The length chips the mode offers (a time lapse has its own, longer ones), the one set lit. */
+    private void fillLengths(final LinearLayout lens) {
+        lens.removeAllViews();
+        final int[] mins = Prefs.durations(prefs.timelapse());
+        final Button[] chips = new Button[mins.length];
+        for (int k = 0; k < mins.length; k++) {
+            final int min = mins[k];
+            Button b = chip(min + "m", prefs.durationMin() == min);
+            b.setTextSize(15);
+            chips[k] = b;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.setDurationMin(min);
+                    for (int j = 0; j < chips.length; j++) styleChip(chips[j], mins[j] == min);
+                    showSatellites();
+                    handChanged();
+                }
+            });
+            lens.addView(b, weight());
+        }
+    }
+
+    /**
+     * Keeps the length one the mode offers: a time lapse newly chosen starts at 30 minutes unless it was set to 20 or more
+     * of its own; back from one, the nearest of the usual lengths.
+     */
+    private void fitDuration(boolean timelapse) {
+        int[] mins = Prefs.durations(timelapse);
+        int cur = prefs.durationMin();
+        boolean offered = false;
+        for (int m : mins) if (m == cur) offered = true;
+        if (timelapse) {
+            if (!offered || cur < 20) prefs.setDurationMin(Prefs.LAPSE_DEFAULT_MIN);
+            return;
+        }
+        if (offered) return;
+        int best = mins[0];
+        for (int m : mins) if (Math.abs(m - cur) < Math.abs(best - cur)) best = m;
+        prefs.setDurationMin(best);
     }
 
     private static String brightnessLabel(float b) {
@@ -1673,6 +1766,14 @@ public final class MainActivity extends Activity {
                 toastish("The check needs the camera: allow it in Settings > Apps > Night Sky > Permissions");
             }
             if (page == PAGE_CHECK && screenOf(shownPhase) <= 0) showCheck();
+            return;
+        }
+        if (code == REQ_WATCH_BT) {
+            if (service != null && WatchLink.btAllowed(this)) {
+                service.watch().retryBluetooth();
+            } else {
+                toastish("No Bluetooth for the watch: it pairs and works over the internet instead");
+            }
             return;
         }
         if (code == REQ_SITES_LOCATION) {
@@ -3010,11 +3111,25 @@ public final class MainActivity extends Activity {
         col.addView(row2, gap(6));
         if (r != null && r.replay != null) addReplay(col, r);
         if (r != null && (!r.zooms.isEmpty() || !r.zoomWords.isEmpty())) addDeepZoom(col, r);
+        if (r != null && r.songFrom != null && !r.trails) addXRay(col, r);
         if (r != null && r.songFrom != null && !r.trails) addNetwork(col, r);
         if (r != null && r.earth != null) addEarthTurn(col, r);
+        final boolean canLapse = r != null && service != null && service.controller().canTimeLapse();
+        if (r != null && r.lapse != null) addTimeLapse(col, r, canLapse);
         if (r != null && r.song != null && !r.trails) addSong(col, r);
         // the rest, smaller: the video, editing, minutes added, tomorrow night, other nights, the cloud blur, the sessions
         List<Button> more = new ArrayList<Button>();
+        if (r != null && r.lapse == null && canLapse) {
+            // any night whose frames are kept can be made into a time lapse (2.5), in the look last chosen
+            Button lb = smallButton("Make a time lapse", false);
+            lb.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    makeTimeLapse(TimeLapse.Style.parse(prefs.lapseStyle()));
+                }
+            });
+            more.add(lb);
+        }
         if (r != null && r.video != null) {
             // the photo's video (1.8), played where the photo is
             final File vf = r.video;
@@ -5049,6 +5164,123 @@ public final class MainActivity extends Activity {
     }
 
     /** Asks for a name (at most 40 characters); an empty answer does nothing. */
+    /**
+     * The Pixel Watch (2.5): Night Sky on the watch starts, follows and stops the session from the wrist, over
+     * Bluetooth when the phone is near and over the internet when it isn't. Paired here with the code the watch shows.
+     */
+    private void addWatch(LinearLayout col) {
+        col.addView(label("Pixel Watch"), gap(22));
+        LinearLayout card = card();
+        card.addView(text("Start, stop and add minutes from your wrist, and watch the photo build. Over Bluetooth when the phone "
+                + "is near, over the internet when it isn't.", 13, RED_DIM, false));
+        watchLine = text("", 14, RED, false);
+        card.addView(watchLine, gap(8));
+        LinearLayout row = row();
+        watchPair = button("Pair a watch", true);
+        watchPair.setTextSize(15);
+        watchPair.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pairWatch();
+            }
+        });
+        watchUnpair = button("Unpair", false);
+        watchUnpair.setTextSize(15);
+        watchUnpair.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new AlertDialog.Builder(MainActivity.this).setMessage("Unpair the watch? It shows a new code, to pair again whenever you like.")
+                        .setPositiveButton("Unpair", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int w) {
+                                if (service != null) service.watch().unpair();
+                                refreshWatch(true);
+                            }
+                        }).setNegativeButton("Cancel", null).show();
+            }
+        });
+        row.addView(watchPair, weight());
+        row.addView(watchUnpair, weight());
+        card.addView(row, gap(10));
+        col.addView(card, gap(8));
+        // what pairing said last time has been read: the usual line from now on
+        if (service != null) service.watch().pairingSeen();
+        shownWatch = "";
+        refreshWatch(true);
+    }
+
+    private void refreshWatch(boolean force) {
+        if (service != null && service.watchSettings != shownWatchSettings) {
+            // a preset picked on the watch: the home screen shows its settings
+            shownWatchSettings = service.watchSettings;
+            if (page == PAGE_HOME && screenOf(shownPhase) <= 0) {
+                showHome();
+                return;
+            }
+        }
+        if (watchLine == null || !watchLine.isAttachedToWindow()) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!force && now - watchCheckedMs < 1000) return;
+        watchCheckedMs = now;
+        WatchLink w = service != null ? service.watch() : null;
+        boolean paired = w != null && w.paired(), pairing = w != null && w.pairingNow();
+        String line = w != null ? w.line() : "";
+        if (line.isEmpty() && !paired) {
+            line = "No watch paired. Put Night Sky on the watch (the README says how), open it there, then tap Pair a watch "
+                    + "and type the code it shows.";
+        }
+        String key = line + "|" + paired + "|" + pairing;
+        if (key.equals(shownWatch)) return;
+        shownWatch = key;
+        watchLine.setText(line);
+        watchPair.setText(pairing ? "Stop pairing" : "Pair a watch");
+        watchPair.setVisibility(paired && !pairing ? View.GONE : View.VISIBLE);
+        watchUnpair.setVisibility(paired ? View.VISIBLE : View.GONE);
+    }
+
+    /** The code the watch shows, typed here; Bluetooth asked for on the way (the internet works without it). */
+    private void pairWatch() {
+        final WatchLink w = service != null ? service.watch() : null;
+        if (w == null) return;
+        if (w.pairingNow()) {
+            w.cancelPairing();
+            refreshWatch(true);
+            return;
+        }
+        final EditText in = new EditText(this);
+        in.setInputType(InputType.TYPE_CLASS_NUMBER);
+        in.setSingleLine(true);
+        in.setHint("123 456");
+        in.setTextSize(28);
+        in.setGravity(Gravity.CENTER);
+        in.setTextColor(RED);
+        in.setHintTextColor(RED_DIM);
+        in.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(7)});
+        FrameLayout pad = new FrameLayout(this);
+        pad.setPadding(dp(20), dp(8), dp(20), 0);
+        pad.addView(in);
+        final AlertDialog d = new AlertDialog.Builder(this).setTitle("Pair a watch")
+                .setMessage("Open Night Sky on the watch: it shows six digits. Type them here.")
+                .setView(pad)
+                .setPositiveButton("Pair", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dd, int which) {
+                        String why = w.pair(in.getText().toString());
+                        if (why != null) {
+                            toastish(why);
+                        } else if (!WatchLink.btAllowed(MainActivity.this)) {
+                            // the quick way, and the one that needs no signal; pairing goes on over the internet meanwhile
+                            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, REQ_WATCH_BT);
+                        }
+                        refreshWatch(true);
+                    }
+                })
+                .setNegativeButton("Cancel", null).create();
+        d.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        d.show();
+        in.requestFocus();
+    }
+
     private void askText(String title, String message, String initial, final TextAnswer a) {
         final EditText in = new EditText(this);
         in.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
@@ -6535,6 +6767,72 @@ public final class MainActivity extends Activity {
     private String earthPlayed = "";
 
     /**
+     * The result's time lapse (2.5): what it is, played where the photo is, shared, and (while the night's frames are kept)
+     * made again in another look. A new one plays by itself, once.
+     */
+    private void addTimeLapse(LinearLayout col, final SessionController.Result r, boolean canMake) {
+        LinearLayout card = card();
+        card.addView(text("Time lapse", 17, RED, true));
+        if (!r.lapseWords.isEmpty()) card.addView(text(r.lapseWords, 13, RED_DIM, false), gap(6));
+        LinearLayout row = row();
+        Button play = smallButton("Play it", true);
+        play.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                playVideo(r.lapse, false);
+            }
+        });
+        row.addView(play, weight());
+        if (r.lapseVideo != null) {
+            Button sv = smallButton("Share video", false);
+            sv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(r.lapseVideo, "video/mp4", "Share the time lapse");
+                }
+            });
+            row.addView(sv, weight());
+        }
+        card.addView(row, gap(8));
+        if (canMake) {
+            card.addView(text("Make it again in another look (each one is saved in your gallery too):", 13, RED_DIM, false), gap(10));
+            LinearLayout looks = row();
+            final TimeLapse.Style cur = r.lapseStyle.isEmpty() ? null : TimeLapse.Style.parse(r.lapseStyle);
+            for (final TimeLapse.Style st : TimeLapse.Style.values()) {
+                Button b = smallButton(lapseLabel(st), st == cur);
+                b.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (st == cur) playVideo(r.lapse, false);
+                        else makeTimeLapse(st);
+                    }
+                });
+                looks.addView(b, weight());
+            }
+            card.addView(looks, gap(6));
+        }
+        col.addView(card, gap(12));
+        // a new one plays at once, once: the night wheeling past is the point of it
+        if (r.lapseFresh) {
+            r.lapseFresh = false;
+            final File f = r.lapse;
+            col.post(new Runnable() {
+                @Override
+                public void run() {
+                    playVideo(f, false);
+                }
+            });
+        }
+    }
+
+    /** Makes the result's time lapse in {@code style} (2.5), as a job of the service: it reads every frame of the night again. */
+    private void makeTimeLapse(TimeLapse.Style style) {
+        prefs.setLapseStyle(style.id);
+        startService(new Intent(this, CaptureService.class).setAction(CaptureService.ACTION_LAPSE)
+                .putExtra(CaptureService.EXTRA_STYLE, style.id));
+    }
+
+    /**
      * The result's Mission Replay (2.4): the GIF playing (as it will in a message), opened full size by a tap, and
      * shared. A phone that can't play GIFs here shows its first picture.
      */
@@ -6649,6 +6947,157 @@ public final class MainActivity extends Activity {
             card.addView(share, gap(8));
         }
         col.addView(card, gap(12));
+    }
+
+    /** Whether the X-Ray Vision card shows all its things (else the first few). */
+    private boolean xrayAll;
+    /** The pulsars' beats playing (null if not). */
+    private SongPlayer beats;
+    /** Seconds of each pulsar's beat, and of quiet after it. */
+    private static final double BEAT_EACH = 4.0, BEAT_GAP = 0.8;
+
+    /**
+     * The result's X-Ray Vision (2.5): the photo as an X-ray film with the black holes, neutron stars, exploded stars and
+     * stars with planets in it marked (a tap opens it full size), each one's story, the pulsars to hear (a click for every
+     * sweep of the beam, as radio telescopes hear them); with nothing on the list in the photo, what was up in the sky.
+     */
+    private void addXRay(LinearLayout col, final SessionController.Result r) {
+        SessionController.SongSource src = r.songFrom;
+        final List<XRayVision.Spot> all;
+        try {
+            all = XRayVision.find(src.sol, src.jdUtc, src.sky, src.crop[0], src.crop[1], src.crop[2], src.crop[3],
+                    java.util.TimeZone.getDefault());
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (all.isEmpty()) return;
+        int in = XRayVision.inPhoto(all);
+        LinearLayout card = card();
+        card.addView(text("X-Ray Vision", 17, RED, true));
+        card.addView(text(in == 0 ? "None of the black holes, dead stars and planet hosts NASA's telescopes watch is in this photo. Up "
+                + "in your sky when you took it, to aim at next time:" : "Your photo as NASA's X-ray, radio and planet-hunting "
+                + "telescopes see it: " + XRayVision.summary(all) + ". No camera can see them, but they're right there, marked where "
+                + "they are." + (r.xray != null && r.xrayUri != null ? " Tap the picture to see it full size." : ""), 13, RED_DIM, false), gap(6));
+        Bitmap pic = r.xray != null ? BitmapFactory.decodeFile(r.xray.getPath()) : null;
+        if (pic != null) {
+            ImageView iv = new ImageView(this);
+            iv.setAdjustViewBounds(true);
+            iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            iv.setImageBitmap(pic);
+            iv.setContentDescription("X-Ray Vision: " + r.xrayWords);
+            iv.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (r.xrayUri != null) view(r.xrayUri);
+                }
+            });
+            card.addView(iv, gap(8));
+        }
+        final int shown = xrayAll ? all.size() : Math.min(all.size(), Math.max(1, Math.min(3, in == 0 ? 3 : in)));
+        for (int i = 0; i < shown; i++) xrayThing(card, all.get(i));
+        if (shown < all.size()) {
+            final LinearLayout box = card;
+            final List<XRayVision.Spot> rest = all.subList(shown, all.size());
+            final Button more = smallButton("Show all " + all.size(), false);
+            more.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    xrayAll = true;
+                    int at = box.indexOfChild(v);
+                    box.removeView(v);
+                    for (XRayVision.Spot s : rest) {
+                        xrayThing(box, s, at);
+                        at += 2;
+                    }
+                }
+            });
+            card.addView(more, gap(8));
+        }
+        final List<XRayVision.Spot> pulsars = XRayVision.toHear(all);
+        LinearLayout row = row();
+        if (r.xrayUri != null) {
+            Button share = smallButton("Share the X-ray", false);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(r.xrayUri, "image/jpeg", "Share X-Ray Vision");
+                }
+            });
+            row.addView(share, weight());
+        }
+        if (!pulsars.isEmpty()) {
+            final String label = pulsars.size() == 1 ? "Hear the pulsar" : "Hear the pulsars";
+            final Button hear = smallButton(beats != null ? "Stop" : label, true);
+            hear.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    playBeats(pulsars, hear, label);
+                }
+            });
+            row.addView(hear, weight());
+        }
+        if (row.getChildCount() > 0) card.addView(row, gap(8));
+        if (!pulsars.isEmpty()) {
+            card.addView(text("Pulsars are dead stars spinning like lighthouses. Radio telescopes hear each sweep of the beam as a click; "
+                    + (in > 0 && pulsars.get(0).inPhoto ? "these are the ones in your photo." : "these were up in your sky."), 12, RED_DIM,
+                    false), gap(4));
+        }
+        col.addView(card, gap(12));
+    }
+
+    private void xrayThing(LinearLayout card, XRayVision.Spot s) {
+        xrayThing(card, s, -1);
+    }
+
+    /** One thing's line (where it is) and story, at {@code at} in the card (-1: at its end). */
+    private void xrayThing(LinearLayout card, XRayVision.Spot s, int at) {
+        TextView head = text(s.head, 14, s.inPhoto ? RED : RED_DIM, true);
+        TextView words = text(s.words, 12, RED_DIM, false);
+        if (at < 0) {
+            card.addView(head, gap(10));
+            card.addView(words, gap(2));
+        } else {
+            card.addView(head, at, gap(10));
+            card.addView(words, at + 1, gap(2));
+        }
+    }
+
+    /** The pulsars' beats one after another (the button says which is playing); a second tap stops them. */
+    private void playBeats(final List<XRayVision.Spot> ps, final Button b, final String label) {
+        if (beats != null) {
+            stopBeats();
+            b.setText(label);
+            return;
+        }
+        stopSong();
+        final SongPlayer pl = new SongPlayer(XRayVision.tour(ps, BEAT_EACH, BEAT_GAP, StarSong.RATE), StarSong.RATE);
+        if (!pl.start()) {
+            toastish("The phone wouldn't play it");
+            return;
+        }
+        android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am != null && am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0) toastish("Turn the volume up to hear the pulsars!");
+        beats = pl;
+        b.post(new Runnable() {
+            @Override
+            public void run() {
+                if (beats != pl || pl.ended()) {
+                    if (beats == pl) beats = null;
+                    b.setText(label);
+                    return;
+                }
+                int k = (int) Math.max(0, Math.min(ps.size() - 1, Math.floor(pl.position() / (BEAT_EACH + BEAT_GAP))));
+                XRayVision.Thing t = ps.get(k).what;
+                b.setText(t.name + ": " + XRayVision.spinWords(t.spinsPerSecond) + " \u00b7 stop");
+                b.postDelayed(this, 150);
+            }
+        });
+    }
+
+    private void stopBeats() {
+        SongPlayer p = beats;
+        beats = null;
+        if (p != null) p.stop();
     }
 
     /** Whether the Deep Space Network card shows all its lines (else the first few). */
@@ -6784,6 +7233,7 @@ public final class MainActivity extends Activity {
     /** Plays the song where the photo is, the photo lighting up as it goes, until it ends or is tapped. */
     private void playSong(final SessionController.Result r) {
         if (service == null || songStop != null) return;
+        stopBeats();
         final SessionController ctl = service.controller();
         final Bitmap pic = ctl.songPicture();
         if (pic == null || zoom == null) {
@@ -6870,6 +7320,7 @@ public final class MainActivity extends Activity {
         Runnable s = songStop;
         if (s != null) s.run();
         songStop = null;
+        stopBeats();
     }
 
     /** The song as a video with its sound: made once (a few seconds), saved in the gallery, then shared. */

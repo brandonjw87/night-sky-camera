@@ -37,6 +37,8 @@ public final class Preset {
     public boolean quick;
     /** The Earth's turn (2.2): a deep photo and a short looping clip of the Earth turning under the sky (not with trails). */
     public boolean earth;
+    /** The time lapse (2.5): a deep photo and the whole night as a video, every frame a moment of it (not with the two above). */
+    public boolean timelapse;
 
     public Preset() {}
 
@@ -56,6 +58,7 @@ public final class Preset {
         p.blend = blend;
         p.quick = quick;
         p.earth = earth;
+        p.timelapse = timelapse;
         return p;
     }
 
@@ -117,13 +120,13 @@ public final class Preset {
         return o != null && trails == o.trails && durationMin == o.durationMin && Math.abs(brightness - o.brightness) < 0.005f
                 && saveDng == o.saveDng && rejection.equalsIgnoreCase(o.rejection) && keepSatellites == o.keepSatellites
                 && keptMeteors() == o.keptMeteors() && collectClear == o.collectClear && blend == o.blend && quick == o.quick
-                && earth == o.earth;
+                && earth == o.earth && timelapse == o.timelapse;
     }
 
     /** "Deep sky, 10 min, brightness 55%, RAW too" and what's special, for the screen. */
     public String describe() {
         StringBuilder sb = new StringBuilder();
-        sb.append(trails ? "Star trails" : earth ? "Earth's turn" : "Deep sky").append(", ").append(durationMin).append(" min");
+        sb.append(trails ? "Star trails" : earth ? "Earth's turn" : timelapse ? "Time lapse" : "Deep sky").append(", ").append(durationMin).append(" min");
         sb.append(String.format(Locale.US, ", brightness %d%%", Math.round(brightness * 100)));
         sb.append(saveDng ? ", RAW too" : ", JPEG only");
         if (collectClear) sb.append(", keeps going until ").append(durationMin).append(" clear minutes are in (up to ")
@@ -144,6 +147,7 @@ public final class Preset {
         if (keepMeteors) j.put("keepMeteors", true);
         j.put("collectClear", collectClear).put("blend", blend).put("quick", quick);
         if (earth) j.put("earth", true);
+        if (timelapse) j.put("timelapse", true);
         j.end();
     }
 
@@ -162,6 +166,7 @@ public final class Preset {
         p.blend = o.bool("blend", false);
         p.quick = o.bool("quick", false);
         p.earth = o.bool("earth", false) && !p.trails;
+        p.timelapse = o.bool("timelapse", false) && !p.trails && !p.earth;
         return p;
     }
 
