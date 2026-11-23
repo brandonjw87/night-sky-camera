@@ -8,6 +8,8 @@
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="34" />
 
     <uses-feature android:name="android.hardware.type.watch" />
+    <!-- Bluetooth is the quick way, not the only one: the internet way works without it -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <!-- the internet way: the relay, through the phone's Bluetooth, Wi-Fi or LTE -->
     <uses-permission android:name="android.permission.INTERNET" />
