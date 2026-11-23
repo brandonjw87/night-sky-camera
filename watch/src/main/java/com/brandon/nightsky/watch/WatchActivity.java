@@ -184,8 +184,8 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         }
         f.big = Pairing.shown(p.code);
         f.bigScale = 0.84f;
-        f.line1 = "Type it in Night Sky on the phone";
-        f.line2 = "Settings, Pixel Watch, Pair";
+        f.line1 = "Type it in Night Sky on the phone:";
+        f.line2 = "Pixel Watch, Pair a watch";
         // the ring: how long the code has left
         long made = client.codeMadeMs();
         if (made > 0) f.progress = Math.max(0f, 1f - (now - made) / (float) (Pairing.CODE_LIFE_MS - 60_000L));
@@ -308,6 +308,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         DialView.Button start;
         if ("done".equals(state)) {
             f.title = "Done!";
+            f.tick = true;
             f.progress = 1f;
             String x = s.str("xray", ""), lapse = s.str("lapse", "");
             f.line1 = headline;

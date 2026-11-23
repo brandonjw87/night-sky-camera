@@ -120,6 +120,7 @@ public final class WatchProbe {
         b.append("] | ").append(f.toast).append(" | ").append(f.top).append(f.linked ? " (linked)" : "");
         if (f.progress >= 0) b.append(String.format(java.util.Locale.US, " | ring %.2f", f.progress));
         if (f.spin) b.append(" | spinning");
+        if (f.tick) b.append(" | tick");
         if (f.picture != null) b.append(" | picture");
         return b.toString();
     }

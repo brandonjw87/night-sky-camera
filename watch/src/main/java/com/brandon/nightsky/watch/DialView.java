@@ -8,6 +8,7 @@ import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -55,6 +56,8 @@ final class DialView extends View {
         String title = "", big = "", line1 = "", line2 = "", toast = "";
         /** The big line's size against the usual (the code is a bit smaller, to fit). */
         float bigScale = 1f;
+        /** A big tick where the big line goes (when there's none): done. */
+        boolean tick;
         /** The ring: 0..1, or -1 for none; {@link #spin}: a turning arc (waiting). */
         float progress = -1f;
         boolean spin;
@@ -70,6 +73,8 @@ final class DialView extends View {
     private final List<RectF> hit = new ArrayList<RectF>();
     private final ColorMatrixColorFilter redFilter;
     private float scrollAcc;
+    /** Whether {@link #text} draws a dark halo behind the words (over the picture). */
+    private boolean shadeText;
     private long spinStart = System.currentTimeMillis();
 
     DialView(Context c) {
@@ -178,6 +183,8 @@ final class DialView extends View {
             p.setStyle(Paint.Style.FILL);
         }
         boolean hasButtons = !f.buttons.isEmpty();
+        // over the picture, the words get a dark halo so they stay readable on its stars
+        shadeText = f.picture != null && !f.picture.isRecycled();
         float y = cy - R * 0.40f;
         if (!f.title.isEmpty()) {
             p.setTypeface(Typeface.DEFAULT_BOLD);
@@ -188,11 +195,27 @@ final class DialView extends View {
             p.setTypeface(Typeface.DEFAULT_BOLD);
             text(c, f.big, cx, by, R * 0.25f * f.bigScale, chord(R, R * 0.2f) - R * 0.10f, RED);
         }
+        if (f.big.isEmpty() && f.tick) {
+            // a tick drawn, not typed: no font needed for it
+            float tx = cx, ty = cy - R * 0.16f;
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(R * 0.055f);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setColor(RED);
+            Path tk = new Path();
+            tk.moveTo(tx - R * 0.13f, ty);
+            tk.lineTo(tx - R * 0.04f, ty + R * 0.09f);
+            tk.lineTo(tx + R * 0.15f, ty - R * 0.11f);
+            c.drawPath(tk, p);
+            p.setStyle(Paint.Style.FILL);
+        }
         p.setTypeface(Typeface.DEFAULT);
         float ly = cy + R * (hasButtons ? 0.14f : 0.20f);
         if (!f.line1.isEmpty()) text(c, f.line1, cx, ly, R * 0.082f, chord(R, ly - cy) - R * 0.14f, TEXT_DIM);
         ly += R * 0.115f;
         if (!f.line2.isEmpty()) text(c, f.line2, cx, ly, R * 0.072f, chord(R, ly - cy) - R * 0.16f, RED_DIM);
+        shadeText = false;
         // the buttons
         hit.clear();
         int n = f.buttons.size();
@@ -249,7 +272,9 @@ final class DialView extends View {
             s = fit(s, room);
         }
         p.setColor(color);
+        if (shadeText) p.setShadowLayer(p.getTextSize() * 0.35f, 0, 0, 0xF0000000);
         c.drawText(s, x, y, p);
+        if (shadeText) p.clearShadowLayer();
     }
 
     /** {@code s} cut to fit {@code room} at the paint's size, with an ellipsis. */
@@ -323,10 +348,10 @@ final class DialView extends View {
         // the round face: what's outside it isn't on the watch
         Paint mask = new Paint(Paint.ANTI_ALIAS_FLAG);
         mask.setColor(0xFF202020);
-        android.graphics.Path outside = new android.graphics.Path();
-        outside.setFillType(android.graphics.Path.FillType.EVEN_ODD);
-        outside.addRect(0, 0, side, side, android.graphics.Path.Direction.CW);
-        outside.addCircle(side / 2f, side / 2f, side / 2f, android.graphics.Path.Direction.CW);
+        Path outside = new Path();
+        outside.setFillType(Path.FillType.EVEN_ODD);
+        outside.addRect(0, 0, side, side, Path.Direction.CW);
+        outside.addCircle(side / 2f, side / 2f, side / 2f, Path.Direction.CW);
         c.drawPath(outside, mask);
         return b;
     }
