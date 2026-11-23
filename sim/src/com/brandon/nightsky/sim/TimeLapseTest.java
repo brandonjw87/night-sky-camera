@@ -60,7 +60,9 @@ public final class TimeLapseTest {
         int total = sky.frameCount();
         int last = total - 1 - (int) Math.round(0.7 * TimeLapse.FPS);
         int mid = last / 2;
-        int[] keep = {0, 1, 2, mid, last, total - 1};
+        // a picture before the satellite crosses (the simulator draws it in its own colour, not the sky's white)
+        int early = (int) Math.round(Math.max(1, n.sim.satelliteFrame - 2) / (double) frames * last);
+        int[] keep = {0, 1, 2, early, mid, last, total - 1};
         File sd = new File(dir, "sky");
         sd.mkdirs();
         final int[] captions = {0};
@@ -125,7 +127,7 @@ public final class TimeLapseTest {
         TimeLapse trails = TimeLapse.of(src, TimeLapse.Style.TRAILS, TimeLapse.MAX_SIDE);
         File td = new File(dir, "trails");
         td.mkdirs();
-        PhotoVideoTest.Collector ct = new PhotoVideoTest.Collector(td, trails.width(), trails.height(), new int[]{0, mid, last},
+        PhotoVideoTest.Collector ct = new PhotoVideoTest.Collector(td, trails.width(), trails.height(), new int[]{0, early, mid, last},
                 PhotoVideoTest.haveFfmpeg() ? new File(td, "trails.mp4") : null);
         trails.build(ct, null, PhotoVideoTest.QUIET);
         ct.close();
@@ -139,7 +141,7 @@ public final class TimeLapseTest {
         TimeLapse comet = TimeLapse.of(src, TimeLapse.Style.COMET, TimeLapse.MAX_SIDE);
         File cd = new File(dir, "comet");
         cd.mkdirs();
-        PhotoVideoTest.Collector cc = new PhotoVideoTest.Collector(cd, comet.width(), comet.height(), new int[]{0, mid, last},
+        PhotoVideoTest.Collector cc = new PhotoVideoTest.Collector(cd, comet.width(), comet.height(), new int[]{0, early, mid, last},
                 PhotoVideoTest.haveFfmpeg() ? new File(cd, "comet.mp4") : null);
         comet.build(cc, null, PhotoVideoTest.QUIET);
         cc.close();
@@ -148,6 +150,12 @@ public final class TimeLapseTest {
                 cl = brightArea(cc.get(last), comet.width(), comet.height());
         check("the stars grow tails", cm > 1.3 * c0, String.format(Locale.US, "bright pixels %.0f, then %.0f", c0, cm));
         check("the tails fade: shorter than the trails", cl < 0.9 * ll, String.format(Locale.US, "%.0f against the trails' %.0f", cl, ll));
+        // the brightest stars clip: their colour is then the sensor's own white, which the white balance would turn pink
+        // wherever a trail or a tail has faded below the clip; each unit's clip map keeps them white, as in the photo
+        double pSky = pinkShare(c.get(early)), pTrails = pinkShare(ct.get(early)), pComet = pinkShare(cc.get(early));
+        check("clipped stars stay white, not pink: their trails and tails too", pSky < 0.01 && pTrails < 0.01 && pComet < 0.01,
+                String.format(Locale.US, "pink: %.2f%% of the bright pixels, trails %.2f%%, tails %.2f%%", 100 * pSky, 100 * pTrails,
+                        100 * pComet));
         check("each style is its own memory size", trails.heapNeeded() > sky.heapNeeded() && comet.heapNeeded() > sky.heapNeeded()
                 && sky.heapNeeded() < 200L << 20, (sky.heapNeeded() >> 20) + " MB, trails " + (trails.heapNeeded() >> 20) + " MB");
 
@@ -252,6 +260,21 @@ public final class TimeLapseTest {
     }
 
     /** Pixels well above the sky (stars and their trails). */
+    /**
+     * The share of the bright pixels that are pink (green well under both red and blue): what a clipped star turns when
+     * the sensor's white is white-balanced as if it were a colour. No star is that colour.
+     */
+    static double pinkShare(int[] px) {
+        int bright = 0, pink = 0;
+        for (int v : px) {
+            int r = (v >> 16) & 0xFF, g = (v >> 8) & 0xFF, b = v & 0xFF;
+            if (Math.max(r, Math.max(g, b)) < 110) continue;
+            bright++;
+            if (r - g > 35 && b - g > 35) pink++;
+        }
+        return bright == 0 ? 0 : pink / (double) bright;
+    }
+
     static double brightArea(int[] px, int w, int h) {
         float[] l = new float[w * h];
         for (int i = 0; i < w * h; i++) l[i] = (float) luma(px[i]);

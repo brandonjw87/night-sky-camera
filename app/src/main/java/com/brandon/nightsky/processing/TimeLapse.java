@@ -346,8 +346,8 @@ public final class TimeLapse {
      */
     public long heapNeeded() {
         long np = (long) gw * gh, v = (long) vw * vh;
-        long units = (2L * near + 1) * np * 12;
-        long styled = style == Style.SKY ? 0 : style == Style.TRAILS ? np * 28 : np * 16;
+        long units = (2L * near + 1) * np * 13;
+        long styled = style == Style.SKY ? 0 : style == Style.TRAILS ? np * 30 : np * 18;
         long render = np * 12 + np * 4 + 3 * v * 4;
         long band = (long) Math.ceil((BAND + 2) * sy + 13) * W * 6;
         return units + styled + render + band;
@@ -367,10 +367,13 @@ public final class TimeLapse {
         // the units around the one being made: ring[k % size] holds unit k's grid
         final int ringSize = 2 * near + 1;
         float[][] ring = new float[ringSize][];
+        // where each unit clipped (a byte a grid pixel): the render makes those white as in the photo
+        byte[][] ringClip = new byte[ringSize][];
         final RgbImage S = new RgbImage(gw, gh);
         final float[] cur = new float[np * 3];
         // the style's own: star trails' running average and brightest moment, or the comet tails' fading brightest
         float[] mean = null, top = null, topY = null;
+        byte[] topClip = null;
         if (style == Style.TRAILS) {
             mean = new float[np * 3];
             top = new float[np * 3];
@@ -380,6 +383,10 @@ public final class TimeLapse {
             top = new float[np * 3];
             topY = new float[np];
             Arrays.fill(topY, -Float.MAX_VALUE);
+        }
+        if (top != null) {
+            topClip = new byte[np];
+            S.clip = new byte[np];
         }
         // a tail fades to half in about a sixth of the night (at least 6 units): long enough to see the stars' paths
         final float decay = (float) Math.pow(0.5, 1.0 / Math.max(6.0, n / 6.0));
@@ -393,20 +400,25 @@ public final class TimeLapse {
             while (read < n && read <= i + near) {
                 float[] g = ring[read % ringSize];
                 if (g == null) g = new float[np * 3];
-                grid(frames.get(read), g, progress);
+                byte[] gc = ringClip[read % ringSize];
+                if (gc == null) gc = new byte[np];
+                grid(frames.get(read), g, gc, progress);
                 ring[read % ringSize] = g;
+                ringClip[read % ringSize] = gc;
                 read++;
             }
             if (sigma == null) sigma = noiseOf(ring[i % ringSize], nb);
             long tf = System.nanoTime();
             filter(ring, ringSize, i, n, cur, sigma, nb);
             float[] shown = cur;
+            byte[] curClip = ringClip[i % ringSize];
             if (style == Style.TRAILS) {
-                stateTrails(cur, mean, top, topY, i + 1, sigma, nb, S);
+                stateTrails(cur, curClip, mean, top, topY, topClip, i + 1, sigma, nb, S);
             } else if (style == Style.COMET) {
-                stateComet(cur, top, topY, decay, sigma, nb, S);
+                stateComet(cur, curClip, top, topY, topClip, decay, sigma, nb, S);
             } else {
                 toImage(shown, S);
+                S.clip = curClip;
             }
             filterNs += System.nanoTime() - tf;
             long tr = System.nanoTime();
@@ -451,9 +463,15 @@ public final class TimeLapse {
     private short[] raw = new short[0];
     private float[] d = new float[0];
 
-    /** Unit {@code f} area-averaged onto the grid (camera RGB, linear, the lens shading out) into {@code g}. */
-    private void grid(Frame f, final float[] g, Progress progress) throws IOException {
+    /**
+     * Unit {@code f} area-averaged onto the grid (camera RGB, linear, the lens shading out) into {@code g}, and into
+     * {@code clip} (255) the grid pixels where any of its samples clipped.
+     */
+    private void grid(Frame f, final float[] g, final byte[] clip, Progress progress) throws IOException {
         final float hx = (float) (sx / 2), hy = (float) (sy / 2);
+        Arrays.fill(clip, (byte) 0);
+        // a sample at the sensor's clip, as the stack counts it (a unit of several short frames: their sum's)
+        final float clipRaw = (src.spec.white - Math.max(3f, 0.01f * src.spec.range())) / Math.max(1e-6f, f.invScale);
         for (int band = 0; band < gh; band += BAND) {
             final int gy0 = band, gy1 = Math.min(gh, gy0 + BAND);
             int rs = Math.max(0, (int) Math.floor(cy0 + gy0 * sy - hy) - 4) & ~1;
@@ -465,6 +483,7 @@ public final class TimeLapse {
             }
             long ta = System.nanoTime();
             PhotoVideo.load(W, src.store, src.hot, f.unit, f.invScale, f.black, f.pattern, rs, re, raw, d);
+            markClipped(raw, rs, re, clipRaw, clip);
             long tb = System.nanoTime();
             readNs += tb - ta;
             final float[] dd = d;
@@ -499,6 +518,36 @@ public final class TimeLapse {
         }
         // the edge rows and columns the box couldn't fill take their neighbours' values (no black frame round the video)
         fillEdges(g);
+    }
+
+    /**
+     * The grid pixels whose box reaches a clipped sample of rows [rs, re) (each sample standing for the 2 x 2 square
+     * centred on it, as {@link #box} reads it). Averaged down to the grid a clipped star no longer reaches the clip
+     * level, and its green, which clips first, would leave it pink (as in {@link PhotoVideo}: there from the stack's clip
+     * map, here from each unit, as the sky moves across the picture). Clipped samples are few: a scan, then a mark each.
+     */
+    private void markClipped(final short[] raw, final int rs, final int re, final float clipRaw, final byte[] clip) {
+        final int level = (int) Math.ceil(clipRaw);
+        if (level > 0xFFFF) return;
+        Parallel.forRange(re - rs, 32, new Parallel.Range() {
+            @Override
+            public void run(int j0, int j1) {
+                for (int j = j0; j < j1; j++) {
+                    int o = j * W, y = rs + j;
+                    for (int x = 0; x < W; x++) {
+                        if ((raw[o + x] & 0xFFFF) < level) continue;
+                        // grid pixels gx with cx0 + gx sx < x + 1.5 and cx0 + (gx + 1) sx > x - 0.5; the same down
+                        int ga = Math.max(0, (int) Math.floor((x - 0.5 - cx0) / sx));
+                        int gb = Math.min(gw - 1, (int) Math.ceil((x + 1.5 - cx0) / sx) - 1);
+                        int ha = Math.max(0, (int) Math.floor((y - 0.5 - cy0) / sy));
+                        int hb = Math.min(gh - 1, (int) Math.ceil((y + 1.5 - cy0) / sy) - 1);
+                        for (int gy = ha; gy <= hb; gy++) {
+                            for (int gx = ga; gx <= gb; gx++) clip[gy * gw + gx] = (byte) 255;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /** Grid pixels left at 0 along the edges (where a box ran off the sensor) copied from the nearest filled one. */
@@ -650,8 +699,9 @@ public final class TimeLapse {
      * Star trails after k units: their average, and each pixel's brightest moment where it stands out of the noise, through
      * the soft threshold the trails stack uses (so the sky's grain isn't lifted).
      */
-    private void stateTrails(final float[] f, final float[] mean, final float[] top, final float[] topY, int k, final float[] sigma,
-                             final float[] nb, final RgbImage S) {
+    private void stateTrails(final float[] f, final byte[] fClip, final float[] mean, final float[] top, final float[] topY,
+                             final byte[] topClip, int k, final float[] sigma, final float[] nb, final RgbImage S) {
+        final byte[] shownClip = S.clip;
         final float inv = 1f / k;
         final float kk = (float) Math.max(3.0, Math.sqrt(2 * Math.log(Math.max(2, k))) + 1.0);
         Parallel.forRange(gh, 8, new Parallel.Range() {
@@ -669,9 +719,11 @@ public final class TimeLapse {
                             top[k3] = f[k3];
                             top[k3 + 1] = f[k3 + 1];
                             top[k3 + 2] = f[k3 + 2];
+                            topClip[pix] = fClip[pix];
                         }
                         float r = mean[k3], g = mean[k3 + 1], b = mean[k3 + 2];
                         float dl = topY[pix] - lum(mean, k3, nb);
+                        int cl = fClip[pix] & 0xFF;
                         if (dl > 0) {
                             float sd = BackgroundGrid.interp(sigma, TGX, TGY, gw, gh, x + 0.5, y + 0.5);
                             float u = dl / (kk * sd);
@@ -680,10 +732,13 @@ public final class TimeLapse {
                             r += (top[k3] - r) * w;
                             g += (top[k3 + 1] - g) * w;
                             b += (top[k3 + 2] - b) * w;
+                            // a clipped moment's colour is the sensor's white: shown as white, as far as it shows
+                            cl = Math.max(cl, Math.round((topClip[pix] & 0xFF) * w));
                         }
                         S.r[pix] = r;
                         S.g[pix] = g;
                         S.b[pix] = b;
+                        shownClip[pix] = (byte) cl;
                     }
                 }
             }
@@ -694,9 +749,10 @@ public final class TimeLapse {
      * Comet tails: the picture as it is, and over it each pixel's brightest recent moment fading by {@code decay} a unit
      * (above the sky, which stays put), where it stands out of the noise; so each star drags a fading tail behind it.
      */
-    private void stateComet(final float[] f, final float[] top, final float[] topY, final float decay, final float[] sigma,
-                            final float[] nb, final RgbImage S) {
+    private void stateComet(final float[] f, final byte[] fClip, final float[] top, final float[] topY, final byte[] topClip,
+                            final float decay, final float[] sigma, final float[] nb, final RgbImage S) {
         final float kk = 3f;
+        final byte[] shownClip = S.clip;
         Parallel.forRange(gh, 8, new Parallel.Range() {
             @Override
             public void run(int j0, int j1) {
@@ -716,9 +772,11 @@ public final class TimeLapse {
                             top[k3] = f[k3];
                             top[k3 + 1] = f[k3 + 1];
                             top[k3 + 2] = f[k3 + 2];
+                            topClip[pix] = fClip[pix];
                         }
                         float r = f[k3], g = f[k3 + 1], b = f[k3 + 2];
                         float dl = topY[pix] - l;
+                        int cl = fClip[pix] & 0xFF;
                         if (dl > 0) {
                             float sd = BackgroundGrid.interp(sigma, TGX, TGY, gw, gh, x + 0.5, y + 0.5);
                             float u = dl / (kk * sd);
@@ -727,10 +785,13 @@ public final class TimeLapse {
                             r += (top[k3] - r) * w;
                             g += (top[k3 + 1] - g) * w;
                             b += (top[k3 + 2] - b) * w;
+                            // a clipped moment's colour is the sensor's white: shown as white, as far as it shows
+                            cl = Math.max(cl, Math.round((topClip[pix] & 0xFF) * w));
                         }
                         S.r[pix] = r;
                         S.g[pix] = g;
                         S.b[pix] = b;
+                        shownClip[pix] = (byte) cl;
                     }
                 }
             }
