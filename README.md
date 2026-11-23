@@ -8,9 +8,11 @@ works, a laptop on the same Wi-Fi becomes **Mission Control**: a countdown, a co
 satellites named live as they cross the picture, star cards, a 3D flight through the stars, and the sky played as
 music. When the photo is done: sharp close-ups of the galaxies, nebulae and planets in it (**Deep Space Zoom**), the
 whole night as a looping GIF in the gallery (**Mission Replay**), and where NASA's farthest spacecraft were in your
-sky (**Deep Space Network**).
+sky (**Deep Space Network**). Since 2.5 a night can also be a **Time lapse** film, **X-Ray Vision** shows what's in
+the photo that no eye can see (neutron stars, black holes, exploded stars, stars with planets), and **Night Sky on
+your Pixel Watch** starts, follows and stops it all from your wrist, over Bluetooth or the internet.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.4.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.5.
 
 ## What it does
 
@@ -19,6 +21,13 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.4.
   photo with far less noise than a single shot.
 - **Star trails.** Keeps the stars where they fall in each frame, so they draw arcs around the pole star. Longer
   is better: 20 or 30 minutes.
+- **Time lapse** (2.5). A deep photo, plus the whole night as a film: every frame of the night is one moment of
+  it, so the stars wheel across, clouds drift by and satellites zip through. 10 to 90 minutes (30 minutes makes
+  about 8 seconds of film, 90 about 20), with the time of night and how much faster than real life in the corner.
+  Three looks: **Sky turning** (the night as it was), **Trails growing** (each star draws its trail until the film
+  ends on a star-trails picture) and **Comet tails** (each star drags a glowing tail). Made in one look and remade
+  in the others afterwards from the same frames; any night whose frames are kept can be made into one (**Make a
+  time lapse** on its result screen). The film is an MP4 in the gallery.
 - **Earth's turn.** A deep photo, plus a 5-second clip that loops for ever: the sky turning round the pole while
   the ground stays still, made from how far the frames themselves measured the sky turning. It saves as a video
   (MP4) and as an animated picture that plays by itself like a GIF (WebP, about a third of a GIF's size), and says
@@ -70,6 +79,18 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.4.
   2, New Horizons, Pioneer 10 and 11, L2 (where the Webb telescope loops), and Pluto. The ones in the photo are
   marked on it (with **Names**); a card on the result screen says which were in it, which were up in your sky and
   where, how far away each one is, and when a radio message sent as you took the photo would get there.
+- **X-Ray Vision** (2.5). The universe the photo can't show, marked where it is in it: black holes (Cygnus X-1,
+  Gaia BH3, the giant ones in the middle of the Milky Way and of M87), neutron stars and pulsars (the Crab Pulsar,
+  the first pulsar ever found), the clouds left by exploded stars (Cassiopeia A, Tycho's and Kepler's supernovae),
+  the two neutron stars whose crash was heard in gravitational waves, stars with planets (51 Pegasi, TRAPPIST-1),
+  the patches of sky NASA's telescopes stared at (the Hubble Deep Field, Kepler's field) and the messages across
+  space (the Arecibo message, the Wow! signal): 46 in all. The photo turns into X-ray film blues with a symbol for
+  each, saved in the gallery; the result screen's **X-Ray Vision** card says what each one is in a sentence or two,
+  and **Hear the pulsars** plays each pulsar as the clicks it really makes, at its own speed.
+- **Pixel Watch** (2.5). Night Sky on the watch: pick the setup with the crown, Start, see the countdown and the
+  ring fill as the frames come in, add 5 minutes, Stop or Mute from your wrist, and feel a buzz when the photo is
+  ready. Over Bluetooth when the phone is near (with the live picture), over the internet when it isn't. Steps
+  below, under **Night Sky on your Pixel Watch**.
 - **HDR photos.** Photos are saved as Ultra HDR photos: on this phone's screen, in Google Photos and in the app,
   the stars shine up to four times brighter than white. Anywhere else they look exactly as before.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
@@ -156,6 +177,99 @@ Install it with Google's USB tool instead:
    ```
 
    It prints `Success` when it's done.
+
+## Night Sky on your Pixel Watch
+
+Version 2.5 comes with a second app for the watch, `NightSkyWatch.apk`, next to `NightSky.apk`. With it on the
+watch you can start a photo, follow it and stop it from your wrist: handy when the phone is lying screen-down in
+the grass and you're sitting in the car, or inside where it's warm.
+
+### Bluetooth or the internet: what works where
+
+- **Phone and watch near each other** (same yard, about 10 m): they talk over **Bluetooth**, straight to each
+  other. Quickest, the watch shows the phone's live picture, and it needs no Wi-Fi and no phone signal at all, so
+  it works at a dark site in the middle of nowhere.
+- **Apart** (phone out in the yard, you indoors; or the watch on its own Wi-Fi or LTE): they talk over **the
+  internet**. Both need a connection (the phone Wi-Fi or mobile data; the watch through the phone, Wi-Fi or its own
+  LTE). Every button and the ring work the same, a few seconds slower; the live picture stays Bluetooth-only
+  (pictures are too big to send through a free relay all night).
+- **It picks by itself**, both at once when both work. The top of the watch's screen says which one it's using.
+- **One rule from Android:** an app can open the camera only while it's on screen, so to **start** a photo from
+  the watch, Night Sky must be open on the phone (or have just finished a photo: it keeps listening for the watch
+  for 10 minutes after). Once a photo is running, everything works whatever the phone's screen is doing.
+- **Private:** the internet way goes through [ntfy.sh](https://ntfy.sh), a free public relay. Every message is
+  locked (AES-256) with a key that only your phone and your watch have: they made it between them when you paired
+  them, and it never leaves them. So the relay only ever sees scrambled text, and nobody else can read or send
+  Night Sky's messages, even knowing where to look.
+
+### Put it on the watch (from the Windows PC, over Wi-Fi)
+
+A watch has no USB socket, so the PC sends the app over Wi-Fi with Google's tool (the same `C:\platform-tools` as
+in **If the phone refuses to install it** above; download it first if you haven't). The watch and the PC must be
+on the same Wi-Fi.
+
+1. Download `NightSkyWatch.apk` and copy it into `C:\platform-tools`.
+2. On the watch, open **Settings > System > About > Versions** (on some watches just **Settings > System >
+   About**) and tap **Build number** seven times, until it says you're a developer.
+3. Go back to **Settings**: there's a new **Developer options** near the bottom. Open it and turn on **ADB
+   debugging**, then **Wireless debugging** (tap **Always allow on this network** when it asks).
+4. In **Wireless debugging**, tap **Pair new device**. The watch shows a **Wi-Fi pairing code** (six digits) and
+   an address like `192.168.1.42:37123`. Leave that on the screen.
+5. On the PC, open **Command Prompt** (Windows key, type `cmd`, Enter) and paste these two lines, with the address
+   from the watch instead of mine:
+
+   ```
+   cd C:\platform-tools
+   adb pair 192.168.1.42:37123
+   ```
+
+   Type the watch's pairing code when it asks. It says `Successfully paired`.
+6. Back on the watch, go back to the **Wireless debugging** screen itself (not **Pair new device**): it shows the
+   watch's **IP address** and **Port**, with a different port from step 4, like `192.168.1.42:41234`. Paste these
+   two lines with that address:
+
+   ```
+   adb connect 192.168.1.42:41234
+   adb -s 192.168.1.42:41234 install -r NightSkyWatch.apk
+   ```
+
+   It prints `Success`. Night Sky is in the watch's app list (press the crown).
+7. Turn **Wireless debugging** off again on the watch: it uses battery.
+
+Next time (an update): turn **Wireless debugging** on again and do step 6 with the address it shows then (the port
+changes each time). Steps 4 and 5 are needed only once. If `adb connect` can't reach the watch, the Wi-Fi may keep
+devices apart (some do): put the PC and the watch on the phone's hotspot instead.
+
+### Pair the watch with the phone
+
+1. Open **Night Sky** on the watch. It asks to find nearby devices (that's Bluetooth) and to send notifications
+   (to tell you the photo is ready): tap **Allow** for both. It shows six digits.
+2. On the phone, open Night Sky, scroll down the home screen to **Pixel Watch** and tap **Pair a watch**. Type the
+   six digits and tap **Pair**. If it asks about **Nearby devices**, allow it (that's the Bluetooth way).
+3. A few seconds later the watch buzzes twice and both show the same four **check digits**. If they're the same,
+   it's your watch and your phone (tap **OK** on the watch). If not, unpair on both and pair again.
+
+You pair once: from then on, opening Night Sky on the watch finds the phone by itself.
+
+### Using it
+
+- **Ready:** the setup the phone will use (a preset's name, or the mode and length). **Turn the crown** to pick
+  another of the phone's presets: the phone takes it at once. Tap **Start**, then lay the phone screen-down as
+  usual.
+- **Getting ready:** what the phone is doing (focusing, checking the sky, the countdown in big digits), with **Start
+  now** and **Cancel**.
+- **Capturing:** the ring fills as the frames come in, with the time left and the frame count. **+5 min** adds five
+  minutes, **Stop** (tap it twice: it asks "Sure?") develops what's been taken, **Mute** silences the phone's beeps
+  and voice.
+- **Lower your wrist:** the watch keeps following with its screen off and shows the time left in a notification. It
+  taps once when the first frame starts, and buzzes long-short-long when the photo is ready, with a notification
+  saying so (and what X-Ray Vision found).
+- **Done:** **Again** takes another the same way; **+5 min** adds five more minutes stacked into the same photo.
+- **Tap the middle** of the screen for the connections and **Unpair**.
+
+If the watch says **Looking for the phone**, open Night Sky on the phone: the phone only listens while the app is
+open or a photo is running. If the Bluetooth way never connects, the internet way still does; check that Night Sky
+has **Nearby devices** allowed on both (Settings > Apps > Night Sky > Permissions).
 
 ## Rehearse a night (before your first one)
 
@@ -440,7 +554,9 @@ tap **Stop the viewer** on the phone.
   ordinary photos: **Advanced > HDR photos**. A copy with names or satellite tracks drawn on it (**Save this
   copy**) is an ordinary photo.
 - What goes online: satellite orbits from CelesTrak (nothing is sent) and the cloud forecast from Open-Meteo
-  (your place rounded to about 10 km). Both can be turned off under Advanced. Nothing else leaves the phone.
+  (your place rounded to about 10 km). Both can be turned off under Advanced. With a watch paired, the watch's
+  messages go through ntfy.sh, locked with your phone's and watch's own key (the relay sees only scrambled text,
+  and when they talk). Nothing else leaves the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
   the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
   couldn't run ends on).
@@ -532,6 +648,9 @@ app/src/main/java/com/brandon/nightsky/
     SongArt, SongView   Hear the Stars on the phone: the photo lit up star by star as its song plays
     SongPlayer, SongVideo  the song through the speaker (AudioTrack); the song as a video with its sound
     RemoteHost          the remote viewer and Mission Control: what the web pages show and the commands they send
+    WatchLink           the Pixel Watch's link on the phone (2.5): pairing, the status and live picture out, its commands in
+    link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
+                        the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
     res/raw/mission.html  Mission Control's page (one file: its sounds, voice, 3D flight and music all made in the page)
     processing/         the engine, plain Java with no Android dependencies
@@ -584,13 +703,17 @@ app/src/main/java/com/brandon/nightsky/
         DeepZoom        Deep Space Zoom (2.4): the frames drizzled again at twice the resolution into close-ups
         MissionReplay, GifWriter  Mission Replay (2.4): the night as a looping GIF; the GIF89a encoder
         DeepSpace       Deep Space Network (2.4): the Voyagers, Pioneers, New Horizons, L2, Pluto, Jupiter's moons
+        TimeLapse       the time lapse (2.5): every unit rendered as the photo is, in three looks, captioned, to MP4
+        XRayVision      X-Ray Vision (2.5): the invisible things in the photo, their picture, the pulsars' clicks
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
+watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
+                        DialView), WatchClient (Bluetooth and the relay), WatchService (following with the screen off)
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
                         a night through Mission Control; MissionDemo: the page served from a simulated night)
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
 intro/                  the scripts that made the opening film (Blender, Python; see intro/README.md)
-tools/build_apk.sh      builds the APK without Gradle
+tools/build_apk.sh      builds the APK without Gradle (tools/build_watch.sh the watch's)
 tools/gate.sh           every simulator test and the regression nights in one go, on a commit
 tools/memprobe.sh       the Java heap a full-size session needs, measured under a phone-sized heap
 tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright Star Catalogue
@@ -602,7 +725,8 @@ tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright S
   the existing app first if it was installed from `NightSky.apk`.
 - **Without Gradle (Linux):** `tools/build_apk.sh` builds a signed `build/NightSky.apk` using only `javac`,
   `aapt2`, `d8` (or `dx`), `zipalign` and `apksigner`. Set `KEYSTORE` to keep the same signing key across
-  builds.
+  builds. `tools/build_watch.sh` builds the watch's `build/NightSkyWatch.apk` the same way (in Android Studio it's
+  the `watch` module).
 
 The code is Java 8 with no libraries, so it builds with nothing but the Android platform.
 
@@ -643,6 +767,11 @@ The 2.4 tests each take an output folder for their pictures: `BackgroundTest` (l
 kept), `PurpleTest` (purple halos), `DeepZoomTest` (the close-ups sharper than the photo, and the replay),
 `GifTest` (the GIF read back frame by frame) and `DeepSpaceTest` (the spacecraft, Pluto and Jupiter's moons against
 published positions).
+The 2.5 tests: `TimeLapseTest` (an output folder: the three looks from a simulated night, read back),
+`XRayTest` (an output folder: the catalogue against published positions, the picture, the pulsars' clicks) and
+`LinkTest` (the watch link: RFC 5869's HKDF vector, sealing and tampering, pairing with right and wrong codes and a
+stranger's keys, replays, Bluetooth frames, and the relay through `MockNtfy`, a stand-in for ntfy.sh with its
+limits, dropping out and coming back).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -653,6 +782,7 @@ desktop JVM with Robolectric, without Gradle or Google's Maven repository. `robo
 from Maven Central once; then `robo/run.sh Night base,stall` runs whole sessions through the real capture code
 with a simulated camera that renders the real stars and can stop, stall, fail or be taken away, and
 `robo/run.sh Monkey` taps every control on every screen, `robo/run.sh Intro` checks the opening film,
-`robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, and `robo/run.sh Stops` checks
-the stop recorder.
+`robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, `robo/run.sh Stops` checks
+the stop recorder, and `robo/run.sh Night wrist` (2.5) pairs the watch app with the phone and runs a session from
+it, over the internet alone and then over Bluetooth alone, drawing each watch screen to a picture.
 [robo/README.md](robo/README.md) lists every scenario.

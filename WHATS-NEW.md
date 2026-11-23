@@ -1,5 +1,119 @@
 # Night Sky Camera: what's new
 
+## Version 2.5: the watch, the time lapse and X-Ray Vision
+
+Three new things: **Night Sky on your Pixel Watch** (start, follow and stop a photo from your wrist, over Bluetooth
+or the internet), a **Time lapse** mode (the whole night as a film), and one more NASA-style surprise, **X-Ray
+Vision**: what's in your photo that no eye, and no phone, can see.
+
+### What's new
+
+- **Night Sky on your Pixel Watch.** A second app, for the watch, paired with the phone once by a six-digit code.
+  Then, from your wrist: pick the setup by turning the crown, tap **Start**, watch the countdown, and see a ring
+  fill as the frames come in, with the time left. **+5 min**, **Stop** (it asks "Sure?" first) and **Mute** work
+  from the watch too. Lower your wrist and it keeps following with the screen off: one tap on your wrist when the
+  first frame starts, and long-short-long when the photo is ready, with a notification that says what X-Ray Vision
+  found. It's all in red on black, like the phone, so your eyes stay used to the dark.
+  - **Near the phone, it's Bluetooth:** quick, with the phone's live picture on the watch, and no signal needed at
+    all (a dark site in the middle of nowhere is fine).
+  - **Away from it, it's the internet:** the phone out in the yard and you indoors, or anywhere with a
+    connection. Everything but the live picture, a few seconds slower. It goes through ntfy.sh, a free relay, with
+    every message locked by a key only your phone and watch have, so the relay sees nothing but scrambled text.
+  - It picks the way by itself, and uses both when both work. The one rule (Android's, not mine): to *start* from
+    the watch, Night Sky has to be open on the phone, because only an app on screen may open the camera. Once a
+    photo is running, the watch does everything whatever the phone's screen is doing.
+- **Time lapse.** A fourth mode next to Deep sky, Star trails and Earth's turn: a deep photo, plus the whole night as
+  a film where every frame is one moment of the night, so the stars wheel across the sky, clouds drift by and
+  satellites zip through. 10 to 90 minutes (30 minutes makes about 8 seconds of film, 90 about 20), with the time of
+  night and how much faster than real life in the corner, saved as an MP4 in the gallery. Three looks:
+  - **Sky turning:** the night as it was.
+  - **Trails growing:** each star draws its trail as the night goes on, until the film ends on a star-trails picture.
+  - **Comet tails:** every star drags a glowing tail, like a sky full of comets.
+
+  Make one look, then the other two afterwards from the same night (they're made from the kept frames, no new
+  photo needed). Any night whose frames are still on the phone can be made into a time lapse too: **Make a time
+  lapse** on its result screen.
+- **X-Ray Vision: the invisible universe in your photo.** After developing, the phone works out what's hiding in
+  your photo's patch of sky and marks it: **black holes** (Cygnus X-1, the first one ever found; Gaia BH3; the
+  giants in the middle of the Milky Way and of the galaxy M87, the first two ever photographed), **neutron stars**
+  (the Crab Pulsar, spinning 30 times a second; the very first pulsar, once nicknamed "LGM-1" for "little green
+  men"), the **clouds of exploded stars** (Cassiopeia A, Tycho's and Kepler's supernovae), the **star crash** whose
+  ripples in space were caught in 2017, **stars with planets** (51 Pegasi, the first one found round a star like the
+  Sun; TRAPPIST-1 and its seven), the **patches of sky NASA's telescopes stared at** (the Hubble Deep Field, Kepler's
+  field) and the **messages across space** (the Arecibo message, the Wow! signal): 46 in all. Your photo turns into
+  X-ray film blues and cyans with a symbol for each (a black hole's glowing ring, a pulsar's two beams, an exploded
+  star's shells), saved in the gallery. The result screen's **X-Ray Vision** card says what each one is in a
+  sentence or two, **Share the X-ray** sends the picture, and **Hear the pulsars** plays each pulsar in your sky as
+  the clicks it really makes, at its real speed (the Crab's is a buzz, Vela's a purr, the first pulsar's a slow
+  tick).
+
+### Try tonight
+
+Late November, most of the US, the phone lying flat as usual:
+
+1. **Pair the watch** (once, five minutes): the steps are in the README, under **Night Sky on your Pixel Watch**.
+2. **Around 9 pm, from the watch:** lay the phone down in the yard, go back inside, and start it from your wrist.
+   Overhead then: the black hole in the middle of the Andromeda Galaxy, Upsilon Andromedae (a star with three
+   planets) and, towards Cassiopeia, two exploded stars, Cassiopeia A and Tycho's. X-Ray Vision should find a few.
+3. **After midnight:** the Crab Pulsar is high up. Get it in a photo, then **Hear the pulsars**.
+4. **Any night with a few clouds:** a 30-minute **Time lapse**, Sky turning. Clouds sliding past stars are the best
+   part. Then make it again as **Comet tails**.
+
+### Good to know
+
+- **Not tried on a real watch yet.** Everything here ran on simulators (below), including the whole phone-and-watch
+  conversation both ways. Bluetooth between a phone and a watch is the one part only the real pair can prove: if
+  it doesn't connect on yours, the internet way still does, and I'd like to hear which it was.
+- **The relay is free and has limits.** ntfy.sh lets anyone send a burst of 60 messages, then one every few
+  seconds. The phone uses it only while the watch is listening there and Bluetooth isn't already carrying the news:
+  about 40 messages for a 5-minute photo followed over the internet (a long time lapse about the same: the longer the
+  night, the less often it sends).
+- **Watch battery:** while following a photo with its screen off, the watch stays awake enough to hear the phone and
+  buzz on time. It stops by itself when the photo is done, if the phone goes quiet for 10 minutes, or after 3 hours.
+- **X-Ray Vision needs the sky recognised** (as the close-ups do) and something on its list in the photo: when
+  there's nothing, the session log says so. Star trails photos don't get one.
+- **A time lapse uses the night's frames**, so it can be remade only while they're still on the phone (the oldest go
+  first when **Sessions and storage** needs the room).
+
+### Install it
+
+- **The phone:** exactly as before (same signing key, so it installs over 2.4 and keeps everything): the README's
+  **Install it on your phone**.
+- **The watch (new):** `NightSkyWatch.apk`, sent from the Windows PC to the watch over Wi-Fi with Google's adb
+  tool: copy-paste steps in the README, under **Night Sky on your Pixel Watch**.
+
+### Tested
+
+All on the simulator and the app off the phone, as before (nothing here has run on the Pixel or the watch yet):
+
+- **The whole test gate: 48 of 48 passed.** That's all 42 simulator tests (three new ones) and the six simulated
+  nights, whose stacking came out line for line the same as 2.4's.
+- **The watch link (LinkTest), 39 checks:** the key-making against RFC 5869's published test vector; a sealed
+  message refused if one bit is changed, if it was sealed for the other direction, or with another key; pairing
+  with the right code works, a wrong code or a stranger's key fails; a message replayed is refused; Bluetooth's
+  framing; and the relay (a stand-in for ntfy.sh on this computer, with its limits): a stream that drops and comes
+  back without losing or repeating a message, an oversized message refused, and going too fast told to wait.
+- **The phone and the watch together, end to end** (the real app and the real watch app, both off the device):
+  - Over the internet alone: the code typed on the phone, the same four check digits on both, Ready, the crown
+    changing the phone's preset three times, Start, the countdown, capturing, Mute, +5 minutes (19 frames became
+    38), the watch's screen off (its notification counting down), Stop asking "Sure?" and then stopping, the photo
+    developed with the screen off (the done buzz and "Your photo is ready: X-ray: a neutron star and a star with
+    planets"), and Done on the screen again. The relay: 44 requests (ntfy.sh allows 60 at once), none refused.
+  - Then unpaired from the watch (the phone heard and forgot it too), paired again over Bluetooth alone with the
+    relay switched off, a photo with the live picture on the watch, and unpaired from the phone (the watch heard,
+    and showed a new code). 0 problems.
+- **X-Ray Vision (XRayTest):** the 46 positions against their published ones, every symbol and label placed on a
+  picture without covering another, and the pulsars' clicks at their real rates. In a whole simulated night: the
+  Crab Pulsar and Upsilon Andromedae found and marked, the card, Share and the pulsars' sound all checked.
+- **Time lapse (TimeLapseTest and a simulated 10-minute night):** all three looks made from one night and read back,
+  remade from the kept frames, and still there after the session is opened again from **Sessions**. One thing the
+  testing caught, and fixed: the brightest stars' comet tails came out pink. A star bright enough to fill the
+  sensor loses its colour, and the camera's "white" turned pink as the tail faded; now each frame remembers where it
+  clipped, so those tails stay white, as the stars are in the photo.
+- **A whole night through the app itself** (the 5-minute deep-sky session, with everything 2.4 checks plus X-Ray
+  Vision): 0 problems. **Every button on every screen** (41 screens, 1,029 taps, the new Pixel Watch card and its
+  pairing box among them): 0 problems.
+
 ## Version 2.4: the NASA version
 
 Three big things and two quiet ones, all made from the same five minutes of starlight, and all automatic: take a

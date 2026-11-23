@@ -43,6 +43,7 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | Scenario | What happens |
 |---|---|
 | `base` | 5 minutes with the settings as they come, phone put down, left alone. Then the photo's video (1.8), as `trails` checks it too: the photo is in the gallery as a Motion Photo (name.MP.jpg) with the session's video inside, after the photo, where Google Photos looks; the photo still decodes with its EXIF block; the video is H.264 in the photo's shape with the frames its timeline gives, and ends on the photo (code for code, as the Pixel's own Motion Photos' videos match their photos); Play its video plays it where the photo is, and the photo comes back when it ends, on a tap, and after an error; opened again from the sessions page, it's still there to play. |
+| `wrist` | The Pixel Watch (2.5): the real watch app (`watch/`) beside the real phone app. Paired by the six digits the watch shows, typed on the phone's Pixel Watch card, with matching check digits on both. Then, over the internet alone (Bluetooth off; the relay is `sim/MockNtfy`, a stand-in for ntfy.sh on this computer with its limits): the crown changes the phone's preset, Start, the countdown, capturing, Mute, +5 min, the watch's screen off (its notification counts down), Stop twice, Done with its buzz and the X-ray line, and no message refused by the relay. Unpaired from the watch, paired again over Bluetooth alone (the relay down): a session with the live picture, then unpaired from the phone, each end hearing it from the other. |
 | `rehearsal` | A rehearsal (2.1): Rehearse a night indoors on the home screen, the phone laid screen-up with its camera covered, a clear night drawn into the dark frames. The whole session runs and every step of its check must pass; while it captures, the stop recorder says "a rehearsal, capturing frame N of M" and the session; the photo is marked a rehearsal's (its name, its summary), isn't offered Repeat tomorrow, Add 5 minutes or Merge; the check opens over the photo and Share the check shares it as text; the home screen then says how the last rehearsal went. |
 | `stop` | Stopped from the phone after a few frames: what there is is developed, and the photo's video is made of those frames. |
 | `pickup` | Picked up for a few seconds mid-session, then put back. |
@@ -63,6 +64,8 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
 | `remade` | The activity is made again mid-session, as after Android reclaimed it. |
 | `replay` | The widget's quick session, then the screen made again and reopened from the recent apps (which mustn't start it again). |
 | `trails` | Star trails for 2 minutes. |
+| `earth` | The Earth's turn (2.2): 3 minutes in its mode. The clip is in the session's folder (H.264, 153 pictures: 4 s of the turn, 0.5 s held, 0.6 s back to the start) and in the gallery as an MP4 and an animated WebP; the result screen says what the turn measured (the day by the stars, within a minute of 23 h 56 min) and plays it. |
+| `lapse` | The time lapse (2.5): 10 minutes in its mode, in the Comet tails look. The film is in the session's folder and the gallery: H.264 in a 16:12 shape, a picture for every frame of the night (stretched to 8 seconds, 4 pictures a frame at most) and 0.7 s held at the end; the result screen says what it is and plays it. Then it's made again from the result screen as Trails growing, and opened again from the sessions page, the card and its looks are still there. |
 | `meteors` | 3 minutes with Keep meteors; two bright meteors cross the picture: both are reported, kept and listed in the meteor table (saved in Documents), and the photo's video is made with them. |
 | `video` | The photo's video (1.8) when there's none to put in: a phone without a video encoder, the video off in Advanced settings, the encoder failing part way, and the video skipped from the developing screen. Each time the photo is saved as before, a plain JPEG, and the log says why. |
 | `reading` | A sky reading (how dark it is). |
@@ -95,6 +98,11 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
   and its frames aren't checked.
 
 - `CameraRig` itself is replaced, so its ImageReader, abort and restart code never runs here.
+- The watch (2.5): Robolectric's Bluetooth sockets don't reach each other, so the test joins the watch's and the
+  phone's with two threads, each copying one end's output into the other's input (each end's own code runs as on the
+  devices, down to the frames it writes). The internet way goes to `sim/MockNtfy` instead of ntfy.sh, and the watch's
+  buzzes, crown and screen going off are Robolectric's stand-ins. A real watch and the real ntfy.sh are still to be
+  tried.
 - The simulated sky has no moonlight.
 - Settings carry over from one scenario to the next in a run, as on a phone.
 - Robolectric quirk: after a text file is saved through MediaStore, the next JPEG written can come out without its
