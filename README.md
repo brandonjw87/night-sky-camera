@@ -206,7 +206,7 @@ the grass and you're sitting in the car, or inside where it's warm.
 
 A watch has no USB socket, so the PC sends the app over Wi-Fi with Google's tool (the same `C:\platform-tools` as
 in **If the phone refuses to install it** above; download it first if you haven't). The watch and the PC must be
-on the same Wi-Fi.
+on the same Wi-Fi: on the watch, **Settings > Connectivity > Wi-Fi**, turn it on and pick the PC's Wi-Fi.
 
 1. Download `NightSkyWatch.apk` and copy it into `C:\platform-tools`.
 2. On the watch, open **Settings > System > About > Versions** (on some watches just **Settings > System >
