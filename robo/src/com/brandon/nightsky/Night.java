@@ -229,7 +229,9 @@ public class Night {
         run(1000);
         String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
         wshot("ready");
-        if (!face.startsWith("Ready") || !face.contains("[Start]")) Monkey.problem(scenario + ": the watch's ready screen: " + face);
+        if (!face.startsWith("Ready") || !face.contains("[Start, Sky]")) Monkey.problem(scenario + ": the watch's ready screen: " + face);
+        // the Sky Pointer (2.6), from the ready screen, while the phone waits
+        wristSky();
         // the crown: a setup picked on the watch becomes the phone's
         final Prefs prefs = new Prefs(ctx);
         final String[] want = {prefs.preset()};
@@ -472,6 +474,168 @@ public class Night {
         Monkey.problem(scenario + ": no " + what + " after " + maxMs / 1000 + " s: watch " + (wa != null ? com.brandon.nightsky.watch.WatchProbe.face(wa) : "")
                 + "; phone " + outcome());
         return false;
+    }
+
+    /**
+     * The Sky Pointer (2.6): Sky on the ready screen; the arm held at a bright star (as the watch's rotation sensor would
+     * say, magnetic north and all) and it names it; Find, and it steers the arm to the Moon ("Higher", then "Got it!" and
+     * the found buzz); the crown on to the next thing; the middle tapped to flip the arm; Back.
+     */
+    static void wristSky() throws Exception {
+        final Context ctx = Monkey.app;
+        if (!untilW("the phone's place on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.place(ctx) != null;
+            }
+        }, 60_000)) return;
+        double[] at = com.brandon.nightsky.watch.WatchProbe.place(ctx);
+        Locator.Place phone = new Prefs(ctx).savedPlace();
+        if (phone == null || Math.abs(at[0] - phone.latDeg) > 0.06 || Math.abs(at[1] - phone.lonDeg) > 0.06) {
+            Monkey.problem(scenario + ": the watch's place " + at[0] + ", " + at[1] + " isn't the phone's, to a tenth of a degree: "
+                    + (phone == null ? "none" : phone.latDeg + ", " + phone.lonDeg));
+        }
+        wa.action("sky");
+        if (!untilW("the stars read on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.skyStars();
+            }
+        }, 30_000)) return;
+        if (!com.brandon.nightsky.watch.WatchProbe.skyOn(wa)) {
+            Monkey.problem(scenario + ": Sky didn't open the Sky Pointer: " + com.brandon.nightsky.watch.WatchProbe.face(wa));
+            return;
+        }
+        if (!com.brandon.nightsky.watch.WatchProbe.skyListening(wa, ssm)) Monkey.problem(scenario + ": the Sky Pointer isn't listening to the rotation sensor");
+        // the arm at a bright star that's up
+        String star = null;
+        double[] dir = null;
+        for (String s : new String[]{"Vega", "Capella", "Arcturus", "Deneb", "Altair", "Polaris"}) {
+            double[] d = com.brandon.nightsky.watch.WatchProbe.skyWhere(wa, s);
+            if (d != null && d[2] > 0.2) {
+                star = s;
+                dir = d;
+                break;
+            }
+        }
+        if (dir == null) {
+            Monkey.problem(scenario + ": no bright star up for the Sky Pointer");
+            return;
+        }
+        skyPoint(dir, at);
+        String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        wshot("sky_" + star.toLowerCase(Locale.US));
+        if (!face.startsWith("Pointing at | " + star + " | ")) Monkey.problem(scenario + ": pointing at " + star + ", the watch says: " + face);
+        // Find: the Moon first on the crown's list
+        wa.action("sky-find");
+        run(300);
+        String first = com.brandon.nightsky.watch.WatchProbe.skyFinding(wa);
+        if (!"the Moon".equals(first)) Monkey.problem(scenario + ": Find began with " + first + ", not the Moon");
+        double[] moon = com.brandon.nightsky.watch.WatchProbe.skyWhere(wa, "the Moon");
+        if (moon != null) {
+            // 30 degrees under it: higher
+            double alt = Math.asin(moon[2]), az = Math.atan2(moon[0], moon[1]), lo = alt - Math.toRadians(30);
+            skyPoint(new double[]{Math.cos(lo) * Math.sin(az), Math.cos(lo) * Math.cos(az), Math.sin(lo)}, at);
+            face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+            wshot("sky_find_moon");
+            if (!face.contains(" | Higher")) Monkey.problem(scenario + ": 30 degrees under the Moon, the watch says: " + face);
+            int buzzes = com.brandon.nightsky.watch.WatchProbe.buzzes();
+            skyPoint(moon, at);
+            run(800);
+            face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+            wshot("sky_got_moon");
+            if (!face.contains("Got it!") || !face.contains(" | tick")) Monkey.problem(scenario + ": on the Moon, the watch says: " + face);
+            if (!"found".equals(com.brandon.nightsky.watch.WatchProbe.lastBuzz()) || com.brandon.nightsky.watch.WatchProbe.buzzes() <= buzzes) {
+                Monkey.problem(scenario + ": no found buzz on the Moon (last: " + com.brandon.nightsky.watch.WatchProbe.lastBuzz() + ")");
+            }
+        }
+        // the crown: on to the next thing
+        wa.rotate(1);
+        run(300);
+        String next = com.brandon.nightsky.watch.WatchProbe.skyFinding(wa);
+        if (next.isEmpty() || next.equals(first)) Monkey.problem(scenario + ": the crown didn't move Find on from " + first + " (" + next + ")");
+        // the middle: the arm flipped (the crown toward the elbow), and back
+        boolean was = com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx);
+        wa.action("tap");
+        boolean flipped = com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx);
+        wa.action("tap");
+        if (flipped == was || com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx) != was) Monkey.problem(scenario + ": the middle tap didn't flip the arm");
+        Monkey.say("  the Sky Pointer: " + star + " named, Find from " + first + " on to " + next + "; the arm flipped and back");
+        wa.action("sky-back");
+        run(300);
+        face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        if (com.brandon.nightsky.watch.WatchProbe.skyOn(wa) || !face.startsWith("Ready")) Monkey.problem(scenario + ": Back didn't leave the Sky Pointer: " + face);
+    }
+
+    /**
+     * The watch's rotation sensor saying its arm points along {@code enu} (true north; the sensor's own is magnetic, so
+     * turned back by the declination where the watch is): a run of readings, as the sensor gives them while the arm is held.
+     */
+    static void skyPoint(double[] enu, double[] at) throws Exception {
+        double d = Math.toRadians(new android.hardware.GeomagneticField((float) at[0], (float) at[1], 0f, System.currentTimeMillis()).getDeclination());
+        // true to magnetic: the level part turned back by the declination
+        double e = enu[0] * Math.cos(d) - enu[1] * Math.sin(d), n = enu[0] * Math.sin(d) + enu[1] * Math.cos(d), u = enu[2];
+        double[] x = {e, n, u};
+        // the face as near up as it can be, then the watch's y axis
+        double k = x[2];
+        double[] z = {-k * x[0], -k * x[1], 1 - k * x[2]};
+        double zn = Math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+        if (zn < 1e-6) {
+            z = new double[]{0, -1, 0};
+            zn = 1;
+        }
+        for (int i = 0; i < 3; i++) z[i] /= zn;
+        double[] y = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+        // rows: east, north, up; columns: the watch's x, y, z
+        double[] R = {x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]};
+        float[] q = quaternion(R);
+        // to the watch's listener alone (the rotation sensor is the phone's too, in this one process)
+        for (int i = 0; i < 40; i++) {
+            android.hardware.SensorEvent ev = org.robolectric.shadows.SensorEventBuilder.newBuilder().setSensor(rotation)
+                    .setValues(new float[]{q[0], q[1], q[2], q[3], (float) Math.toRadians(4)}).setTimestamp(System.nanoTime())
+                    .setAccuracy(android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_HIGH).build();
+            com.brandon.nightsky.watch.WatchProbe.skyEvent(wa, ev);
+            run(20);
+        }
+        run(100);
+    }
+
+    /** Android's rotation vector (x, y, z, w) for the rotation matrix {@code R} (rows first), as getRotationMatrixFromVector reads it. */
+    static float[] quaternion(double[] R) {
+        double tr = R[0] + R[4] + R[8], x, y, z, w;
+        if (tr > 0) {
+            double s = Math.sqrt(tr + 1) * 2;
+            w = s / 4;
+            x = (R[7] - R[5]) / s;
+            y = (R[2] - R[6]) / s;
+            z = (R[3] - R[1]) / s;
+        } else if (R[0] > R[4] && R[0] > R[8]) {
+            double s = Math.sqrt(1 + R[0] - R[4] - R[8]) * 2;
+            w = (R[7] - R[5]) / s;
+            x = s / 4;
+            y = (R[1] + R[3]) / s;
+            z = (R[2] + R[6]) / s;
+        } else if (R[4] > R[8]) {
+            double s = Math.sqrt(1 + R[4] - R[0] - R[8]) * 2;
+            w = (R[2] - R[6]) / s;
+            x = (R[1] + R[3]) / s;
+            y = s / 4;
+            z = (R[5] + R[7]) / s;
+        } else {
+            double s = Math.sqrt(1 + R[8] - R[0] - R[4]) * 2;
+            w = (R[3] - R[1]) / s;
+            x = (R[2] + R[6]) / s;
+            y = (R[5] + R[7]) / s;
+            z = s / 4;
+        }
+        // getRotationMatrixFromVector takes w as given (or works it out from x, y, z if left out): keep it positive
+        if (w < 0) {
+            w = -w;
+            x = -x;
+            y = -y;
+            z = -z;
+        }
+        return new float[]{(float) x, (float) y, (float) z, (float) w};
     }
 
     /** A picture of the watch each time the phone's state on it changes. */

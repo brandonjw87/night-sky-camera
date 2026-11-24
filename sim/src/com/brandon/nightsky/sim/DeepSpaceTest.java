@@ -5,6 +5,7 @@ import com.brandon.nightsky.processing.BrightStars;
 import com.brandon.nightsky.processing.CameraModel;
 import com.brandon.nightsky.processing.Constellations;
 import com.brandon.nightsky.processing.DeepSpace;
+import com.brandon.nightsky.processing.Probes;
 import com.brandon.nightsky.processing.Planets;
 import com.brandon.nightsky.processing.SessionSky;
 import com.brandon.nightsky.processing.SkyGuide;
@@ -41,7 +42,7 @@ public final class DeepSpaceTest {
         };
         for (int k = 0; k < table.length; k++) {
             Object[] t = table[k];
-            DeepSpace.Seen s = DeepSpace.seen(DeepSpace.PROBES[k], tt);
+            Probes.Seen s = Probes.seen(Probes.PROBES[k], tt);
             double dec = Math.signum((Integer) t[3] == 0 ? (Integer) t[4] : (Integer) t[3]) * (Math.abs((Integer) t[3]) + Math.abs((Integer) t[4]) / 60.0);
             double[] want = Astro.vec(((Integer) t[1] + ((Integer) t[2] + 0.5) / 60.0) * 15 * Astro.DEG, dec * Astro.DEG);
             double off = Astro.sep(s.dir, want) / Astro.DEG;
@@ -51,14 +52,14 @@ public final class DeepSpaceTest {
             check(t[0] + ": its light time", Math.abs(s.lightHours() - (Double) t[5]) < 0.03, String.format("%.3f h", s.lightHours()));
         }
         // a year on, each has moved out by its speed and swung with the Earth, but no more than a degree or so
-        for (DeepSpace.Probe p : DeepSpace.PROBES) {
-            DeepSpace.Seen a = DeepSpace.seen(p, tt), b = DeepSpace.seen(p, tt + 182.6);
+        for (Probes.Probe p : Probes.PROBES) {
+            Probes.Seen a = Probes.seen(p, tt), b = Probes.seen(p, tt + 182.6);
             double swing = Astro.sep(a.dir, b.dir) / Astro.DEG;
             check(p.name + " half a year on: farther out, and the Earth's swing only", b.sunAu > a.sunAu && swing < 2 * Math.asin(1.0 / a.distAu) / Astro.DEG + 0.05,
                     String.format("%.3f deg, %.2f -> %.2f AU", swing, a.sunAu, b.sunAu));
         }
         // EarthSky: Voyager 1 a light-day from the Earth at 10:16:07 UTC on 18 November 2026
-        DeepSpace.Seen v1 = DeepSpace.seen(DeepSpace.PROBES[0], Astro.jdTt(jdUtc(2026, 11, 18, 10, 16, 7)));
+        Probes.Seen v1 = Probes.seen(Probes.PROBES[0], Astro.jdTt(jdUtc(2026, 11, 18, 10, 16, 7)));
         check("Voyager 1 a light-day away on 18 November 2026", Math.abs(v1.lightHours() - 24) < 0.02,
                 String.format("%.4f h, %.2f AU", v1.lightHours(), v1.distAu));
         check("light-time words", DeepSpace.lightWords(24.004).equals("24 hours") && DeepSpace.lightWords(9.25).equals("9 hours 15 minutes")
@@ -66,7 +67,7 @@ public final class DeepSpaceTest {
                 DeepSpace.lightWords(24.004) + ", " + DeepSpace.lightWords(9.25) + ", " + DeepSpace.lightWords(0.5));
 
         // L2: straight away from the Sun
-        DeepSpace.Seen l2 = DeepSpace.l2(tt);
+        Probes.Seen l2 = Probes.l2(tt);
         double[] sun = Astro.sunOfDate(tt);
         double anti = Astro.sep(l2.dir, new double[]{-sun[0], -sun[1], -sun[2]}) / Astro.DEG;
         check("L2 is opposite the Sun", anti < 0.6, String.format("%.2f deg (the Sun's place is of date)", anti));
@@ -116,7 +117,7 @@ public final class DeepSpaceTest {
         // the sky guide: a picture centred on Voyager 1 names it; one on L2 names it; Pluto too
         BrightStars cat = SimRunner.loadCatalog();
         CameraModel lens = CameraModel.nominal(4080, 3072, 2875);
-        DeepSpace.Seen at = DeepSpace.seen(DeepSpace.PROBES[0], tt);
+        Probes.Seen at = Probes.seen(Probes.PROBES[0], tt);
         double[] rd = Astro.raDec(at.dir);
         SkySolver.Solution sol = FiguresTest.solution(lens, rd[0] / Astro.DEG + 3, rd[1] / Astro.DEG - 2, 20);
         SkyGuide g = SkyGuide.describe(sol, jd, null, cat, 0, 0, 4080, 3072);

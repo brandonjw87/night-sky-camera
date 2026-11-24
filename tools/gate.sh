@@ -107,7 +107,7 @@ UltraHdrTest|{W}
 "
 # tests added by later versions run when the sources have them
 for extra in CaTest SharpTest RehearsalTest EarthTurnTest BracketTest MissionTest BackgroundTest PurpleTest GifTest DeepSpaceTest DeepZoomTest \
-    TimeLapseTest XRayTest LinkTest; do
+    TimeLapseTest XRayTest LinkTest RecordTest PostcardTest CosmicTest PointerTest; do
     [ -f "sim/src/com/brandon/nightsky/sim/$extra.java" ] && TESTS="$TESTS$extra|{W}
 "
 done

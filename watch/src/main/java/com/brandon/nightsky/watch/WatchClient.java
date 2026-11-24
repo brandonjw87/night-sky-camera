@@ -430,6 +430,12 @@ final class WatchClient {
             statusAtMs = now;
             statusVia = via;
             pairDone = null;
+            // where the phone is (to a tenth of a degree), kept for the Sky Pointer
+            double lat = m.num("lat", Double.NaN), lon = m.num("lon", Double.NaN);
+            if (!Double.isNaN(lat) && !Double.isNaN(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+                    && ((float) lat != sp.getFloat("lat", 999f) || (float) lon != sp.getFloat("lon", 999f))) {
+                sp.edit().putFloat("lat", (float) lat).putFloat("lon", (float) lon).apply();
+            }
             String a = was != null ? was.str("state", "") : "", b = m.str("state", "");
             if (!a.equals(b)) {
                 Buzz.on(ctx, a, b);
@@ -463,6 +469,21 @@ final class WatchClient {
     /** The phone's status, if it's recent enough to show. */
     JsonTree.Obj status() {
         return status;
+    }
+
+    /** Where the phone last said it was ({latitude, longitude}, degrees, to a tenth), or null if it never has. */
+    double[] place() {
+        if (!sp.contains("lat") || !sp.contains("lon")) return null;
+        return new double[]{sp.getFloat("lat", 0f), sp.getFloat("lon", 0f)};
+    }
+
+    /** Which way the crown faces as the watch is worn (the Sky Pointer's arm): toward the elbow, or the hand (usual). */
+    boolean crownToElbow() {
+        return sp.getBoolean("crownToElbow", false);
+    }
+
+    void crownToElbow(boolean b) {
+        sp.edit().putBoolean("crownToElbow", b).apply();
     }
 
     /** How the phone's status arrives now: "Bluetooth", "Internet", or "" while it doesn't. */

@@ -614,6 +614,12 @@ final class WatchLink {
         if (r != null && s.phase == SessionController.Phase.DONE) {
             if (!r.xrayWords.isEmpty()) j.put("xray", r.xrayWords);
             if (!r.lapseWords.isEmpty()) j.put("lapse", r.lapseWords);
+            if (r.cosmicHits > 0) j.put("cosmic", r.cosmicHits);
+        }
+        // where the phone is, to a tenth of a degree (2.6: the watch's Sky Pointer works out this place's sky)
+        Locator.Place place = prefs.savedPlace();
+        if (place != null && !Double.isNaN(place.latDeg) && !Double.isNaN(place.lonDeg)) {
+            j.put("lat", Math.round(place.latDeg * 10) / 10.0, 6).put("lon", Math.round(place.lonDeg * 10) / 10.0, 6);
         }
         j.put("app", BuildInfo.VERSION);
         j.end();

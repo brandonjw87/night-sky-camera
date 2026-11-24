@@ -503,7 +503,7 @@ public final class SkyGuide {
      */
     private void deepSpace(Frame f, double jdTt) {
         List<String> craft = new ArrayList<String>();
-        for (DeepSpace.Seen s : DeepSpace.all(jdTt)) {
+        for (Probes.Seen s : Probes.all(jdTt)) {
             double[] uv = f.near(s.dir);
             if (uv == null || !inside(uv)) continue;
             boolean pluto = "pluto".equals(s.kind);

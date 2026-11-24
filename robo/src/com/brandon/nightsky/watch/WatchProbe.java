@@ -141,6 +141,50 @@ public final class WatchProbe {
         return d.draw(side);
     }
 
+    // ---- the Sky Pointer (2.6)
+
+    /** Where the watch thinks it is (the phone's place, as last said), or null. */
+    public static double[] place(Context c) {
+        return client(c).place();
+    }
+
+    public static boolean skyOn(Activity a) throws Exception {
+        return sky(a).on;
+    }
+
+    /** The stars read (the watch reads them once, on a worker). */
+    public static boolean skyStars() {
+        return SkyScreen.starsReady();
+    }
+
+    /** Where a thing is in the watch's sky now (east, north, up), or null. */
+    public static double[] skyWhere(Activity a, String name) throws Exception {
+        return sky(a).where(name);
+    }
+
+    /** What it's finding ("" when it isn't). */
+    public static String skyFinding(Activity a) throws Exception {
+        return sky(a).finding();
+    }
+
+    /** A reading of the rotation sensor, as Android gives the Sky Pointer one. */
+    public static void skyEvent(Activity a, android.hardware.SensorEvent e) throws Exception {
+        sky(a).onSensorChanged(e);
+    }
+
+    /** Whether the Sky Pointer has the rotation sensor on (while its screen shows). */
+    public static boolean skyListening(Activity a, org.robolectric.shadows.ShadowSensorManager ssm) throws Exception {
+        return ssm.hasListener(sky(a));
+    }
+
+    public static boolean crownToElbow(Context c) {
+        return client(c).crownToElbow();
+    }
+
+    private static SkyScreen sky(Activity a) throws Exception {
+        return (SkyScreen) get(a, "sky");
+    }
+
     private static Object get(Object o, String name) throws Exception {
         Class<?> k = o.getClass();
         while (k != null) {

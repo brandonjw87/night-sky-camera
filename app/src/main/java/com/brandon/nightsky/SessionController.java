@@ -36,6 +36,11 @@ import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.ClearSky;
 import com.brandon.nightsky.processing.DeepZoom;
 import com.brandon.nightsky.processing.XRayVision;
+import com.brandon.nightsky.processing.CosmicRays;
+import com.brandon.nightsky.processing.FrameStore;
+import com.brandon.nightsky.processing.GoldenRecord;
+import com.brandon.nightsky.processing.Painter;
+import com.brandon.nightsky.processing.Postcard;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
@@ -344,6 +349,23 @@ final class SessionController {
         File xray;
         Uri xrayUri;
         String xrayWords = "";
+        /**
+         * Cosmic Ray Hunter (2.6): the particles from space that went through the chip while it looked at the sky, the
+         * brightest under the microscope in a picture kept in the session's folder (null: none made) and saved in the
+         * gallery; how many were caught (-1: not searched), and in words.
+         */
+        File cosmic;
+        Uri cosmicUri;
+        int cosmicHits = -1;
+        String cosmicWords = "";
+        /** Earth's Address (2.6): the Voyagers' pulsar map redrawn for the night round the photo (null: none), in words. */
+        File address;
+        Uri addressUri;
+        String addressWords = "";
+        /** Postcard from Another World (2.6): the photo's sky from a planet round another star (null: none), which, and its message. */
+        File postcard;
+        Uri postcardUri;
+        String postcardFrom = "", postcardWords = "";
         /**
          * Hear the Stars (2.3): where the photo points, for its song (null for star trails, or a sky not found); the song
          * as last made, with the version of the named stars it was made with; its video, once saved to the gallery.
@@ -1817,6 +1839,8 @@ final class SessionController {
         r.xray = was.xray;
         r.xrayUri = was.xrayUri;
         r.xrayWords = was.xrayWords;
+        // and the cosmic rays, Earth's Address and the postcard (2.6)
+        copyExtras26(was, r);
         return r;
     }
 
@@ -5657,6 +5681,9 @@ final class SessionController {
             post(Phase.DEVELOPING, "Saving", "The time lapse", 0f);
             lapse = makeTimeLapse(st, lapseSrc, TimeLapse.Style.parse(m.props.getProperty("lapseStyle")), name, "Saving");
         }
+        // Cosmic Ray Hunter (2.6): the particles that went through the chip, looked for in the frames while they're here
+        CosmicRays.Result rays = null;
+        if (!m.trails && plain) rays = huntCosmicRays(st, o, sp);
         // the photo is saved: the frames stay for editing and merging while the budget allows (an edit leaves them be)
         if (!m.edit && (m.merge == null || home != st)) keepOrDeleteFrames(st, home);
         // another look can be made from the frames only while they're kept
@@ -5685,6 +5712,14 @@ final class SessionController {
         if (!m.trails && m.merge == null && !m.edit && m.again == null) {
             xray = makeXRay(home, o, sp, framed, f, pf, sm, m.sky, parseLong(m.props.getProperty("capture.startWallMs")), name);
         }
+        // the 2.6 extras: the pulsar map round the photo, the postcard from another world, the particles caught
+        Object[] address = {null, null, ""}, postcard = {null, null, "", ""}, cosmic = {null, null, ""};
+        if (!m.trails && plain) {
+            long started = parseLong(m.props.getProperty("capture.startWallMs"));
+            address = makeAddress(home, o, sp, framed, f, sm, m.sky, started, name);
+            postcard = makePostcard(home, o, sp, framed, f, sm, m.sky, started, name);
+            if (rays != null) cosmic = makeCosmic(home, sp, rays, started, name);
+        }
         if (framed != bmp) framed.recycle();
         framed = null;
         // Mission Control's end of the story (2.3): a capture's photo ends its mission; an edit or a merge of nights is
@@ -5709,6 +5744,19 @@ final class SessionController {
         r.xray = (File) xray[0];
         r.xrayUri = (Uri) xray[1];
         r.xrayWords = (String) xray[2];
+        r.address = (File) address[0];
+        r.addressUri = (Uri) address[1];
+        r.addressWords = (String) address[2];
+        r.postcard = (File) postcard[0];
+        r.postcardUri = (Uri) postcard[1];
+        r.postcardFrom = (String) postcard[2];
+        r.postcardWords = (String) postcard[3];
+        if (rays != null) {
+            r.cosmicHits = rays.hits.size();
+            r.cosmic = (File) cosmic[0];
+            r.cosmicUri = (Uri) cosmic[1];
+            r.cosmicWords = (String) cosmic[2];
+        }
         if (lapse != null) {
             r.lapse = lapse.mp4;
             r.lapseVideo = lapse.uri;
@@ -6258,10 +6306,12 @@ final class SessionController {
         if (r.xray != null) p.setProperty("xray", r.xray.getName());
         if (r.xrayUri != null) p.setProperty("xray.uri", r.xrayUri.toString());
         p.setProperty("xray.words", r.xrayWords);
+        extrasNote26(p, r);
         lapseNote(p, r);
         try {
             java.io.StringWriter w = new java.io.StringWriter();
-            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5)");
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5), Cosmic Ray Hunter, Earth's "
+                    + "Address and the postcard (2.6)");
             st.writeText(EXTRAS, w.toString());
         } catch (IOException | RuntimeException e) {
             st.log("the close-ups and the replay not noted for opening the session again: " + e);
@@ -6309,6 +6359,7 @@ final class SessionController {
             r.xrayUri = inGallery(p.getProperty("xray.uri"));
             r.xrayWords = p.getProperty("xray.words", "");
         }
+        readExtras26(st, p, r);
         String lapse = p.getProperty("lapse");
         File mp4 = lapse != null ? new File(st.dir, lapse) : null;
         if (mp4 != null && mp4.isFile()) {
@@ -6317,6 +6368,72 @@ final class SessionController {
             r.lapseStyle = p.getProperty("lapse.style", "");
             r.lapseWords = p.getProperty("lapse.words", "");
         }
+    }
+
+    /** The 2.6 extras' lines in a session's note of its extras. */
+    private static void extrasNote26(Properties p, Result r) {
+        if (r.cosmicHits >= 0) {
+            p.setProperty("cosmic.hits", Integer.toString(r.cosmicHits));
+            p.setProperty("cosmic.words", r.cosmicWords);
+            if (r.cosmic != null) p.setProperty("cosmic", r.cosmic.getName());
+            if (r.cosmicUri != null) p.setProperty("cosmic.uri", r.cosmicUri.toString());
+        }
+        if (r.address != null) {
+            p.setProperty("address", r.address.getName());
+            if (r.addressUri != null) p.setProperty("address.uri", r.addressUri.toString());
+            p.setProperty("address.words", r.addressWords);
+        }
+        if (r.postcard != null) {
+            p.setProperty("postcard", r.postcard.getName());
+            if (r.postcardUri != null) p.setProperty("postcard.uri", r.postcardUri.toString());
+            p.setProperty("postcard.from", r.postcardFrom);
+            p.setProperty("postcard.words", r.postcardWords);
+        }
+    }
+
+    /** What {@link #extrasNote26} noted, into {@code r}: the pictures still in the session's folder. */
+    private void readExtras26(SessionStore st, Properties p, Result r) {
+        String hits = p.getProperty("cosmic.hits");
+        r.cosmicHits = hits != null ? (int) Math.max(0, Math.min(100000, parseLong(hits))) : -1;
+        if (r.cosmicHits >= 0) {
+            r.cosmicWords = p.getProperty("cosmic.words", "");
+            String c = p.getProperty("cosmic");
+            File cf = c != null ? new File(st.dir, c) : null;
+            if (cf != null && cf.isFile()) {
+                r.cosmic = cf;
+                r.cosmicUri = inGallery(p.getProperty("cosmic.uri"));
+            }
+        }
+        String a = p.getProperty("address");
+        File af = a != null ? new File(st.dir, a) : null;
+        if (af != null && af.isFile()) {
+            r.address = af;
+            r.addressUri = inGallery(p.getProperty("address.uri"));
+            r.addressWords = p.getProperty("address.words", "");
+        }
+        String pc = p.getProperty("postcard");
+        File pf = pc != null ? new File(st.dir, pc) : null;
+        if (pf != null && pf.isFile()) {
+            r.postcard = pf;
+            r.postcardUri = inGallery(p.getProperty("postcard.uri"));
+            r.postcardFrom = p.getProperty("postcard.from", "");
+            r.postcardWords = p.getProperty("postcard.words", "");
+        }
+    }
+
+    /** An edit's result keeps the night's 2.6 extras: made from its frames and its sky, whatever the edit. */
+    private static void copyExtras26(Result was, Result r) {
+        r.cosmic = was.cosmic;
+        r.cosmicUri = was.cosmicUri;
+        r.cosmicHits = was.cosmicHits;
+        r.cosmicWords = was.cosmicWords;
+        r.address = was.address;
+        r.addressUri = was.addressUri;
+        r.addressWords = was.addressWords;
+        r.postcard = was.postcard;
+        r.postcardUri = was.postcardUri;
+        r.postcardFrom = was.postcardFrom;
+        r.postcardWords = was.postcardWords;
     }
 
     /** The time lapse's lines in a session's note of its extras (2.5). */
@@ -6336,7 +6453,8 @@ final class SessionController {
             if (text != null) p.load(new java.io.StringReader(text));
             lapseNote(p, r);
             java.io.StringWriter w = new java.io.StringWriter();
-            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5)");
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5), Cosmic Ray Hunter, Earth's "
+                    + "Address and the postcard (2.6)");
             st.writeText(EXTRAS, w.toString());
         } catch (IOException | RuntimeException e) {
             st.log("the time lapse not noted for opening the session again: " + e);
@@ -6586,6 +6704,279 @@ final class SessionController {
         } finally {
             if (b != null) b.recycle();
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The 2.6 extras: Cosmic Ray Hunter, Earth's Address, Postcard from Another World
+
+    /** Heap kept free beside a 2.6 extra's picture (its pixels twice over are counted besides). */
+    private static final long EXTRA_SPARE = 24L << 20;
+    /** The pictures' sizes: the pulsar map square, the postcard a card, the particles under the microscope square. */
+    private static final int ADDRESS_SIDE = 1600, POSTCARD_W = 1800, POSTCARD_H = 1200, COSMIC_SIDE = 1600;
+
+    /** One of the 2.6 extras' pictures: its background's pixels, then the lines and words drawn over them. */
+    private interface Drawing {
+        int[] background();
+
+        /** Draws it; returns what to log of it. */
+        String paint(Painter p);
+    }
+
+    /**
+     * A 2.6 extra's picture ({@code what}): {@code d} drawn w x h, kept in the session's folder as name_suffix.jpg for the
+     * result screen and saved in the gallery so, with {@code words} as its description. Returns {the file, its gallery
+     * Uri}: nulls when it couldn't be made, a null Uri when only the gallery wouldn't take it (the log says why).
+     */
+    private Object[] extraPicture(SessionStore st, SensorSpec sp, String what, String suffix, String name, int w, int h, long startedMs,
+                                  String words, Drawing d) {
+        Object[] none = {null, null};
+        long need = (long) w * h * 4 * 2 + EXTRA_SPARE, free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no %s: not enough memory (%d MB needed, %d MB free)", what, need >> 20, free >> 20));
+            return none;
+        }
+        long t0 = SystemClock.elapsedRealtime();
+        File file = new File(st.dir, name + "_" + suffix + ".jpg");
+        Bitmap b = null;
+        try {
+            int[] px = d.background();
+            b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            b.setPixels(px, 0, w, 0, 0, w, h);
+            //noinspection UnusedAssignment
+            px = null;
+            String note = d.paint(new CanvasPainter(b));
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(file);
+            try {
+                b.compress(Bitmap.CompressFormat.JPEG, 92, fo);
+            } finally {
+                fo.close();
+            }
+            MediaSaver.Exif ex = new MediaSaver.Exif();
+            ex.make = sp.deviceMake;
+            ex.model = sp.deviceModel;
+            ex.description = what + ": " + words;
+            ex.time = startedMs > 0 ? new Date(startedMs) : new Date();
+            ex.width = w;
+            ex.height = h;
+            Uri uri = null;
+            try {
+                uri = MediaSaver.saveJpeg(ctx, b, name + "_" + suffix, ex);
+            } catch (IOException | RuntimeException e) {
+                st.log(what + ": not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "%s: %s; %dx%d%s (%d ms)", what, note, w, h,
+                    uri != null ? ", in the gallery as " + name + "_" + suffix + ".jpg" : "", SystemClock.elapsedRealtime() - t0));
+            return new Object[]{file, uri};
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no " + what + ": making it failed: " + e);
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            return none;
+        } finally {
+            if (b != null) b.recycle();
+        }
+    }
+
+    /** The photo's moment (Julian date, UTC): when it was placed on the sky, else when the session started. */
+    private static double photoJd(PostProcessor.Output o, long startedMs) {
+        if (o.solution != null && !Double.isNaN(o.solutionJd) && o.solutionJd > 0) return o.solutionJd;
+        return Astro.jdUtc(startedMs > 0 ? startedMs : System.currentTimeMillis());
+    }
+
+    /**
+     * Cosmic Ray Hunter (2.6): the particles from space that went through the chip while it looked at the sky, looked for
+     * in session {@code st}'s frames (still kept now): light in one frame only, sharper than any star, and not on the
+     * stars, satellites, planes and meteors the stack found. Null when there was no searching them (the log says why).
+     */
+    private CosmicRays.Result huntCosmicRays(SessionStore st, PostProcessor.Output o, SensorSpec sp) {
+        long t0 = SystemClock.elapsedRealtime();
+        try {
+            final FrameStore fs = st.frames(sp.width, sp.height);
+            List<CosmicRays.Unit> units = CosmicRays.units(st, st.readUnits(), o);
+            CosmicRays.Result r = CosmicRays.find(new CosmicRays.Frames() {
+                @Override
+                public void readBand(int index, int y0, int y1, short[] out) throws IOException {
+                    fs.readBand(index, y0, y1, out);
+                }
+            }, sp.width, sp.height, sp.cfa, units, o.hot, CosmicRays.Stack.of(o), electronsPerLevel(sp),
+                    CosmicRays.area(sp.width, sp.height, sp.pixelPitchUm), new Progress() {
+                        long last;
+
+                        @Override
+                        public void update(String stage, float fraction) {
+                            long now = SystemClock.elapsedRealtime();
+                            if (now - last < 300 && fraction < 1f) return;
+                            last = now;
+                            post(Phase.DEVELOPING, "Saving", "Cosmic Ray Hunter: looking for particles", fraction);
+                        }
+
+                        @Override
+                        public boolean cancelled() {
+                            return cancelDevelop;
+                        }
+                    });
+            if (!r.why.isEmpty()) {
+                st.log("decision: no Cosmic Ray Hunter: " + r.why);
+                return null;
+            }
+            st.log(String.format(Locale.US, "cosmic ray hunter: %s (%d ms)", r.summary(), SystemClock.elapsedRealtime() - t0));
+            for (CosmicRays.Hit h : r.hits) {
+                st.log(String.format(Locale.US, "cosmic ray hunter: frame %d at (%.0f, %.0f): %s, %d pixels, %.0f long, %.1f sigma, %.0f levels%s",
+                        h.unit, h.x, h.y, h.kind.one, h.pixels, h.length, h.sigma, h.levels,
+                        Double.isNaN(h.keV) ? "" : String.format(Locale.US, ", %.0f electrons (%.1f keV)", h.electrons, h.keV)));
+            }
+            return r;
+        } catch (CancelledException e) {
+            st.log("decision: Cosmic Ray Hunter stopped: cancelled");
+            return null;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no Cosmic Ray Hunter: the search failed: " + e);
+            return null;
+        }
+    }
+
+    /** Electrons per raw level, from the camera's noise profile (its green planes' shot-noise term); NaN when it has none. */
+    static double electronsPerLevel(SensorSpec sp) {
+        if (sp.noiseS == null) return Double.NaN;
+        double s = 0;
+        int n = 0;
+        for (int q = 0; q < sp.noiseS.length && q < sp.cfa.length; q++) {
+            if (sp.cfa[q] != 1 || !(sp.noiseS[q] > 0)) continue;
+            s += sp.noiseS[q];
+            n++;
+        }
+        double range = sp.range();
+        return n > 0 && range > 0 ? 1 / (s / n * range) : Double.NaN;
+    }
+
+    /** "3 particles from space caught while it looked at the sky for 5 minutes (about 4 muons expected): 2 tracks and a spot". */
+    static String cosmicWords(CosmicRays.Result r) {
+        int n = r.hits.size();
+        String s = (n == 0 ? "No particles from space caught" : n == 1 ? "1 particle from space caught" : n + " particles from space caught")
+                + " " + CosmicRays.expectedWords(r);
+        return n > 0 ? s + ": " + r.words() : s;
+    }
+
+    /** The particles caught (2.6), the brightest under the microscope: {file, gallery Uri, words}. */
+    private Object[] makeCosmic(SessionStore st, final SensorSpec sp, final CosmicRays.Result rays, final long startedMs, String name) {
+        final String words = cosmicWords(rays);
+        final CosmicRays.Layout l = CosmicRays.layout(COSMIC_SIDE, COSMIC_SIDE, rays, sp.width, sp.height);
+        post(Phase.DEVELOPING, "Saving", "Cosmic Ray Hunter", -1f);
+        Object[] pic = extraPicture(st, sp, "Cosmic Ray Hunter", "cosmic", name, l.w, l.h, startedMs, words, new Drawing() {
+            @Override
+            public int[] background() {
+                return CosmicRays.background(l, rays, sp.width, sp.height);
+            }
+
+            @Override
+            public String paint(Painter p) {
+                CosmicRays.paint(p, l, rays, sp.width, sp.height, startedMs, java.util.TimeZone.getDefault());
+                return words + (rays.hits.size() > l.shown ? "; " + l.shown + " shown" : "");
+            }
+        });
+        return new Object[]{pic[0], pic[1], words};
+    }
+
+    /**
+     * Earth's Address (2.6): the pulsar map the Pioneers and Voyagers carry, redrawn for the photo's night round the photo
+     * ({@code framed}: the stack's crop binned {@code f} times into {@code sm}, framed), the pulsars that were in the photo
+     * or up in the sky picked out: {file, gallery Uri, words}.
+     */
+    private Object[] makeAddress(SessionStore st, PostProcessor.Output o, SensorSpec sp, final Bitmap framed, int f, RgbImage sm,
+                                 SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, ""};
+        final double jd = photoJd(o, startedMs);
+        final List<GoldenRecord.Mark> marks;
+        try {
+            Renderer.Analysis a = o.analysis;
+            marks = GoldenRecord.marks(o.solution, jd, sky, a != null ? a.cx0 : 0, a != null ? a.cy0 : 0, sm.cropWidth() * f, sm.cropHeight() * f);
+        } catch (RuntimeException e) {
+            st.log("decision: no Earth's Address: the map couldn't be worked out: " + e);
+            return none;
+        }
+        final String words = GoldenRecord.summary(marks);
+        final int pw = framed.getWidth(), ph = framed.getHeight();
+        final GoldenRecord.Layout l = GoldenRecord.layout(ADDRESS_SIDE, ADDRESS_SIDE);
+        post(Phase.DEVELOPING, "Saving", "Earth's Address", -1f);
+        Object[] pic = extraPicture(st, sp, "Earth's Address", "address", name, l.w, l.h, startedMs, words, new Drawing() {
+            @Override
+            public int[] background() {
+                int[] photo = new int[pw * ph];
+                framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+                return GoldenRecord.background(l, photo, pw, ph);
+            }
+
+            @Override
+            public String paint(Painter p) {
+                GoldenRecord.Drawn d = GoldenRecord.paint(p, l, marks, jd, java.util.TimeZone.getDefault());
+                return String.format(Locale.US, "%s; %d lines, %d named, %d digits in blue", words, d.lines, d.labels, d.newDigits);
+            }
+        });
+        return new Object[]{pic[0], pic[1], pic[0] != null ? words : ""};
+    }
+
+    /**
+     * Postcard from Another World (2.6): the photo's sky as seen from a planet round another star (one whose star is in
+     * the photo, else the highest up that night, else Proxima b), with the message it sends home: {file, gallery Uri,
+     * the planet's name, the message}.
+     */
+    private Object[] makePostcard(SessionStore st, PostProcessor.Output o, SensorSpec sp, final Bitmap framed, int f, RgbImage sm,
+                                  SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, "", ""};
+        final BrightStars cat = SkyCatalog.get(ctx);
+        if (cat == null) {
+            st.log("decision: no Postcard from Another World: the star catalogue couldn't be read");
+            return none;
+        }
+        final double jd = photoJd(o, startedMs);
+        List<XRayVision.Spot> spots = null;
+        try {
+            Renderer.Analysis a = o.analysis;
+            if (a != null) {
+                spots = XRayVision.find(o.solution, jd, sky, a.cx0, a.cy0, sm.cropWidth() * f, sm.cropHeight() * f, java.util.TimeZone.getDefault());
+            }
+        } catch (RuntimeException e) {
+            st.log("postcard: what's in the photo couldn't be worked out (" + e + "), so it comes from the nearest planet");
+        }
+        Postcard.Why[] why = new Postcard.Why[1];
+        final Postcard.Dest to = Postcard.choose(spots, why);
+        final Postcard.View view;
+        try {
+            view = Postcard.view(to, cat);
+        } catch (RuntimeException e) {
+            st.log("decision: no Postcard from Another World: the sky from " + to.planet + " couldn't be worked out: " + e);
+            return none;
+        }
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(startedMs > 0 ? startedMs : System.currentTimeMillis());
+        final String message = Postcard.message(view, cat, c.get(java.util.Calendar.YEAR));
+        final String because = why[0] == Postcard.Why.IN_PHOTO ? "Its star is in your photo!"
+                : why[0] == Postcard.Why.UP ? "Its star was up in your sky that night" : "The nearest planet to the Solar System";
+        final int pw = framed.getWidth(), ph = framed.getHeight();
+        final Postcard.Layout l = Postcard.layout(POSTCARD_W, POSTCARD_H);
+        post(Phase.DEVELOPING, "Saving", "Postcard from Another World", -1f);
+        Object[] pic = extraPicture(st, sp, "Postcard from Another World", "postcard", name, l.w, l.h, startedMs, to.planet + ": " + message,
+                new Drawing() {
+                    @Override
+                    public int[] background() {
+                        int[] photo = new int[pw * ph];
+                        framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+                        return Postcard.background(l, photo, pw, ph);
+                    }
+
+                    @Override
+                    public String paint(Painter p) {
+                        Postcard.Drawn d = Postcard.paint(p, l, view, cat, jd, java.util.TimeZone.getDefault(), because);
+                        return String.format(Locale.US, "from %s (%s; %s): %d stars, %d constellations", to.planet, to.star, why0(because), d.stars,
+                                d.figures);
+                    }
+                });
+        return new Object[]{pic[0], pic[1], pic[0] != null ? to.planet : "", pic[0] != null ? message : ""};
+    }
+
+    private static String why0(String because) {
+        return because.endsWith("!") ? because.substring(0, because.length() - 1).toLowerCase(Locale.US) : because.toLowerCase(Locale.US);
     }
 
     /** The result screen's copy of a close-up: this many pixels a side. */

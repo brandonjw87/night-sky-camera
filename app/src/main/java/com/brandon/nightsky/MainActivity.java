@@ -83,6 +83,7 @@ import com.brandon.nightsky.processing.TimeLapse;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitRecord;
 import com.brandon.nightsky.processing.XRayVision;
+import com.brandon.nightsky.processing.GoldenRecord;
 import com.brandon.nightsky.remote.QrCode;
 
 import java.io.File;
@@ -3112,6 +3113,9 @@ public final class MainActivity extends Activity {
         if (r != null && r.replay != null) addReplay(col, r);
         if (r != null && (!r.zooms.isEmpty() || !r.zoomWords.isEmpty())) addDeepZoom(col, r);
         if (r != null && r.songFrom != null && !r.trails) addXRay(col, r);
+        if (r != null && r.cosmicHits >= 0) addCosmic(col, r);
+        if (r != null && r.address != null) addAddress(col, r);
+        if (r != null && r.postcard != null) addPostcard(col, r);
         if (r != null && r.songFrom != null && !r.trails) addNetwork(col, r);
         if (r != null && r.earth != null) addEarthTurn(col, r);
         final boolean canLapse = r != null && service != null && service.controller().canTimeLapse();
@@ -7042,6 +7046,164 @@ public final class MainActivity extends Activity {
                     + (in > 0 && pulsars.get(0).inPhoto ? "these are the ones in your photo." : "these were up in your sky."), 12, RED_DIM,
                     false), gap(4));
         }
+        col.addView(card, gap(12));
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The 2.6 extras: Cosmic Ray Hunter, Earth's Address, Postcard from Another World
+
+    /** A 2.6 extra's picture in its card ({@code f}: the session's copy), opened full size from the gallery by a tap. */
+    private void extraPicture(LinearLayout card, File f, final Uri uri, String description) {
+        if (f == null) return;
+        Bitmap pic = BitmapFactory.decodeFile(f.getPath());
+        if (pic == null) return;
+        ImageView iv = new ImageView(this);
+        iv.setAdjustViewBounds(true);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setImageBitmap(pic);
+        iv.setContentDescription(description);
+        iv.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (uri != null) view(uri);
+            }
+        });
+        card.addView(iv, gap(8));
+    }
+
+    /** Its Share button (and whatever else goes in the row), when the gallery has the picture. */
+    private LinearLayout extraShare(LinearLayout card, final Uri uri, String label, final String title) {
+        LinearLayout row = row();
+        if (uri != null) {
+            Button share = smallButton(label, false);
+            share.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    share(uri, "image/jpeg", title);
+                }
+            });
+            row.addView(share, weight());
+        }
+        return row;
+    }
+
+    /**
+     * The result's Cosmic Ray Hunter (2.6): the particles from space that went through the camera's chip while it looked
+     * at the sky (each lights a few pixels in one frame only, so the photo never shows them), the brightest under the
+     * microscope, and what they are.
+     */
+    private void addCosmic(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Cosmic Ray Hunter", 17, RED, true));
+        String lead = r.cosmicHits == 0
+                ? "No particles from space this time. They come when they like: the longer the night, the more you catch."
+                : (r.cosmicHits == 1 ? "A particle from space" : r.cosmicHits + " particles from space") + " went straight through your "
+                + "camera's chip while it looked at the sky. Each lit a few pixels in one frame only, so your photo never shows them: "
+                + "here they are, under the microscope." + (r.cosmic != null && r.cosmicUri != null ? " Tap to see it full size." : "");
+        card.addView(text(lead, 13, RED_DIM, false), gap(6));
+        extraPicture(card, r.cosmic, r.cosmicUri, "Cosmic Ray Hunter: " + r.cosmicWords);
+        if (!r.cosmicWords.isEmpty() && r.cosmicHits > 0) card.addView(text(r.cosmicWords + ".", 12, RED_DIM, false), gap(6));
+        card.addView(text("Most are muons, made when cosmic rays (atoms flung across the galaxy by exploding stars) smash into the top of "
+                + "the air: about one goes through your fingernail every minute. A straight track is one that came in at an angle; a curly "
+                + "worm is an electron a gamma ray knocked loose.", 12, RED_DIM, false), gap(6));
+        LinearLayout row = extraShare(card, r.cosmicUri, "Share the particles", "Share Cosmic Ray Hunter");
+        if (row.getChildCount() > 0) card.addView(row, gap(8));
+        col.addView(card, gap(12));
+    }
+
+    /**
+     * The result's Earth's Address (2.6): the pulsar map to the Sun that the Pioneers and Voyagers carry, redrawn for the
+     * night round the photo; its pulsars to hear, ticking as they did that night.
+     */
+    private void addAddress(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Earth's Address", 17, RED, true));
+        card.addView(text("The map to our Sun that Pioneer 10 and 11 and both Voyagers carry out of the Solar System, for whoever finds "
+                + "them: 14 pulsars (dead stars that tick like clocks), each line as long as it is far, its marks how fast it ticks, in "
+                + "binary. Pulsars slow down, so the map tells the time too: here it is redrawn for your night, round your photo."
+                + (r.addressUri != null ? " Tap to see it full size." : ""), 13, RED_DIM, false), gap(6));
+        extraPicture(card, r.address, r.addressUri, "Earth's Address: " + r.addressWords);
+        if (!r.addressWords.isEmpty()) {
+            card.addView(text(r.addressWords.substring(0, 1).toUpperCase(Locale.US) + r.addressWords.substring(1)
+                    + ": the blue digits.", 12, RED_DIM, false), gap(6));
+        }
+        LinearLayout row = extraShare(card, r.addressUri, "Share the map", "Share Earth's Address");
+        final List<GoldenRecord.Mark> marks = addressMarks(r);
+        if (!marks.isEmpty()) {
+            final String label = "Hear its pulsars";
+            final Button hear = smallButton(beats != null ? "Stop" : label, true);
+            hear.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    playMap(marks, hear, label);
+                }
+            });
+            row.addView(hear, weight());
+        }
+        if (row.getChildCount() > 0) card.addView(row, gap(8));
+        col.addView(card, gap(12));
+    }
+
+    /** The map's pulsars for the result's photo, those in it first, then those up that night (none: not known). */
+    private static List<GoldenRecord.Mark> addressMarks(SessionController.Result r) {
+        SessionController.SongSource src = r.songFrom;
+        try {
+            List<GoldenRecord.Mark> all = src != null
+                    ? GoldenRecord.marks(src.sol, src.jdUtc, src.sky, src.crop[0], src.crop[1], src.crop[2], src.crop[3])
+                    : GoldenRecord.marks(null, com.brandon.nightsky.processing.Astro.jdUtc(r.startedMs > 0 ? r.startedMs : System.currentTimeMillis()),
+                    null, 0, 0, 0, 0);
+            return GoldenRecord.toHear(all);
+        } catch (RuntimeException e) {
+            return new ArrayList<GoldenRecord.Mark>();
+        }
+    }
+
+    /** Seconds of each of the map's pulsars, and quiet after it: 14 of them, so shorter than X-Ray Vision's few. */
+    private static final double MAP_EACH = 2.6, MAP_GAP = 0.5;
+
+    /** The map's pulsars one after another (the button says which is ticking); a second tap stops them. */
+    private void playMap(final List<GoldenRecord.Mark> ms, final Button b, final String label) {
+        if (beats != null) {
+            stopBeats();
+            b.setText(label);
+            return;
+        }
+        stopSong();
+        final SongPlayer pl = new SongPlayer(GoldenRecord.tour(ms, MAP_EACH, MAP_GAP, StarSong.RATE), StarSong.RATE);
+        if (!pl.start()) {
+            toastish("The phone wouldn't play it");
+            return;
+        }
+        android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am != null && am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0) toastish("Turn the volume up to hear the pulsars!");
+        beats = pl;
+        b.post(new Runnable() {
+            @Override
+            public void run() {
+                if (beats != pl || pl.ended()) {
+                    if (beats == pl) beats = null;
+                    b.setText(label);
+                    return;
+                }
+                int k = (int) Math.max(0, Math.min(ms.size() - 1, Math.floor(pl.position() / (MAP_EACH + MAP_GAP))));
+                GoldenRecord.Mark m = ms.get(k);
+                b.setText(m.p.name + ": " + XRayVision.spinWords(1 / m.seconds) + " \u00b7 stop");
+                b.postDelayed(this, 150);
+            }
+        });
+    }
+
+    /** The result's Postcard from Another World (2.6): the night's sky from a planet round another star, and its message home. */
+    private void addPostcard(LinearLayout col, final SessionController.Result r) {
+        LinearLayout card = card();
+        card.addView(text("Postcard from Another World", 17, RED, true));
+        card.addView(text("Your night sky as it looks from " + (r.postcardFrom.isEmpty() ? "a planet round another star" : r.postcardFrom
+                + ", a planet round another star") + ": the stars shifted, the constellations pulled out of shape, and our Sun just one "
+                + "star among the rest." + (r.postcardUri != null ? " Tap to see it full size." : ""), 13, RED_DIM, false), gap(6));
+        extraPicture(card, r.postcard, r.postcardUri, "Postcard from " + r.postcardFrom);
+        if (!r.postcardWords.isEmpty()) card.addView(text("\u201c" + r.postcardWords + "\u201d", 13, RED, false), gap(6));
+        LinearLayout row = extraShare(card, r.postcardUri, "Send the postcard", "Share the postcard");
+        if (row.getChildCount() > 0) card.addView(row, gap(8));
         col.addView(card, gap(12));
     }
 

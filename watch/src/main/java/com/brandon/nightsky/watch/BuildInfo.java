@@ -4,5 +4,5 @@ package com.brandon.nightsky.watch;
 final class BuildInfo {
     private BuildInfo() {}
 
-    static final String VERSION = "2.5";
+    static final String VERSION = "2.6";
 }

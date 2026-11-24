@@ -181,7 +181,7 @@ public final class SkyMap {
         // the spacecraft leaving the Solar System, L2 and Pluto (2.4): in the picture, with how far and what to say
         j.arr("craft");
         if (!Double.isNaN(jdUtc)) {
-            for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+            for (Probes.Seen s : Probes.all(Astro.jdTt(jdUtc))) {
                 double[] uv = f.near(s.dir);
                 if (uv == null || !within(uv, 0)) continue;
                 j.obj().put("n", s.name).put("k", s.kind).put("au", s.distAu, 5).put("lh", s.lightHours(), 4);
@@ -248,11 +248,11 @@ public final class SkyMap {
      * The spacecraft leaving the Solar System, L2 and Pluto (2.4) in the crop (x0, y0, w, h): as {@link DeepSpace#all}
      * has them, those in it only; none if the time isn't known.
      */
-    public List<DeepSpace.Seen> craft(int x0, int y0, int w, int h) {
-        List<DeepSpace.Seen> out = new java.util.ArrayList<DeepSpace.Seen>();
+    public List<Probes.Seen> craft(int x0, int y0, int w, int h) {
+        List<Probes.Seen> out = new java.util.ArrayList<Probes.Seen>();
         if (Double.isNaN(jdUtc)) return out;
         SkyGuide.Frame f = new SkyGuide.Frame(sol, x0, y0, w, h);
-        for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+        for (Probes.Seen s : Probes.all(Astro.jdTt(jdUtc))) {
             double[] uv = f.near(s.dir);
             if (uv != null && within(uv, 0)) out.add(s);
         }
@@ -339,7 +339,7 @@ public final class SkyMap {
         }
         // the spacecraft leaving the Solar System (2.4): too far to see, but they sing, as radio beeps
         if (!Double.isNaN(jdUtc)) {
-            for (DeepSpace.Seen s : DeepSpace.all(Astro.jdTt(jdUtc))) {
+            for (Probes.Seen s : Probes.all(Astro.jdTt(jdUtc))) {
                 if (!"probe".equals(s.kind)) continue;
                 double[] uv = f.near(s.dir);
                 if (uv == null || !within(uv, 0)) continue;

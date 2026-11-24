@@ -23,6 +23,9 @@ import java.util.regex.Pattern;
  * the session has got (the ring), what the phone is doing and the buttons that make sense then: Start (the crown picks
  * the setup), Start now and Cancel while it gets ready, +5 min, Stop and Mute while it captures, and Again when it's
  * done. Tapping the middle shows the connections and Unpair.
+ *
+ * <p>2.6: the Sky Pointer ({@link SkyScreen}): Sky on the Ready, Done and phone-search screens (and a tap on the
+ * middle while the phone captures) turns the watch into a pointer: hold the arm at the sky and it says what's there.
  */
 public final class WatchActivity extends Activity implements WatchClient.Listener, DialView.Actions {
     /** On screen now (the service then leaves the link to it). */
@@ -41,6 +44,10 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     private long confirmUntil;
     private String pick = "";
     private long pickMs;
+    /** The Sky Pointer (2.6), and when the screen came on (the hint to tap for it shows for a while then). */
+    private SkyScreen sky;
+    private long startedAt;
+    private static final long SKY_HINT_MS = 12_000L;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -49,6 +56,12 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         dial = new DialView(this);
         dial.setActions(this);
         setContentView(dial);
+        sky = new SkyScreen(this, client, new Runnable() {
+            @Override
+            public void run() {
+                if (sky.on) refresh();
+            }
+        });
         askPermissions();
     }
 
@@ -74,8 +87,13 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     protected void onStart() {
         super.onStart();
         visible = true;
+        startedAt = System.currentTimeMillis();
         client.listen(this);
         client.begin(true);
+        if (sky.on) {
+            if (sky.idle(startedAt)) sky.close();
+            else sky.start();
+        }
         h.removeCallbacks(clock);
         h.post(clock);
     }
@@ -84,6 +102,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     protected void onStop() {
         visible = false;
         h.removeCallbacks(clock);
+        sky.stop();
         client.unlisten(this);
         if (!pick.isEmpty()) {
             // the crown's choice goes now rather than never
@@ -108,6 +127,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     private final Runnable clock = new Runnable() {
         @Override
         public void run() {
+            if (sky.idle(System.currentTimeMillis())) sky.close();
             refresh();
             h.postDelayed(this, 1000);
         }
@@ -139,9 +159,9 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         dial.show(f);
         // while a session runs, the service is started now, while the screen is on (it can't start from the background)
         if (visible && following() && !WatchService.running) WatchService.start(this);
-        // the screen stays on through the countdown, so the button to press is still there
+        // the screen stays on through the countdown, so the button to press is still there, and while the arm points
         JsonTree.Obj s = client.status();
-        boolean keepOn = s != null && "countdown".equals(s.str("state", "")) && client.fresh();
+        boolean keepOn = sky.on || s != null && "countdown".equals(s.str("state", "")) && client.fresh();
         if (keepOn) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
@@ -154,6 +174,9 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             pairing(f, now);
         } else if (now < client.checkUntil && !client.check.isEmpty()) {
             check(f);
+        } else if (sky.on) {
+            sky.face(f, now);
+            skyNews(f, now);
         } else if (more) {
             more(f);
         } else {
@@ -164,6 +187,25 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         }
         if (now < client.toastUntil && !client.toast.isEmpty()) f.toast = client.toast;
         return f;
+    }
+
+    /** In the Sky Pointer: the phone's photo, on the top line (how long it has to go, or that it's ready). */
+    private void skyNews(DialView.Face f, long now) {
+        JsonTree.Obj s = client.status();
+        if (s == null || client.via().isEmpty()) return;
+        String state = s.str("state", "");
+        if ("capturing".equals(state)) {
+            f.top = "Photo: " + clock(s.lng("remainingMs", 0) - (now - client.statusAtMs)) + " to go";
+        } else if ("developing".equals(state)) {
+            f.top = "Photo: developing";
+        } else if ("done".equals(state)) {
+            f.top = "Your photo is ready";
+        }
+    }
+
+    /** The Sky Pointer's button. */
+    private static DialView.Button skyButton() {
+        return new DialView.Button("sky", "Sky", false);
     }
 
     /** The connections in a few words, for the top line before the phone is heard. */
@@ -216,6 +258,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         f.line1 = "Looking for the phone...";
         f.line2 = "Open Night Sky on the phone";
         f.buttons.add(new DialView.Button("more", "More", false));
+        f.buttons.add(skyButton());
         if (!WatchClient.btAllowed(this) && !client.relayUp()) {
             f.toast = "Bluetooth isn't allowed for Night Sky: allow it in the watch's Settings, Apps";
         } else if (!client.btUp() && !client.relayUp() && client.relayState.startsWith("Can't")) {
@@ -261,6 +304,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             f.spin = true;
             f.line1 = detail;
             f.line2 = "Buzzes when it's ready";
+            if (now - startedAt < SKY_HINT_MS) f.toast = "Tap the middle for the Sky Pointer";
         } else {
             // getting ready: placing, holding still, focusing, the check, the countdown
             f.spin = true;
@@ -294,6 +338,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         f.buttons.add(new DialView.Button("stop", sure ? "Sure?" : "Stop", sure));
         boolean muted = s.bool("muted", false);
         f.buttons.add(new DialView.Button(muted ? "unmute" : "mute", muted ? "Sound" : "Mute", false));
+        if (now - startedAt < SKY_HINT_MS) f.toast = "Tap the middle for the Sky Pointer";
     }
 
     /** Ready, done or failed: Start (or Again), with the crown to pick the setup. */
@@ -311,22 +356,22 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             f.tick = true;
             f.progress = 1f;
             String x = s.str("xray", ""), lapse = s.str("lapse", "");
+            int rays = s.integer("cosmic", 0);
             f.line1 = headline;
-            f.line2 = !x.isEmpty() ? "X-ray: " + x : !lapse.isEmpty() ? "Time lapse ready too" : "In Photos on the phone";
+            f.line2 = rays > 0 ? (rays == 1 ? "Caught a cosmic ray!" : "Caught " + rays + " cosmic rays!")
+                    : !x.isEmpty() ? "X-ray: " + x : !lapse.isEmpty() ? "Time lapse ready too" : "In Photos on the phone";
             if (!pick.isEmpty()) f.line2 = "Next: " + name;
             start = new DialView.Button("start", "Again", true);
-            if (s.bool("canAdd", false)) {
-                f.buttons.add(start);
-                f.buttons.add(new DialView.Button("add-time", "+5 min", false));
-            } else {
-                f.buttons.add(start);
-            }
+            f.buttons.add(start);
+            if (s.bool("canAdd", false)) f.buttons.add(new DialView.Button("add-time", "+5 min", false));
+            f.buttons.add(skyButton());
         } else if ("failed".equals(state)) {
             f.title = "That didn't work";
             f.line1 = headline;
             f.line2 = !pick.isEmpty() ? "Next: " + name : detail;
             start = new DialView.Button("start", "Try again", true);
             f.buttons.add(start);
+            f.buttons.add(skyButton());
         } else {
             f.title = "Ready";
             int dot = setup.indexOf(" · ");
@@ -337,6 +382,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             f.line2 = presets.size() > 1 ? "Turn the crown to change" : "";
             start = new DialView.Button("start", "Start", true);
             f.buttons.add(start);
+            f.buttons.add(skyButton());
         }
         start.enabled = canStart;
         if (!canStart && f.toast.isEmpty()) f.toast = s.str("why", "Open Night Sky on the phone to start from the watch");
@@ -376,6 +422,11 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     public void action(String id) {
         long now = System.currentTimeMillis();
         JsonTree.Obj s = client.status();
+        if (sky.on && sky.action(id)) {
+            if (!"tap".equals(id)) Buzz.tick(this);
+            refresh();
+            return;
+        }
         switch (id) {
             case "newcode":
                 client.newCode();
@@ -385,6 +436,10 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
                 break;
             case "more":
                 more = true;
+                break;
+            case "sky":
+                more = false;
+                sky.open();
                 break;
             case "back":
                 more = false;
@@ -407,8 +462,12 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
                 break;
             }
             case "tap":
-                // the middle: the connections and Unpair, and back
-                if (client.paired() && !(now < client.checkUntil)) more = !more;
+                // the middle: the connections and Unpair, and back; while the phone works, the Sky Pointer
+                if (client.paired() && !(now < client.checkUntil)) {
+                    String st = s != null && !client.via().isEmpty() ? s.str("state", "") : "";
+                    if (!more && ("capturing".equals(st) || "paused".equals(st) || "developing".equals(st))) sky.open();
+                    else more = !more;
+                }
                 break;
             default:
                 // start-now, cancel, add-time, mute, unmute: straight to the phone
@@ -432,6 +491,12 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
 
     @Override
     public void rotate(int steps) {
+        if (sky.on) {
+            sky.rotate(steps);
+            if (!sky.finding().isEmpty()) Buzz.tick(this);
+            refresh();
+            return;
+        }
         JsonTree.Obj s = client.status();
         if (s == null || more || client.via().isEmpty() || !client.paired()) return;
         String state = s.str("state", "");

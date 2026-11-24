@@ -341,7 +341,7 @@ public final class XRayVision {
             }
             if (!s.inPhoto && !s.up) continue;
             s.head = t.name + ": " + (s.inPhoto ? "in your photo, " + SkyGuide.where(s.u, s.v)
-                    : String.format(Locale.US, "up in your sky, %.0f° high in the %s", s.altDeg, DeepSpace.compass(s.azDeg)));
+                    : String.format(Locale.US, "up in your sky, %.0f° high in the %s", s.altDeg, Probes.compass(s.azDeg)));
             s.words = words(t, year);
             (s.inPhoto ? in : up).add(s);
         }

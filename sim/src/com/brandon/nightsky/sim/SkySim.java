@@ -107,6 +107,24 @@ public final class SkySim {
     /** The meteors to draw (safe to add to while frames render). */
     public final java.util.List<Meteor> meteors = new java.util.concurrent.CopyOnWriteArrayList<Meteor>();
 
+    /**
+     * Particles through the chip (2.6, none unless added): in one frame each, the levels (electrons over
+     * {@link #electronsPerDn}) each lit pixel gets, as a cosmic ray's muon or a gamma ray's electron leaves them.
+     */
+    public static final class Particle {
+        public final int frame;
+        public final int[] pixel;
+        public final float[] levels;
+
+        public Particle(int frame, int[] pixel, float[] levels) {
+            this.frame = frame;
+            this.pixel = pixel;
+            this.levels = levels;
+        }
+    }
+
+    public final java.util.List<Particle> particles = new java.util.ArrayList<Particle>();
+
     // events
     public int satelliteFrame = -1, planeFrame = -1, meteorFrame = -1;
     /** Noise that stays the same where the picture changes (for comparing two renders of one sky). */
@@ -830,6 +848,10 @@ public final class SkySim {
             if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
             for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
             for (Meteor me : meteors) drawMeteor(img, i, me, psfSigma, haloFrac);
+            for (Particle q : particles) {
+                if (q.frame != i) continue;
+                for (int k = 0; k < q.pixel.length; k++) img[q.pixel[k]] += q.levels[k];
+            }
         }
         // the branch's lit leaves: fixed bright spots
         if (branchT != null) {

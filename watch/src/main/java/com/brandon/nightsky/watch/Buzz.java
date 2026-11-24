@@ -38,6 +38,16 @@ final class Buzz {
         buzz(c, "tick", new long[]{0, 25});
     }
 
+    /** The Sky Pointer closing in on what it's finding: a Geiger counter's click. */
+    static void click(Context c) {
+        buzz(c, "click", new long[]{0, 12});
+    }
+
+    /** The Sky Pointer is on it. */
+    static void found(Context c) {
+        buzz(c, "found", new long[]{0, 180, 90, 180});
+    }
+
     private static void buzz(Context c, String what, long[] pattern) {
         count++;
         last = what;

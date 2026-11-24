@@ -61,6 +61,8 @@ final class DialView extends View {
         /** The ring: 0..1, or -1 for none; {@link #spin}: a turning arc (waiting). */
         float progress = -1f;
         boolean spin;
+        /** An arrow where the big line goes (when there's none), as a clock hand: 0 up, 90 right (degrees; NaN: none). */
+        float arrow = Float.NaN;
         /** The phone's picture, shown in the middle behind the words (null: none). */
         Bitmap picture;
         final List<Button> buttons = new ArrayList<Button>();
@@ -209,6 +211,25 @@ final class DialView extends View {
             tk.lineTo(tx + R * 0.15f, ty - R * 0.11f);
             c.drawPath(tk, p);
             p.setStyle(Paint.Style.FILL);
+        } else if (f.big.isEmpty() && !Float.isNaN(f.arrow)) {
+            // which way to go: a chevron in the middle, and a dot on the ring that way
+            float ax = cx, ay = cy - R * 0.13f, s = R * 0.15f;
+            c.save();
+            c.rotate(f.arrow, ax, ay);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(R * 0.06f);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setColor(RED);
+            Path ar = new Path();
+            ar.moveTo(ax - s, ay + s * 0.45f);
+            ar.lineTo(ax, ay - s * 0.55f);
+            ar.lineTo(ax + s, ay + s * 0.45f);
+            c.drawPath(ar, p);
+            c.restore();
+            p.setStyle(Paint.Style.FILL);
+            double a = Math.toRadians(f.arrow);
+            c.drawCircle(cx + (float) Math.sin(a) * rr, cy - (float) Math.cos(a) * rr, stroke * 1.15f, p);
         }
         p.setTypeface(Typeface.DEFAULT);
         float ly = cy + R * (hasButtons ? 0.14f : 0.20f);

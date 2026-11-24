@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the signed Pixel Watch app (Wear OS) without Gradle, as tools/build_apk.sh builds the phone's: the watch's
-# own code (watch/src/main) plus the link they share with the phone (link/ and the JSON in remote/).
+# own code (watch/src/main) plus the link they share with the phone (link/ and the JSON in remote/), and (2.6) the
+# Sky Pointer's sky maths and the phone's star catalogue (processing/SkyPointer.java and what it needs, assets/stars.csv).
 #
 #   tools/build_watch.sh [out.apk]
 #
@@ -21,7 +22,7 @@ mkdir -p "$B/gen" "$B/classes" "$(dirname "$OUT")"
 echo "== resources"
 aapt2 compile --dir watch/src/main/res -o "$B/res.zip"
 aapt2 link -o "$B/base.apk" -I "$ANDROID_RES_JAR" --manifest watch/src/main/AndroidManifest.xml \
-    --java "$B/gen" --auto-add-overlay "$B/res.zip"
+    -A app/src/main/assets --java "$B/gen" --auto-add-overlay "$B/res.zip"
 
 echo "== java"
 {
@@ -29,6 +30,7 @@ echo "== java"
     ls $SHARED/link/*.java
     echo $SHARED/remote/Json.java
     echo $SHARED/remote/JsonTree.java
+    for c in SkyPointer Astro BrightStars Constellations Planets Probes Rot Stats; do echo $SHARED/processing/$c.java; done
 } > "$B/sources.txt"
 javac -source 8 -target 8 -Xlint:-options -encoding UTF-8 -bootclasspath "$ANDROID_JAR" \
     -d "$B/classes" @"$B/sources.txt"
