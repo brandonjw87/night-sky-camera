@@ -102,6 +102,10 @@ public final class SimCamera {
     private final ExecutorService render = Executors.newSingleThreadExecutor();
     private final List<Shot> pending = new ArrayList<Shot>();
     private long busyUntilNs, seed = 11;
+    /** Particles from space (2.6) waiting for their long exposure (10 s or more), by its number among them. */
+    private final java.util.Map<Integer, SkySim.Particle> particleAt = new java.util.HashMap<Integer, SkySim.Particle>();
+    /** Long exposures asked for so far. */
+    private int longExposures;
     final List<String> events = Collections.synchronizedList(new ArrayList<String>());
     volatile int opens, captures, delivered, failedShots, lostShots, aborted;
 
@@ -165,6 +169,39 @@ public final class SimCamera {
         for (int i = 0; i < 3; i++) v[i] /= n;
     }
 
+    /**
+     * A particle from space through the chip (2.6) in the {@code ahead}-th long exposure (10 s or more) from now: a straight
+     * track {@code length} pixels long from (x, y) at {@code angleDeg} in the picture, or a spot of 2 x 2 when the length is
+     * 1, each pixel {@code level} counts over the sky. A frame is drawn when the app asks for it, one capture ahead, so
+     * {@code ahead} should be 3 or more. Returns which long exposure it went to.
+     */
+    int particle(int ahead, int x, int y, double angleDeg, int length, float level) {
+        List<Integer> px = new ArrayList<Integer>();
+        if (length <= 1) {
+            for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) px.add((y + dy) * W + x + dx);
+        } else {
+            double a = Math.toRadians(angleDeg);
+            for (int k = 0; k <= (length - 1) * 4; k++) {
+                int i = (int) Math.round(y + k / 4.0 * Math.sin(a)) * W + (int) Math.round(x + k / 4.0 * Math.cos(a));
+                if (!px.contains(i)) px.add(i);
+            }
+        }
+        int[] pix = new int[px.size()];
+        float[] lev = new float[pix.length];
+        for (int i = 0; i < pix.length; i++) {
+            pix[i] = px.get(i);
+            lev[i] = level;
+        }
+        synchronized (particleAt) {
+            int n = longExposures + ahead;
+            while (particleAt.containsKey(n)) n++;
+            particleAt.put(n, new SkySim.Particle(1, pix, lev));
+            note(String.format(Locale.US, "a particle from space in long exposure %d: %s at (%d, %d), %d pixels of %.0f counts",
+                    n, length <= 1 ? "a spot" : "a track", x, y, pix.length, level));
+            return n;
+        }
+    }
+
     void note(String s) {
         events.add(String.format(Locale.US, "%8.1f s  %s", (SystemClock.elapsedRealtimeNanos() - t0Ns) / 1e9, s));
     }
@@ -194,6 +231,14 @@ public final class SimCamera {
         final double psf = Math.hypot(basePsf, PX_PER_DIOPTER * Math.abs(focus - bestFocus) / 4);
         final double gain = iso / 700.0, clouds = transparency, light = lightPerS;
         final boolean knocked = bumped, dark = covered;
+        // a particle from space, when one is waiting for this long exposure
+        SkySim.Particle q = null;
+        if (expS >= 10) {
+            synchronized (particleAt) {
+                q = particleAt.remove(++longExposures);
+            }
+        }
+        final SkySim.Particle particle = q;
         int nth = stallReopen ? nthSinceOpen : nthInSession;
         s.stuck = stall || (stallAfter > 0 && nth > stallAfter);
         if (stallAfter > 0 && nth == stallAfter + 1) {
@@ -221,7 +266,9 @@ public final class SimCamera {
                     sim.cloudFrom = sim.cloudTo = -1;
                 }
                 sim.bumpFrame = knocked ? 0 : -1;
+                if (particle != null) sim.particles.add(particle);
                 sim.render(1, raw, info, ++seed);
+                if (particle != null) sim.particles.remove(particle);
                 s.black = info.black.clone();
                 return raw;
             }

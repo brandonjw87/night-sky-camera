@@ -10,9 +10,13 @@ music. When the photo is done: sharp close-ups of the galaxies, nebulae and plan
 whole night as a looping GIF in the gallery (**Mission Replay**), and where NASA's farthest spacecraft were in your
 sky (**Deep Space Network**). Since 2.5 a night can also be a **Time lapse** film, **X-Ray Vision** shows what's in
 the photo that no eye can see (neutron stars, black holes, exploded stars, stars with planets), and **Night Sky on
-your Pixel Watch** starts, follows and stops it all from your wrist, over Bluetooth or the internet.
+your Pixel Watch** starts, follows and stops it all from your wrist, over Bluetooth or the internet. Since 2.6 the
+photo also brings the particles from space that shot through the camera while it looked up (**Cosmic Ray Hunter**),
+the map to the Sun that the Voyagers carry, redrawn for your night (**Earth's Address**), and your sky as seen from a
+planet round another star (**Postcard from Another World**); and the watch's **Sky Pointer** names whatever you point
+your arm at.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.5.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.6.
 
 ## What it does
 
@@ -91,6 +95,20 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.5.
   ring fill as the frames come in, add 5 minutes, Stop or Mute from your wrist, and feel a buzz when the photo is
   ready. Over Bluetooth when the phone is near (with the live picture), over the internet when it isn't. Steps
   below, under **Night Sky on your Pixel Watch**.
+- **Sky Pointer** (2.6, on the watch). Point your arm at the sky and the watch names what's there (833 stars, the
+  Moon, the planets, galaxies, black holes, Voyager 1 and the other far travellers), how high and which way. Or turn
+  the crown to pick one and an arrow steers your arm to it, clicking faster as you close in, even below the horizon.
+- **Cosmic Ray Hunter** (2.6). The particles from space (muons, mostly) that went straight through the camera's chip
+  while it looked at the sky: each lit a few pixels in one frame only, so the photo never shows them. Found in the
+  frames before they're deleted (stars, satellites, planes, meteors, clouds and hot pixels left out), shown under a
+  microscope with how much energy each left and when, and a map of where they struck.
+- **Earth's Address** (2.6). The pulsar map that Pioneer 10 and 11 and both Voyagers carry, the way to the Sun for
+  whoever finds them, redrawn for the night of your photo: each pulsar's tick worked out for that date (they slow
+  down, so the map gives the date as well as the place), the ones in your photo or up in your sky picked out, your
+  photo where the Sun is. **Hear its pulsars** plays them at their real speeds.
+- **Postcard from Another World** (2.6). The night sky from a real planet round another star (one whose star is in
+  your photo, else one that was up, else Proxima b): every star moved and made brighter or fainter for being seen
+  from there, the constellations pulled out of shape, our Sun one star among the rest; and the planet writes home.
 - **HDR photos.** Photos are saved as Ultra HDR photos: on this phone's screen, in Google Photos and in the app,
   the stars shine up to four times brighter than white. Anywhere else they look exactly as before.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
@@ -180,9 +198,10 @@ Install it with Google's USB tool instead:
 
 ## Night Sky on your Pixel Watch
 
-Version 2.5 comes with a second app for the watch, `NightSkyWatch.apk`, next to `NightSky.apk`. With it on the
+Since version 2.5 there's a second app for the watch, `NightSkyWatch.apk`, next to `NightSky.apk`. With it on the
 watch you can start a photo, follow it and stop it from your wrist: handy when the phone is lying screen-down in
-the grass and you're sitting in the car, or inside where it's warm.
+the grass and you're sitting in the car, or inside where it's warm. Since 2.6 it's also a **Sky Pointer**: point
+your arm at the sky and it says what's there.
 
 ### Bluetooth or the internet: what works where
 
@@ -265,7 +284,21 @@ You pair once: from then on, opening Night Sky on the watch finds the phone by i
   taps once when the first frame starts, and buzzes long-short-long when the photo is ready, with a notification
   saying so (and what X-Ray Vision found).
 - **Done:** **Again** takes another the same way; **+5 min** adds five more minutes stacked into the same photo.
-- **Tap the middle** of the screen for the connections and **Unpair**.
+  When the photo caught cosmic rays, it says how many.
+- **Tap the middle** of the screen for the connections and **Unpair** (while a photo is running: the Sky Pointer).
+- **Sky Pointer** (2.6): tap **Sky** (on Ready, Done, or when something failed; while a photo is running, tap the
+  middle) and hold your arm out straight at the sky. The watch names what you're pointing at, what it is, how high
+  and which way. **Find** works the other way round: turn the crown to pick something (the Moon, the planets, the
+  spacecraft, the black holes, the galaxies, Polaris and the brightest stars that are up, Pluto, the Sun), then move
+  your arm the way the arrow points (**Higher**, **To the right**, **Turn around**...). The clicks on your wrist come
+  faster as you close in, and it buzzes with **Got it!** when you're on it. Below the horizon too: then you're
+  pointing through the Earth. **What's there** goes back to naming, **Back** closes it.
+  - It needs to know where you are: the phone tells it (the place it saved, to about 10 km), so open Night Sky on
+    the phone once with the watch connected. After that it works anywhere, with no phone and no connection.
+  - The top says how sure the watch's compass is (±4° is good). **Compass unsure**: wave the watch in a figure 8 a
+    few times, away from cars and metal railings.
+  - It takes your arm's direction from the watch's crown side, toward your hand, as a watch is usually worn. If you
+    wear yours with the crown toward your elbow, tap the middle of the Sky Pointer once: it flips, and remembers.
 
 If the watch says **Looking for the phone**, open Night Sky on the phone: the phone only listens while the app is
 open or a photo is running. If the Bluetooth way never connects, the internet way still does; check that Night Sky
@@ -335,6 +368,16 @@ Under the photo:
 - **Deep Space Network** (2.4): which of the far travellers were in the photo, which were up in your sky (how
   high, which way) and which were below your horizon, how far each one is, and how long a radio message takes:
   "one sent when you took this photo arrives at 6:31 pm the next day". **Show all** lists the rest.
+- **Cosmic Ray Hunter** (2.6): how many particles from space went through the chip, the picture of them under the
+  microscope (tap it to open it full size), and what they are. **Share the particles** sends the picture. It's in
+  `Pictures/NightSky` as `..._cosmic.jpg`. "No particles from space this time" happens: the longer the night, the
+  more you catch.
+- **Earth's Address** (2.6): the pulsar map redrawn for your night (tap to open it), which pulsars were in your photo
+  or up in your sky, and how many of the map's digits have changed since 1971 (the blue ones). **Hear its
+  pulsars** plays each pulsar's tick at its real speed, one after another (tap again to stop); **Share the map**
+  sends it. In `Pictures/NightSky` as `..._address.jpg`.
+- **Postcard from Another World** (2.6): the postcard (tap to open it) and the planet's message home. **Send the
+  postcard** shares it. In `Pictures/NightSky` as `..._postcard.jpg`.
 - **Hear the Stars**: **Hear it** plays the photo as music where the photo is: a line sweeps across it and each
   star rings as it's reached, in its own colour, blue stars high and red stars low, the brightest loudest; the
   planets, the Moon and the stars you named say their names (tap to stop). **Share the song** makes a 27-second
@@ -556,7 +599,8 @@ tap **Stop the viewer** on the phone.
 - What goes online: satellite orbits from CelesTrak (nothing is sent) and the cloud forecast from Open-Meteo
   (your place rounded to about 10 km). Both can be turned off under Advanced. With a watch paired, the watch's
   messages go through ntfy.sh, locked with your phone's and watch's own key (the relay sees only scrambled text,
-  and when they talk). Nothing else leaves the phone.
+  and when they talk); since 2.6 they include the phone's place to about 10 km, for the Sky Pointer. Nothing else
+  leaves the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
   the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
   couldn't run ends on).
@@ -611,6 +655,17 @@ Algorithms* (2nd ed., 1998), chapter 44. The close-ups' drizzle is A. S. Fruchte
 Deep Field's); the background model follows [GraXpert](https://github.com/Steffenhir/GraXpert)'s idea of a smooth
 surface through the sky's own samples, and the halo fix the purple fringe that [Siril](https://siril.org/)'s tools
 take out. No code was taken from any of them.
+
+Earth's Address (2.6) redraws the pulsar map of the Pioneer plaques and the Voyager Golden Records (F. Drake and C.
+Sagan, 1972) from Wm. Robert Johnston's reading of it ([The pulsar map](https://johnstonsarchive.net/astro/pulsarmap.html):
+its binary periods, its lines' angles and lengths), with each pulsar's period, slowdown and distance from the
+[ATNF Pulsar Catalogue](https://www.atnf.csiro.au/research/pulsar/psrcat/) (R. N. Manchester et al., 2005), and
+B0950+08's distance from W. F. Brisken et al. (2002). Postcard from Another World's planets are X-Ray Vision's
+stars with planets, named as the IAU named them where it has, checked against the
+[NASA Exoplanet Archive](https://exoplanetarchive.ipac.caltech.edu/); its stars are moved by their HYG distances.
+Cosmic Ray Hunter's muon count (about one a minute through each square centimetre at sea level) is the Particle
+Data Group's figure (*Review of Particle Physics*, "Cosmic rays"). The Sky Pointer turns the watch's compass to true
+north with Android's own model of the Earth's magnetic field (the World Magnetic Model).
 
 ## For developers
 
@@ -702,13 +757,19 @@ app/src/main/java/com/brandon/nightsky/
         StarHalo        purple star halos (2.4): each colour's star size measured, the colours matched
         DeepZoom        Deep Space Zoom (2.4): the frames drizzled again at twice the resolution into close-ups
         MissionReplay, GifWriter  Mission Replay (2.4): the night as a looping GIF; the GIF89a encoder
-        DeepSpace       Deep Space Network (2.4): the Voyagers, Pioneers, New Horizons, L2, Pluto, Jupiter's moons
+        DeepSpace       Deep Space Network (2.4): the far travellers in the photo and its card, Jupiter's moons
+        Probes          where the Voyagers, Pioneers, New Horizons, L2 and Pluto are (2.4's, on its own since 2.6)
         TimeLapse       the time lapse (2.5): every unit rendered as the photo is, in three looks, captioned, to MP4
         XRayVision      X-Ray Vision (2.5): the invisible things in the photo, their picture, the pulsars' clicks
+        CosmicRays      Cosmic Ray Hunter (2.6): particles found in the kept frames, things that aren't taken out, the picture
+        GoldenRecord    Earth's Address (2.6): the pulsar map redrawn for a night, its picture, the pulsars' tour
+        Postcard        Postcard from Another World (2.6): the sky from another star's planet, the card, its message
+        SkyPointer      the watch's Sky Pointer (2.6): what's in the sky, what the arm points at, the way to a target
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
 watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
-                        DialView), WatchClient (Bluetooth and the relay), WatchService (following with the screen off)
+                        DialView), WatchClient (Bluetooth and the relay), WatchService (following with the screen off),
+                        SkyScreen (the Sky Pointer, 2.6: the rotation sensor, the arrow and the clicks)
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
                         a night through Mission Control; MissionDemo: the page served from a simulated night)
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
@@ -772,6 +833,12 @@ The 2.5 tests: `TimeLapseTest` (an output folder: the three looks from a simulat
 `LinkTest` (the watch link: RFC 5869's HKDF vector, sealing and tampering, pairing with right and wrong codes and a
 stranger's keys, replays, Bluetooth frames, and the relay through `MockNtfy`, a stand-in for ntfy.sh with its
 limits, dropping out and coming back).
+The 2.6 tests: `CosmicTest` (an output folder: particles put into a simulated night with stars, a satellite, a plane,
+a meteor, clouds, a knock and hot pixels, four tracks right by or across a hot pixel, then found again, each once
+and nothing else; `-Dcosmic.seed` and `-Dcosmic.sim` pick other particles and another night), `RecordTest` (an output folder: the pulsar map against the plaque's binary periods and the
+catalogue), `PostcardTest` (an output folder: the sky from Proxima b and 51 Pegasi against hand sums, the card) and
+`PointerTest` (the Sky Pointer's sky against an independent sidereal-time sum, the arm from the sensor, pointing and
+finding, its speed).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -784,5 +851,6 @@ with a simulated camera that renders the real stars and can stop, stall, fail or
 `robo/run.sh Monkey` taps every control on every screen, `robo/run.sh Intro` checks the opening film,
 `robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, `robo/run.sh Stops` checks
 the stop recorder, and `robo/run.sh Night wrist` (2.5) pairs the watch app with the phone and runs a session from
-it, over the internet alone and then over Bluetooth alone, drawing each watch screen to a picture.
+it, over the internet alone and then over Bluetooth alone, drawing each watch screen to a picture (since 2.6 it also
+points the watch's Sky Pointer at a star and steers it to the Moon, through a simulated rotation sensor).
 [robo/README.md](robo/README.md) lists every scenario.

@@ -132,6 +132,13 @@ public class Night {
         laptop.start();
         hold(2500);
         putDown();
+        // three particles from space through the chip (2.6), each in one frame, for Cosmic Ray Hunter to find
+        untilFrames(2);
+        SimCamera cam = SimCamera.get();
+        cam.particle(3, 520, 410, 30, 12, 120);
+        cam.particle(6, 1310, 905, 0, 1, 160);
+        cam.particle(9, 905, 1210, 115, 8, 110);
+        particlesSent = 3;
         follow(20 * 60_000L);
         report();
         Monkey.say("  result screen: " + labels());
@@ -143,6 +150,7 @@ public class Night {
         missionCheck();
         nasaCheck();
         xrayCheck();
+        extrasCheck();
     }
 
     // ---- the Pixel Watch (2.5) ----
@@ -2873,6 +2881,100 @@ public class Night {
         if (Monkey.field(Monkey.a, "beats") != null) Monkey.problem(scenario + ": the pulsars still play after a tap");
     }
 
+    /**
+     * The 2.6 extras on the result screen: Cosmic Ray Hunter, Earth's Address and the postcard, each a picture in the gallery
+     * (kept as base_cosmic.jpg and so on to look at) and a card with its share; the map's pulsars played (the button says
+     * which one is ticking), X-Ray Vision's taking over when tapped while they play, and a tap stopping those.
+     */
+    static void extrasCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result for the 2.6 extras' checks");
+            return;
+        }
+        if (r.cosmicHits < 0) Monkey.problem(scenario + ": Cosmic Ray Hunter didn't run");
+        // the particles sent through the chip found (one may fall on a star and be left out with it), and nothing else
+        if (particlesSent > 0 && (r.cosmicHits < particlesSent - 1 || r.cosmicHits > particlesSent)) {
+            Monkey.problem(scenario + ": Cosmic Ray Hunter found " + r.cosmicHits + " of the " + particlesSent + " particles sent through the chip: "
+                    + r.cosmicWords);
+        }
+        if (r.cosmicHits > 0 && !r.cosmicWords.startsWith(r.cosmicHits == 1 ? "1 particle from space" : r.cosmicHits + " particles from space")) {
+            Monkey.problem(scenario + ": Cosmic Ray Hunter's words don't say how many: " + r.cosmicWords);
+        }
+        extraPicture("Cosmic Ray Hunter", r.cosmic, r.cosmicUri, "cosmic", 1600, 1600, r.cosmicWords);
+        extraPicture("Earth's Address", r.address, r.addressUri, "address", 1600, 1600, r.addressWords);
+        extraPicture("Postcard from Another World", r.postcard, r.postcardUri, "postcard", 1800, 1200, r.postcardFrom + ": " + r.postcardWords);
+        if (r.postcardFrom.isEmpty() || !r.postcardWords.startsWith("Wish you were here!")) {
+            Monkey.problem(scenario + ": the postcard says nothing (" + r.postcardFrom + ": " + r.postcardWords + ")");
+        }
+        List<String> texts = new ArrayList<String>();
+        collectTexts(Monkey.a.getWindow().getDecorView(), new String[]{""}, texts);
+        for (String card : new String[]{"Cosmic Ray Hunter", "Earth's Address", "Postcard from Another World"}) {
+            if (!texts.contains(card)) Monkey.problem(scenario + ": no " + card + " card on the result screen");
+        }
+        shareCheck("Share the particles", Intent.ACTION_SEND, "image/jpeg", r.cosmicUri);
+        shareCheck("Share the map", Intent.ACTION_SEND, "image/jpeg", r.addressUri);
+        shareCheck("Send the postcard", Intent.ACTION_SEND, "image/jpeg", r.postcardUri);
+        // the map's pulsars, one after another
+        View map = findLabel("Hear its pulsars");
+        if (map == null) {
+            Monkey.problem(scenario + ": no Hear its pulsars on Earth's Address: " + labels());
+            return;
+        }
+        map.performClick();
+        String ticking = waitText(map, "\u00b7 stop");
+        Monkey.say("  Earth's Address's pulsars: " + ticking);
+        if (!ticking.contains("\u00b7 stop")) Monkey.problem(scenario + ": Hear its pulsars didn't say which one is ticking: " + ticking);
+        View xr = findLabel("Hear the pulsar");
+        if (xr != null) {
+            // X-Ray Vision's pulsars tapped while the map's tick: they take over
+            xr.performClick();
+            String playing = waitText(xr, "\u00b7 stop");
+            run(400);
+            String mapNow = String.valueOf(((android.widget.TextView) map).getText());
+            Monkey.say("  then X-Ray Vision's: " + playing + "; the map's button: " + mapNow);
+            if (!playing.contains("\u00b7 stop")) Monkey.problem(scenario + ": X-Ray Vision's pulsars didn't take over from the map's: " + playing);
+            if (!mapNow.equals("Hear its pulsars")) Monkey.problem(scenario + ": the map's button still says " + mapNow);
+            xr.performClick();
+        } else {
+            map.performClick();
+        }
+        run(300);
+        String after = String.valueOf(((android.widget.TextView) map).getText());
+        if (!after.equals("Hear its pulsars")) Monkey.problem(scenario + ": a tap didn't stop the pulsars: " + after);
+        if (Monkey.field(Monkey.a, "beats") != null) Monkey.problem(scenario + ": the pulsars still play after a tap");
+    }
+
+    /** Particles from space sent through the simulated chip in this scenario (2.6). */
+    static int particlesSent;
+
+    /** A 2.6 extra's picture: in the gallery at its size, a copy kept to look at, its words said. */
+    static void extraPicture(String what, File own, android.net.Uri uri, String suffix, int w, int h, String words) throws Exception {
+        File f = uri != null ? FakeMediaStore.file(uri) : null;
+        if (own == null || !own.isFile() || f == null || !f.isFile()) {
+            Monkey.problem(scenario + ": no " + what + " picture in the gallery (" + own + ", " + uri + ")");
+            return;
+        }
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), o);
+        Monkey.say(String.format(Locale.US, "  %s: %s, %d KB, %d x %d: %s", what, f.getName(), f.length() / 1024, o.outWidth, o.outHeight, words));
+        java.nio.file.Files.copy(f.toPath(), new File(Monkey.out, scenario + "_" + suffix + ".jpg").toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        if (o.outWidth != w || o.outHeight != h) Monkey.problem(scenario + ": the " + what + " picture is " + o.outWidth + " x " + o.outHeight);
+        if (words.trim().isEmpty() || words.trim().equals(":")) Monkey.problem(scenario + ": " + what + " says nothing");
+    }
+
+    /** The control's text once it contains {@code part} (5 s at most), or as it is then. */
+    static String waitText(View v, String part) throws Exception {
+        String t = "";
+        for (long until = System.currentTimeMillis() + 5000; System.currentTimeMillis() < until && !t.contains(part); ) {
+            run(200);
+            t = String.valueOf(((android.widget.TextView) v).getText());
+        }
+        return t;
+    }
+
     /** Whether {@code v} or a view in it shows a text starting with {@code s}. */
     static boolean hasText(View v, String s) {
         if (v instanceof android.widget.TextView && String.valueOf(((android.widget.TextView) v).getText()).startsWith(s)) return true;
@@ -2995,6 +3097,22 @@ public class Night {
                 Monkey.problem(scenario + ": opened again, no X-Ray Vision (" + o.xray + ", " + o.xrayUri + ", " + o.xrayWords + ")");
             } else {
                 Monkey.say("  opened again, X-Ray Vision still there: " + o.xrayWords);
+            }
+        }
+        // 2.6: and its three extras, the same gallery copies
+        if (r.cosmicHits >= 0 || r.address != null || r.postcard != null) {
+            boolean same = r.cosmicHits == o.cosmicHits && String.valueOf(r.cosmicUri).equals(String.valueOf(o.cosmicUri))
+                    && String.valueOf(r.addressUri).equals(String.valueOf(o.addressUri)) && r.addressWords.equals(o.addressWords)
+                    && String.valueOf(r.postcardUri).equals(String.valueOf(o.postcardUri)) && r.postcardFrom.equals(o.postcardFrom)
+                    && r.postcardWords.equals(o.postcardWords);
+            boolean shown = (r.cosmicUri == null || findLabel("Share the particles") != null) && (r.addressUri == null || findLabel("Share the map") != null)
+                    && (r.postcardUri == null || findLabel("Send the postcard") != null);
+            if (!same || !shown) {
+                Monkey.problem(scenario + ": opened again, the 2.6 extras aren't all back (" + o.cosmicHits + " " + o.cosmicUri + ", " + o.addressUri
+                        + ", " + o.postcardUri + " " + o.postcardFrom + "; on the screen: " + shown + ")");
+            } else {
+                Monkey.say("  opened again, still there: Cosmic Ray Hunter (" + o.cosmicHits + " caught), Earth's Address, the postcard from "
+                        + o.postcardFrom);
             }
         }
     }
@@ -3215,9 +3333,12 @@ public class Night {
 
     static View findLabel(String text) throws Exception {
         List<View> cs = Monkey.controls();
+        // the very label first ("Hear it" is the song's, not Earth's Address's "Hear its pulsars" above it), then one it starts
         for (View v : cs) {
-            String l = Monkey.label(v);
-            if (l.equals(text) || l.startsWith(text)) return v;
+            if (Monkey.label(v).equals(text)) return v;
+        }
+        for (View v : cs) {
+            if (Monkey.label(v).startsWith(text)) return v;
         }
         // a control with several lines of text (the result screen's "4 frames, all used. | Session report"): any of them
         for (View v : cs) {

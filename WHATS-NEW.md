@@ -1,5 +1,131 @@
 # Night Sky Camera: what's new
 
+## Version 2.6: the Sky Pointer, and three more from NASA's notebook
+
+One more thing for the watch and three more NASA-style surprises on the phone. On the watch, the **Sky Pointer**:
+point your arm at the sky and it names what's there, or pick something and it steers your arm to it. On the phone,
+three new cards on the result screen, all made from the same five minutes of starlight with nothing to switch on:
+**Cosmic Ray Hunter** (the particles from space that shot through the camera while it looked up), **Earth's
+Address** (the map to the Sun that the Voyagers carry, redrawn for your night) and **Postcard from Another World**
+(your sky as seen from a real planet round another star, with our Sun in it).
+
+### What's new
+
+- **Sky Pointer, on the watch.** Tap **Sky** on the watch (while a photo is running, tap the middle of the screen)
+  and hold your arm out straight at the sky: the watch says what you're pointing at, how high it is and which way.
+  "Capella: the brightest star in Auriga, 43 light years away, 77° up in the north-east." It knows 833 named stars,
+  the Moon, the planets, Pluto, galaxies and nebulae, three black holes, and the farthest things people have made:
+  Voyager 1 and 2, New Horizons, the two Pioneers, and the spot the James Webb telescope circles.
+  - **Find** turns it round: turn the crown to pick something (the Moon, the planets, the spacecraft, the black
+    holes, the galaxies, Polaris and the brightest stars that are up, Pluto, the Sun) and an arrow on the watch says
+    which way to move your arm, **Higher**, **To the right**, **Turn around**, with clicks on your wrist that come
+    faster as you close in, until **Got it!** and a buzz.
+  - It finds things **below the horizon** too: then you're pointing down through the Earth, at Voyager 1 under your
+    feet, or at the black hole in the middle of the galaxy on the other side of the planet.
+  - It works out where your arm points from the watch's own compass and motion sensors, and where you are from the
+    phone (it tells the watch the place it saved, to about 10 km). After that it needs no phone and no connection.
+- **Cosmic Ray Hunter.** While the camera stares at the sky, particles from space go straight through its chip.
+  Most are muons: cosmic rays (atoms flung across the galaxy by exploding stars) smash into the top of the air and
+  make showers of them, about one through your fingernail every minute. Each lights a few pixels in a single frame,
+  so the stacking throws it away and your photo never shows it. Now, before the frames are deleted, the phone goes
+  through every one and catches them: a **spot** where one came straight down, a short straight **track** where one
+  came in at an angle, a curly **worm** for an electron a gamma ray knocked loose. The picture shows the brightest
+  under a microscope, magnified in heat colours, each with how many pixels it lit, how much energy it left (in keV)
+  and the second it struck, next to a map of the chip with every hit. Things that aren't particles are left out:
+  stars, satellites, planes, meteors, passing clouds, a knock, hot pixels. The watch's Done screen says "Caught 3
+  cosmic rays!"
+- **Earth's Address.** Pioneer 10 and 11 (1972 and 1973) carry a gold plaque and both Voyagers (1977) a Golden
+  Record, each with a map to the Sun for whoever finds them: 14 lines out from the Sun, each to a pulsar (a dead
+  star that ticks like a clock), as long as it is far, with how fast it ticks written along it in binary, counted
+  in flips of a hydrogen atom. Pulsars slow down, each at its own rate, so the map gives the date as well as the
+  place. After developing, the phone redraws it for the night of your photo: every pulsar's tick worked out for that
+  date (the digits that changed since 1971 in blue), the ones that were in your photo or up in your sky picked out,
+  and your photo in the middle, where the Sun is: YOU ARE HERE. **Hear its pulsars** plays them one by one, each
+  clicking at its real speed.
+- **Postcard from Another World.** A postcard from a real planet round another star: one whose star is in your
+  photo (16 of them, from 51 Pegasi's Dimidium, the first planet found round a star like the Sun, to TRAPPIST-1e
+  and Kepler-186f), else one whose star was up that night, else Proxima b, the nearest. The front is the night sky
+  from there: every star in the app's catalogue moved to where it would be seen from that planet, brighter or
+  fainter for being nearer or farther, the constellations pulled out of shape, and our Sun, circled, just one star
+  among the rest. On the back the planet writes home: how bright our Sun is from there and in which constellation,
+  the year the sunlight it sees left the Sun, which star is brightest there, and how long Voyager 1 would take to
+  get there. The stamp is your photo. **Send the postcard** shares it.
+
+### Try tonight
+
+Late November and December evenings, most of the US:
+
+1. **A 5-minute Deep sky photo straight up, after dark,** as usual. The result screen then has all three new cards:
+   count your cosmic rays, find your pulsars (B2217+47 and B0329+54 pass nearly overhead), and read your postcard
+   (with Andromeda overhead it will likely come from Saffar, the planet of Upsilon Andromedae, 44 light years away).
+2. **The Sky Pointer, from the yard:** tap **Sky** on the watch and point at the brightest thing up. Then **Find**
+   and turn the crown: Saturn is high in the south with Neptune right next to it (you can't see Neptune, but the
+   watch knows where it is), Cygnus X-1, the first black hole ever found, is in the west, and the Andromeda Galaxy
+   is almost straight up. Then Voyager 1: it sets in the west-northwest around 8 pm, so after that you'll be
+   pointing at the ground.
+3. **With the kids:** take turns. One picks something on the watch, the other has to find it with the arrow.
+
+### Good to know
+
+- **Not tried on a real phone or watch yet**, like 2.5. All of it ran on simulators (below).
+- **The Sky Pointer is only as good as the watch's compass:** about 5 to 10 degrees at best, so it's generous (a
+  bright thing counts as pointed at from farther off). The top of its screen says how sure the compass is. If it
+  says **Compass unsure**, wave the watch in a figure 8 a few times, away from cars and metal railings.
+- **Which way your arm points** is taken from the watch's crown side, toward your hand, as a watch is usually worn.
+  If you wear it with the crown toward your elbow, tap the middle of the Sky Pointer once: it flips, and remembers.
+- **The Sky Pointer needs the phone to have said where you are** at least once after pairing: open Night Sky on the
+  phone with the watch connected, then it works anywhere.
+- **How many cosmic rays a night catches** depends on the night and the place: at sea level the sums say about
+  3 or 4 muons through this camera's chip in 5 minutes, more up a mountain or in a plane, plus a few worms.
+  Some photos will catch none (it says so). How faint a particle the Pixel's chip really shows is one thing only a
+  real night can tell.
+- **The three new cards** come with every new Deep sky, Earth's turn and Time lapse photo (not Star trails, nor
+  an edit or a merge of an old one). If the sky isn't recognised, the map still comes, only without the pulsars in
+  the photo picked out, and the postcard comes from a planet whose star was up that night.
+
+### Install it
+
+- **The phone:** exactly as before (same signing key, so it installs over 2.5 and keeps everything): the README's
+  **Install it on your phone**.
+- **The watch:** `NightSkyWatch.apk` again, the README's **Put it on the watch**, step 6 only (with the address the
+  watch shows that time). It keeps the pairing: no need to pair again.
+
+### Tested
+
+All on the simulator and the app off the phone, as before (nothing here has run on the Pixel or the watch yet):
+
+- **The whole test gate: 52 of 52 passed.** That's all 46 simulator tests (four new ones) and the six simulated
+  nights, whose stacking came out line for line the same as 2.5's.
+- **Cosmic Ray Hunter (CosmicTest):** particles put into a simulated night's frames (spots, tracks at every angle,
+  curly worms, from barely over the noise to bright) on a night that also has thousands of drifting stars, a
+  satellite, a plane's blinking lights, a meteor, clouds, a knock and hot pixels, four of the tracks right by or
+  across a hot pixel. On eight different nights with eight different sets of particles: at least 9 in 10 of the
+  particles found every time (the rest are the faintest one-pixel spots), all 32 by hot pixels among them, each
+  counted once, their light measured, and nothing else ever taken for one, on the same nights without particles
+  too. Finding them takes a few seconds.
+- **Two bugs caught after the gate, both fixed.** The simulated night with the watch (last below) sent three
+  particles through the chip and the hunter caught only two. The third had landed beside a hot pixel (one that
+  glows in every frame), which looked like a star in the frames either side, so the particle was thrown out as
+  part of it: a hot pixel framing an innocent cosmic ray. Hot pixels are now mended before the hunt, and a
+  particle's light that fell on one still counts (2.6's first try found 6 of those 32 tracks; now all 32). Testing
+  that turned up the second: a particle found in two pieces was counted twice, and two pieces side by side plus
+  any other hit looked like "three dots in a line", a plane's blinking lights, so all of them were thrown out. The
+  pieces are now joined back into one particle.
+- **Sky Pointer (PointerTest, 25 checks):** where the stars, the Sun, the Moon, the planets and the
+  spacecraft are, against a separate sum; the arm's direction from the watch's sensor, the crown flipped, and the
+  compass turned to true north; pointing at Vega, the Moon, Jupiter, Sagittarius A*, straight down and at empty
+  sky; the arrow's directions, "Got it!", the clicks speeding up; Neptune found below the horizon; and fast enough to
+  keep up with your arm (a third of a millisecond).
+- **Earth's Address (RecordTest) and the postcard (PostcardTest):** the 14 pulsars against the plaque's own binary
+  numbers and the published catalogue, each one's tick for 2026, the lines' lengths and angles; the postcard's star
+  shifts against hand sums (Alpha Centauri from Proxima b, the Sun from 51 Pegasi), its constellations, its message.
+- **A whole night through the app itself, with the watch on a simulated wrist:** the Sky Pointer opened from the
+  watch, pointed at Capella (named), **Find** steered from 30° under the Moon to **Got it!** and the buzz, the crown
+  moving on to Mars, the arm flipped and back; then the photo, developed with the three new cards. Three particles
+  sent through the simulated chip, all three caught and nothing else: **0 problems** (the first run caught two,
+  which is how the first bug above came to light). And every screen tapped through, 41 screens and 1,049 taps:
+  0 problems.
+
 ## Version 2.5: the watch, the time lapse and X-Ray Vision
 
 Three new things: **Night Sky on your Pixel Watch** (start, follow and stop a photo from your wrist, over Bluetooth

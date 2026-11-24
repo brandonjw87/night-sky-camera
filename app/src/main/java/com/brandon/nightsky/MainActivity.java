@@ -6955,8 +6955,9 @@ public final class MainActivity extends Activity {
 
     /** Whether the X-Ray Vision card shows all its things (else the first few). */
     private boolean xrayAll;
-    /** The pulsars' beats playing (null if not). */
+    /** The pulsars' beats playing (null if not), and whose: X-Ray Vision's ("xray") or Earth's Address's ("map", 2.6). */
     private SongPlayer beats;
+    private String beatsOf = "";
     /** Seconds of each pulsar's beat, and of quiet after it. */
     private static final double BEAT_EACH = 4.0, BEAT_GAP = 0.8;
 
@@ -7031,7 +7032,7 @@ public final class MainActivity extends Activity {
         }
         if (!pulsars.isEmpty()) {
             final String label = pulsars.size() == 1 ? "Hear the pulsar" : "Hear the pulsars";
-            final Button hear = smallButton(beats != null ? "Stop" : label, true);
+            final Button hear = smallButton(beats != null && "xray".equals(beatsOf) ? "Stop" : label, true);
             hear.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -7131,7 +7132,7 @@ public final class MainActivity extends Activity {
         final List<GoldenRecord.Mark> marks = addressMarks(r);
         if (!marks.isEmpty()) {
             final String label = "Hear its pulsars";
-            final Button hear = smallButton(beats != null ? "Stop" : label, true);
+            final Button hear = smallButton(beats != null && "map".equals(beatsOf) ? "Stop" : label, true);
             hear.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -7164,9 +7165,13 @@ public final class MainActivity extends Activity {
     /** The map's pulsars one after another (the button says which is ticking); a second tap stops them. */
     private void playMap(final List<GoldenRecord.Mark> ms, final Button b, final String label) {
         if (beats != null) {
+            // its own stop; X-Ray Vision's pulsars playing are stopped for these instead
+            boolean mine = "map".equals(beatsOf);
             stopBeats();
-            b.setText(label);
-            return;
+            if (mine) {
+                b.setText(label);
+                return;
+            }
         }
         stopSong();
         final SongPlayer pl = new SongPlayer(GoldenRecord.tour(ms, MAP_EACH, MAP_GAP, StarSong.RATE), StarSong.RATE);
@@ -7177,6 +7182,7 @@ public final class MainActivity extends Activity {
         android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         if (am != null && am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0) toastish("Turn the volume up to hear the pulsars!");
         beats = pl;
+        beatsOf = "map";
         b.post(new Runnable() {
             @Override
             public void run() {
@@ -7187,7 +7193,8 @@ public final class MainActivity extends Activity {
                 }
                 int k = (int) Math.max(0, Math.min(ms.size() - 1, Math.floor(pl.position() / (MAP_EACH + MAP_GAP))));
                 GoldenRecord.Mark m = ms.get(k);
-                b.setText(m.p.name + ": " + XRayVision.spinWords(1 / m.seconds) + " \u00b7 stop");
+                String who = m.p.nick.isEmpty() ? m.p.name : Character.toUpperCase(m.p.nick.charAt(0)) + m.p.nick.substring(1);
+                b.setText(who + ": " + XRayVision.spinWords(1 / m.seconds) + " \u00b7 stop");
                 b.postDelayed(this, 150);
             }
         });
@@ -7227,9 +7234,13 @@ public final class MainActivity extends Activity {
     /** The pulsars' beats one after another (the button says which is playing); a second tap stops them. */
     private void playBeats(final List<XRayVision.Spot> ps, final Button b, final String label) {
         if (beats != null) {
+            // its own stop; Earth's Address's pulsars playing are stopped for these instead
+            boolean mine = "xray".equals(beatsOf);
             stopBeats();
-            b.setText(label);
-            return;
+            if (mine) {
+                b.setText(label);
+                return;
+            }
         }
         stopSong();
         final SongPlayer pl = new SongPlayer(XRayVision.tour(ps, BEAT_EACH, BEAT_GAP, StarSong.RATE), StarSong.RATE);
@@ -7240,6 +7251,7 @@ public final class MainActivity extends Activity {
         android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         if (am != null && am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0) toastish("Turn the volume up to hear the pulsars!");
         beats = pl;
+        beatsOf = "xray";
         b.post(new Runnable() {
             @Override
             public void run() {

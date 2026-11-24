@@ -15,12 +15,14 @@ import java.util.Locale;
  * angle a short straight track; an electron knocked loose by a gamma ray (from the rocks, the concrete, the phone's own
  * glass) wanders, and lights a curly worm.
  * <p>
- * Found on the frames as they were stored, before they're deleted: a pixel well above its patch of sky (8 sigma) that
- * the frames before and after don't have, neither where the sky's drift has moved that spot of sky (so it isn't a star)
- * nor at the same pixel (so it isn't a hot pixel or a satellite parked over the equator); grown into the pixels round
- * it that are lit too. Then the things that aren't particles are taken out: anything long (satellites, planes,
- * meteors), anything on a streak the stack found, a pixel that does it twice (it flickers), three in a line (a plane's
- * blinking lights), and every candidate of a frame that has too many (a cloud passing, a knock).
+ * Found on the frames as they were stored, before they're deleted, with the sensor's known hot pixels mended first (as
+ * the stack mends them; a particle's light on one is still counted, against the same photosite in the frames beside): a
+ * pixel well above its patch of sky (8 sigma) that the frames before and after don't have, neither where the sky's drift
+ * has moved that spot of sky (so it isn't a star) nor at the same pixel (so it isn't a hot pixel or a satellite parked
+ * over the equator); grown into the pixels round it that are lit too. Then the things that aren't particles are taken
+ * out: anything long (satellites, planes, meteors), anything on a streak the stack found, a pixel that does it twice (it
+ * flickers), three in a line (a plane's blinking lights), and every candidate of a frame that has too many (a cloud
+ * passing, a knock).
  * <p>
  * The drift between frames comes from their stored stars (an affine fit to the matched pairs), and how much the sky
  * dimmed or brightened from the same pairs' brightness.
@@ -30,6 +32,15 @@ public final class CosmicRays {
 
     /** A seed is this many sigma over its patch of sky; a lone lit pixel needs this many (a flickering pixel jumps alone). */
     static final float SEED_SIGMA = 8f, LONE_SIGMA = 12f;
+    /** A hit this small (pixels) right by a known hot pixel is taken for the defect's flicker. */
+    static final int SMALL_BY_HOT = 3;
+    /**
+     * Hits in a line are this far apart at least (pixels): a plane's beacon flashes about once a second, ten pixels or more
+     * apart in a frame, while two pieces of one particle sit closer, and line up with any third hit in the frame.
+     */
+    static final double LINE_GAP = 8;
+    /** Pieces of one particle: pixels this close (either way), so one pixel at most between them under the noise. */
+    static final int JOIN_GAP = 2;
     /** The pixels round a seed that are lit too: this many sigma. */
     static final float GROW_SIGMA = 3f;
     /** Over the neighbouring frames' brightest there by this many sigma, and they at most this share of it. */
@@ -100,6 +111,9 @@ public final class CosmicRays {
         public int side;
         /** Its brightest pixel's row. */
         int peakY;
+        /** Its pixels (x, y, 1 for a mended hot pixel) and each one's light, for joining pieces of one particle. */
+        List<int[]> px;
+        List<Float> lit;
     }
 
     /** What the search found. */
@@ -112,6 +126,8 @@ public final class CosmicRays {
         public double cm2 = Double.NaN, expected = Double.NaN;
         /** Candidates taken out, by why. */
         public int notAlone, onStar, onStreak, inALine, crowded, tooBig, hot;
+        /** Pieces joined to the particle they were part of. */
+        public int joined;
         /** Why nothing was searched ("" when something was). */
         public String why = "";
 
@@ -142,7 +158,8 @@ public final class CosmicRays {
             return String.format(Locale.US, "%d found in %d frames (%.0f s; %.1f muons expected through %.2f cm²): %s; left out: %d in "
                             + "the frames beside, %d stars, %d on streaks, %d in a line, %d in crowded frames, %d too big, %d hot pixels",
                     hits.size(), units, seconds, expected, cm2, hits.isEmpty() ? "none" : words(), notAlone, onStar, onStreak, inALine,
-                    crowded, tooBig, hot);
+                    crowded, tooBig, hot) + (joined > 0 ? String.format(Locale.US, "; %d %s joined to the particle they're part of", joined,
+                    joined == 1 ? "piece" : "pieces") : "");
         }
     }
 
@@ -257,6 +274,7 @@ public final class CosmicRays {
         res.cm2 = cm2;
         // the stack as big as the frames (its pixels the frames' own), or it can't say where the stars are
         if (stack != null && (stack.image.width != W || stack.image.height != H)) stack = null;
+        if (hot != null && (hot.W != W || hot.H != H)) hot = null;
         List<Unit> ok = new ArrayList<Unit>();
         for (Unit u : units) if (!u.disturbed && u.stars != null && u.stars.count >= 8) ok.add(u);
         if (ok.size() < 2) {
@@ -298,9 +316,9 @@ public final class CosmicRays {
                 int i = searched.get(s);
                 // the bands this frame and its neighbours need; the rest let go
                 for (int k = 0; k < n; k++) if (cache[k] != null && (k < i - 1 || k > i + 1)) cache[k] = null;
-                Band me = band(cache, ok, i, frames, W, H, cfa, y0 - extra, y1 + extra);
-                Band before = prev[i] != null ? band(cache, ok, i - 1, frames, W, H, cfa, y0 - extra, y1 + extra) : null;
-                Band after = next[i] != null ? band(cache, ok, i + 1, frames, W, H, cfa, y0 - extra, y1 + extra) : null;
+                Band me = band(cache, ok, i, frames, W, H, cfa, hot, y0 - extra, y1 + extra);
+                Band before = prev[i] != null ? band(cache, ok, i - 1, frames, W, H, cfa, hot, y0 - extra, y1 + extra) : null;
+                Band after = next[i] != null ? band(cache, ok, i + 1, frames, W, H, cfa, hot, y0 - extra, y1 + extra) : null;
                 search(me, before, prev[i], after, next[i], ok.get(i), y0, y1, W, H, cfa, hot, stack, shot(electronsPerLevel, ok.get(i)),
                         res, found);
             }
@@ -323,11 +341,22 @@ public final class CosmicRays {
         return res;
     }
 
-    /** The band of rows [ya, yb) of frame {@code i} (read once, then kept while it's needed). */
-    private static Band band(Band[] cache, List<Unit> ok, int i, Frames frames, int W, int H, int[] cfa, int ya, int yb) throws IOException {
+    /**
+     * The band of rows [ya, yb) of frame {@code i} (read once, then kept while it's needed), its known hot pixels mended
+     * from their own colour's neighbours: a hot pixel lights the same photosite in every frame, so beside a particle it
+     * looked like a star in the frames before and after (or the particle like its flicker), and the particle was left out.
+     */
+    private static Band band(Band[] cache, List<Unit> ok, int i, Frames frames, int W, int H, int[] cfa, HotPixels hot, int ya, int yb)
+            throws IOException {
         if (cache[i] != null) return cache[i];
         Band b = new Band(ok.get(i), W, Math.max(0, ya) & ~1, Math.min(H, yb), cfa);
         frames.readBand(ok.get(i).index, b.y0, b.y1, b.raw);
+        if (hot != null) {
+            b.hotAt = hot.within(b.y0, b.y1);
+            b.hotWas = new short[b.hotAt.length];
+            for (int k = 0; k < b.hotAt.length; k++) b.hotWas[k] = b.raw[b.hotAt[k] - b.y0 * W];
+            hot.fix(b.raw, b.y0, b.y1, b.y0);
+        }
         b.measure();
         return cache[i] = b;
     }
@@ -341,6 +370,9 @@ public final class CosmicRays {
         final int[] cfa;
         /** Per patch (TILE x TILE, from row y0) and colour plane (0-3): the sky's level and noise (scaled levels). */
         final float[] level, noise;
+        /** Its known hot pixels (sensor indices y * W + x, in order), mended in {@code raw}, and their values as read. */
+        int[] hotAt = new int[0];
+        short[] hotWas = new short[0];
 
         Band(Unit u, int W, int y0, int y1, int[] cfa) {
             unit = u;
@@ -426,6 +458,18 @@ public final class CosmicRays {
 
         float sigma(int x, int y) {
             return noise[tile(x, y) * 4 + plane(x, y)];
+        }
+
+        /** The sky's level at (x, y), for its colour. */
+        float levelAt(int x, int y) {
+            return level[tile(x, y) * 4 + plane(x, y)];
+        }
+
+        /** At a mended hot pixel: its value as read (scaled levels); NaN where (x, y) isn't one. */
+        float was(int x, int y) {
+            if (hotAt.length == 0 || !has(x, y)) return Float.NaN;
+            int k = java.util.Arrays.binarySearch(hotAt, y * W + x);
+            return k >= 0 ? (hotWas[k] & 0xFFFF) * sc : Float.NaN;
         }
 
         /** The light over the sky in the 3 x 3 box round (x, y): each pixel less its patch's level for its colour. */
@@ -641,7 +685,7 @@ public final class CosmicRays {
                 res.onStar++;
                 continue;
             }
-            Hit h = grow(me, x, y, sg, taken, scratch, before, toBefore, after, toAfter);
+            Hit h = grow(me, x, y, sg, taken, scratch, before, toBefore, after, toAfter, shot);
             if (h == null) {
                 res.tooBig++;
                 continue;
@@ -655,7 +699,9 @@ public final class CosmicRays {
                 res.hot++;
                 continue;
             }
-            if (hot != null && hot.nearBad(h.x, h.y, 1)) {
+            // by a defect the map knows (mended, above): a few pixels there are its flicker reaching its neighbours, a
+            // particle's track that passes it is no defect's
+            if (hot != null && h.pixels <= SMALL_BY_HOT && hot.nearBad(h.x, h.y, 1)) {
                 res.hot++;
                 continue;
             }
@@ -665,6 +711,7 @@ public final class CosmicRays {
             }
             mine.add(h);
         }
+        joinPieces(me, before, after, mine, scratch, res);
         synchronized (found) {
             found.addAll(mine);
         }
@@ -756,21 +803,51 @@ public final class CosmicRays {
     }
 
     /**
+     * At a mended hot pixel of frame {@code me}: what it read there over its sky, less what the frames beside read at the
+     * same photosite over theirs (a defect's dark current is the same in every frame, so what's left is this frame's own
+     * light: a particle's). NaN where (x, y) isn't a known hot pixel, or neither frame beside has it.
+     */
+    static float hotExcess(Band me, Band before, Band after, int x, int y) {
+        float v = me.was(x, y);
+        if (Float.isNaN(v)) return Float.NaN;
+        float sum = 0;
+        int n = 0;
+        for (int k = 0; k < 2; k++) {
+            Band b = k == 0 ? before : after;
+            if (b == null) continue;
+            float w = b.was(x, y);
+            if (Float.isNaN(w)) continue;
+            sum += w - b.levelAt(x, y);
+            n++;
+        }
+        return n == 0 ? Float.NaN : v - me.levelAt(x, y) - sum / n;
+    }
+
+    /** The noise of {@link #hotExcess}: the sky's in this frame and the frames beside, and the defect's own dark current's. */
+    static float hotSigma(Band me, Band before, Band after, int x, int y, double shot) {
+        float s = me.sigma(x, y), dark = Math.max(0, me.was(x, y) - me.levelAt(x, y));
+        int n = (before != null && !Float.isNaN(before.was(x, y)) ? 1 : 0) + (after != null && !Float.isNaN(after.was(x, y)) ? 1 : 0);
+        double k = 1 + 1.0 / Math.max(1, n);
+        return (float) Math.sqrt(k * (s * s + dark * shot));
+    }
+
+    /**
      * The lit pixels joined to the seed (8 ways, each over {@link #GROW_SIGMA}), as a hit: its middle, size, length,
      * shape and light, and its picture. Null when it's too big to be a particle (or reaches past the band).
      */
     private static Hit grow(Band me, int sx, int sy, float sg, java.util.Set<Long> taken, float[] scratch, Band before, Drift toBefore,
-                            Band after, Drift toAfter) {
+                            Band after, Drift toAfter, double shot) {
         List<int[]> px = new ArrayList<int[]>();
         List<Float> lit = new ArrayList<Float>();
         java.util.ArrayDeque<int[]> todo = new java.util.ArrayDeque<int[]>();
         java.util.Set<Long> seen = new java.util.HashSet<Long>();
-        todo.add(new int[]{sx, sy});
+        todo.add(new int[]{sx, sy, 0});
         seen.add(key(sx, sy));
         boolean big = false;
         while (!todo.isEmpty()) {
             int[] p = todo.poll();
-            float e = me.over(p[0], p[1], scratch);
+            // a mended hot pixel (p[2] == 1) carries what this frame has there over the frames beside, already its own
+            float e = p[2] == 1 ? hotExcess(me, before, after, p[0], p[1]) : me.over(p[0], p[1], scratch);
             px.add(p);
             lit.add(e);
             if (px.size() > MAX_PIXELS) {
@@ -788,7 +865,14 @@ public final class CosmicRays {
                     if (seen.contains(k)) continue;
                     seen.add(k);
                     float s = me.sigma(x, y);
-                    if (me.over(x, y, scratch) > GROW_SIGMA * s) todo.add(new int[]{x, y});
+                    // a particle that crossed a hot pixel left its light there too: mended to the sky above, it's measured
+                    // against the same photosite in the frames beside (its dark current the same in every frame)
+                    float hx = hotExcess(me, before, after, x, y);
+                    if (!Float.isNaN(hx)) {
+                        if (hx > GROW_SIGMA * hotSigma(me, before, after, x, y, shot)) todo.add(new int[]{x, y, 1});
+                        continue;
+                    }
+                    if (me.over(x, y, scratch) > GROW_SIGMA * s) todo.add(new int[]{x, y, 0});
                 }
             }
         }
@@ -796,6 +880,7 @@ public final class CosmicRays {
         if (big) return null;
         // the particle's own light: less what the frames beside have there (a faint star it landed on), as this frame's sky
         for (int i = 0; i < px.size(); i++) {
+            if (px.get(i)[2] == 1) continue;
             float still = 0;
             int n = 0;
             for (int k = 0; k < 2; k++) {
@@ -810,7 +895,14 @@ public final class CosmicRays {
             }
             if (n > 0) lit.set(i, lit.get(i) - still / n);
         }
-        // its middle (light-weighted), light, brightest pixel and shape
+        return measure(me, px, lit, before, after, scratch);
+    }
+
+    /**
+     * A hit from its pixels and each one's light: its middle (light-weighted), light, brightest pixel, size, length and
+     * shape, and its picture. Null when it's too long to be a particle, or holds no light.
+     */
+    private static Hit measure(Band me, List<int[]> px, List<Float> lit, Band before, Band after, float[] scratch) {
         double sw = 0, mx = 0, my = 0;
         int peak = 0;
         for (int i = 0; i < px.size(); i++) {
@@ -840,6 +932,8 @@ public final class CosmicRays {
         double tr = cxx + cyy, det = cxx * cyy - cxy * cxy, disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
         double l1 = tr / 2 + disc, l2 = Math.max(0, tr / 2 - disc);
         Hit h = new Hit();
+        h.px = px;
+        h.lit = lit;
         h.peakY = px.get(peak)[1];
         h.x = (float) mx;
         h.y = (float) my;
@@ -857,10 +951,54 @@ public final class CosmicRays {
         for (int j = 0; j < side; j++) {
             for (int i = 0; i < side; i++) {
                 int x = cx - half + i, y = cy - half + j;
-                h.crop[j * side + i] = inner(me, x, y) ? me.over(x, y, scratch) : 0;
+                float hx = inner(me, x, y) ? hotExcess(me, before, after, x, y) : Float.NaN;
+                h.crop[j * side + i] = !inner(me, x, y) ? 0 : !Float.isNaN(hx) ? Math.max(0, hx) : me.over(x, y, scratch);
             }
         }
         return h;
+    }
+
+    /**
+     * One particle found in pieces (its light dipped under the noise for a pixel along its track, or a worm curled back
+     * past a gap): hits of one frame whose pixels come within {@link #JOIN_GAP} of each other are joined into one, unless
+     * together they'd be too long for a particle.
+     */
+    private static void joinPieces(Band me, Band before, Band after, List<Hit> hits, float[] scratch, Result res) {
+        for (boolean again = true; again; ) {
+            again = false;
+            for (int i = 0; i < hits.size() && !again; i++) {
+                for (int j = i + 1; j < hits.size() && !again; j++) {
+                    Hit a = hits.get(i), b = hits.get(j);
+                    if (!touching(a, b)) continue;
+                    List<int[]> px = new ArrayList<int[]>(a.px);
+                    px.addAll(b.px);
+                    List<Float> lit = new ArrayList<Float>(a.lit);
+                    lit.addAll(b.lit);
+                    Hit h = measure(me, px, lit, before, after, scratch);
+                    if (h == null) continue;
+                    h.unit = a.unit;
+                    h.t = a.t;
+                    h.sigma = Math.max(a.sigma, b.sigma);
+                    hits.set(i, h);
+                    hits.remove(j);
+                    res.joined++;
+                    again = true;
+                }
+            }
+        }
+    }
+
+    /** Whether two hits' pixels come within {@link #JOIN_GAP} of each other (either way). */
+    private static boolean touching(Hit a, Hit b) {
+        if (a.px == null || b.px == null) return false;
+        // far apart for sure: their middles further than both their lengths
+        if (Math.hypot(a.x - b.x, a.y - b.y) > (a.length + b.length) / 2 + JOIN_GAP + 1) return false;
+        for (int[] p : a.px) {
+            for (int[] q : b.px) {
+                if (Math.abs(p[0] - q[0]) <= JOIN_GAP && Math.abs(p[1] - q[1]) <= JOIN_GAP) return true;
+            }
+        }
+        return false;
     }
 
     /** On (or close to) one of the streaks the stack found in its frame. */
@@ -888,17 +1026,19 @@ public final class CosmicRays {
                 res.crowded++;
             }
         }
-        // three or more in a line in one frame (a plane's blinking lights, a satellite's glints)
+        // three or more in a line in one frame (a plane's blinking lights, a satellite's glints), each well apart from the
+        // others: two pieces of one particle side by side are "in a line" with any third hit
         java.util.Set<Hit> lined = new java.util.HashSet<Hit>();
         for (int i = 0; i < hits.size(); i++) {
             for (int j = i + 1; j < hits.size(); j++) {
                 Hit a = hits.get(i), b = hits.get(j);
                 if (a.unit != b.unit) continue;
                 double dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy);
-                if (l < 1) continue;
+                if (l < LINE_GAP) continue;
                 for (int k = 0; k < hits.size(); k++) {
                     Hit c = hits.get(k);
                     if (k == i || k == j || c.unit != a.unit) continue;
+                    if (Math.hypot(c.x - a.x, c.y - a.y) < LINE_GAP || Math.hypot(c.x - b.x, c.y - b.y) < LINE_GAP) continue;
                     double off = Math.abs((c.x - a.x) * dy - (c.y - a.y) * dx) / l;
                     if (off < 4) {
                         lined.add(a);
