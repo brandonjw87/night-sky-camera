@@ -30,7 +30,7 @@ Address** (the map to the Sun that the Voyagers carry, redrawn for your night) a
   so the stacking throws it away and your photo never shows it. Now, before the frames are deleted, the phone goes
   through every one and catches them: a **spot** where one came straight down, a short straight **track** where one
   came in at an angle, a curly **worm** for an electron a gamma ray knocked loose. The picture shows the brightest
-  under a microscope, magnified in heat colours, each with how many pixels it lit, how much energy it left (in keV)
+  under a microscope, magnified in heat colours, each with its length in pixels, how much energy it left (in keV)
   and the second it struck, next to a map of the chip with every hit. Things that aren't particles are left out:
   stars, satellites, planes, meteors, passing clouds, a knock, hot pixels. The watch's Done screen says "Caught 3
   cosmic rays!"
