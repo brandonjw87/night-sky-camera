@@ -465,8 +465,50 @@ public class Moon {
                 && ((Button) field(a, "catchIt")).getVisibility() != View.VISIBLE, w);
         save(WatchProbe.moonDraw(app, st, System.currentTimeMillis(), 454), "watch_4_done");
 
+        // ---- the result's other controls, as a person would try them (the monkey doesn't come in here)
+        say("== the result's other controls");
+        ViewGroup box = (ViewGroup) field(a, "resultBox");
+        Button oneFrame = button(box, "One frame"), stackedB = button(box, "Stacked"), noLabels = button(box, "No labels"),
+                landings = button(box, "Landings"), share = button(box, "Share"), again = button(box, "Shoot again");
+        check("every control there", oneFrame != null && stackedB != null && noLabels != null && landings != null && share != null
+                && again != null, "");
+        if (oneFrame != null && stackedB != null && noLabels != null && landings != null && share != null && again != null) {
+            int[] stackedPx = pixels((Bitmap) field(a, "shown"));
+            oneFrame.performClick();
+            int[] onePx = pixels((Bitmap) field(a, "shown"));
+            check("One frame shows a single frame, not the stack", onePx != null && stackedPx != null && !java.util.Arrays.equals(onePx, stackedPx), "");
+            stackedB.performClick();
+            check("Stacked shows the stack again", java.util.Arrays.equals(pixels((Bitmap) field(a, "shown")), stackedPx), "");
+            noLabels.performClick();
+            share.performClick();
+            Intent sent = sent(Shadows.shadowOf(a).getNextStartedActivity());
+            check("Share with No labels sends the plain photo", sent != null && Intent.ACTION_SEND.equals(sent.getAction())
+                    && field(a, "savedPlain") != null && field(a, "savedPlain").equals(sent.getParcelableExtra(Intent.EXTRA_STREAM)), String.valueOf(sent));
+            landings.performClick();
+            share.performClick();
+            sent = sent(Shadows.shadowOf(a).getNextStartedActivity());
+            check("Share with Landings sends the labelled one", sent != null && field(a, "savedLabelled") != null
+                    && field(a, "savedLabelled").equals(sent.getParcelableExtra(Intent.EXTRA_STREAM)), String.valueOf(sent));
+            again.performClick();
+            ShadowLooper.idleMainLooper(50, TimeUnit.MILLISECONDS);
+            check("Shoot again: back to the live picture, ready to shoot", box.getVisibility() == View.GONE && shutter.isEnabled(),
+                    status.getText().toString());
+        }
+        ((Button) field(a, "refocus")).performClick();
+        int k = frames(900, new Until() {
+            @Override
+            public boolean done() {
+                return cam.stage == MoonCamera.Stage.READY;
+            }
+        });
+        check("Focus again: focused again", k > 0 && Math.abs(cam.focus - SimTele.BEST_FOCUS) < 0.02,
+                String.format(Locale.US, "%d frames, focus %.3f", k, cam.focus));
+
         // ---- leaving
         say("== leaving the screen");
+        Button done = button((ViewGroup) a.getWindow().getDecorView(), "Done");
+        if (done != null) done.performClick();
+        check("Done closes the screen", done != null && a.isFinishing(), "");
         ctrl.pause();
         ShadowLooper.idleMainLooper(100, TimeUnit.MILLISECONDS);
         check("the camera closed with it", cam.closed && field(a, "camera") == null, "");
@@ -709,6 +751,22 @@ public class Moon {
             if (v instanceof TextView && !(v instanceof Button)) return (TextView) v;
         }
         return null;
+    }
+
+    /** A picture's pixels (null for none). */
+    static int[] pixels(Bitmap b) {
+        if (b == null) return null;
+        int[] px = new int[b.getWidth() * b.getHeight()];
+        b.getPixels(px, 0, b.getWidth(), 0, 0, b.getWidth(), b.getHeight());
+        return px;
+    }
+
+    /** What a share sends: the intent inside Android's chooser (null for none). */
+    @SuppressWarnings("deprecation")
+    static Intent sent(Intent started) {
+        if (started == null) return null;
+        if (Intent.ACTION_CHOOSER.equals(started.getAction())) return (Intent) started.getParcelableExtra(Intent.EXTRA_INTENT);
+        return started;
     }
 
     static Button button(ViewGroup g, String label) {
