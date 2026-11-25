@@ -98,6 +98,36 @@ public final class MoonLook {
         return out;
     }
 
+    /**
+     * The live close-up of a RAW crop (the burst's own pixels, before stacking): each 2x2 colour block one pixel,
+     * white-balanced, the Moon's bright parts ({@code level}, share of the range) near white. ARGB, (w/2) x (h/2).
+     */
+    public static int[] closeUp(short[] raw, int w, int h, int x0, int y0, SensorSpec spec, double level) {
+        int ow = w / 2, oh = h / 2;
+        int[] out = new int[ow * oh];
+        double range = Math.max(1, spec.white - spec.black[0]);
+        double gain = 0.85 / Math.max(0.02, level);
+        double[] wb = new double[3];
+        for (int c = 0; c < 3; c++) wb[c] = gain / range / Math.max(0.05, spec.camNeutral[c]);
+        int ex = x0 & 1, ey = y0 & 1;
+        for (int j = 0; j < oh; j++) {
+            for (int i = 0; i < ow; i++) {
+                double[] v = new double[3];
+                int[] n = new int[3];
+                for (int d = 0; d < 4; d++) {
+                    int x = 2 * i + (d & 1), y = 2 * j + (d >> 1);
+                    int p = (((y + ey) & 1) << 1) | ((x + ex) & 1);
+                    int c = spec.cfa[p];
+                    v[c] += ((raw[y * w + x] & 0xffff) - spec.black[p]) * wb[c];
+                    n[c]++;
+                }
+                int r = srgb8(n[0] > 0 ? v[0] / n[0] : 0), g = srgb8(n[1] > 0 ? v[1] / n[1] : 0), b = srgb8(n[2] > 0 ? v[2] / n[2] : 0);
+                out[j * ow + i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+        return out;
+    }
+
     // ------------------------------------------------------------------------------------------------
     // the square photo
 

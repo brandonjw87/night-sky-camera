@@ -394,6 +394,33 @@ public final class MoonshotTest {
                         ls.view.sunAltAt(st0.lat, st0.lon)));
             }
             check("each lamp where its label points (within 1.5 px of the stacked picture's 2x pixels)", worst < 1.5, sb.toString().trim());
+            // no tilt known (no gravity sensor reading): the lit side turns the picture, north up
+            for (MoonStack.Frame f : lb.frames) f.upPa = Double.NaN;
+            MoonStack.Options no = new MoonStack.Options();
+            no.expectedRadius = ls.rPx;
+            no.outUpPa = 0;
+            no.brightLimbPa = v0.chi;
+            no.deconvolve = false;
+            MoonStack.Result nr = MoonStack.stack(lb.frames, spec, no, Progress.NONE);
+            float[] Yn = lum(nr.r, nr.g, nr.b);
+            double worstN = 0;
+            for (String k : keys) {
+                MoonSites.Site st0 = MoonSites.get(k);
+                double[] at = ls.view.inPicture(st0.lat, st0.lon, nr.cx, nr.cy, nr.radius, nr.upPa);
+                double sx = 0, sy = 0, sw = 0;
+                for (int j = (int) at[1] - 9; j <= (int) at[1] + 9; j++)
+                    for (int i = (int) at[0] - 9; i <= (int) at[0] + 9; i++) {
+                        if (i < 0 || j < 0 || i >= nr.w || j >= nr.h) continue;
+                        double v = Yn[j * nr.w + i] - 1.2;
+                        if (v <= 0) continue;
+                        sx += v * i;
+                        sy += v * j;
+                        sw += v;
+                    }
+                worstN = Math.max(worstN, sw > 0 ? Math.hypot(sx / sw - at[0], sy / sw - at[1]) : 99);
+            }
+            check("with no tilt known, the lit side turns it right (within 2 px)", worstN < 2 && nr.log.contains("from the lit side"),
+                    String.format(Locale.US, "worst %.2f px; up at %.1f", worstN, nr.upPa));
             // the finished photo, labelled
             MoonLook.Picture pic = MoonLook.enlarge(lr.r, lr.g, lr.b, lr.w, lr.h, lr.cx, lr.cy, lr.radius, lr.upPa);
             List<MoonLook.Label> labels;

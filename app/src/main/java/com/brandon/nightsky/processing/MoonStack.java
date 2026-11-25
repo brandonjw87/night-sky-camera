@@ -301,6 +301,22 @@ public final class MoonStack {
         d.litFrac = Math.min(1, area / (Math.PI * d.r * d.r));
         if (Math.hypot(lx, ly) > 0.004 * d.r) d.litDir = MoonGeo.norm360(Math.toDegrees(Math.atan2(-lx, -ly)));
         else if (!Double.isNaN(litDirDeg)) d.litDir = litDirDeg;
+        // better, unless it is nearly full: the lit limb is always exactly half the circle, cusp to cusp, so its middle
+        // is the mean direction of the edge points on it (the seas' darkness, which pulls the lit part's centroid about,
+        // doesn't move the edge)
+        if (d.litFrac < 0.93) {
+            double cs = 0, sn = 0;
+            int on = 0;
+            double[] circ = {d.cx, d.cy, d.r};
+            for (double[] p : pts) {
+                if (!onLimb(p, circ, 1.0)) continue;
+                double a = Math.atan2(-(p[0] - d.cx), -(p[1] - d.cy));
+                cs += Math.cos(a);
+                sn += Math.sin(a);
+                on++;
+            }
+            if (on >= 20 && Math.hypot(cs, sn) > 0.3 * on) d.litDir = MoonGeo.norm360(Math.toDegrees(Math.atan2(sn, cs)));
+        }
         return d;
     }
 
@@ -416,6 +432,11 @@ public final class MoonStack {
             x[r] = s / a[r * n + r];
         }
         return x;
+    }
+
+    /** How sharp a frame is (its fine detail for its brightness): what the Moonshot's focus sweep maximises. */
+    public static double sharpness(Frame f, SensorSpec spec) {
+        return quality(luma(balanced(f, spec, null), f.w, f.h), f.w, f.h);
     }
 
     /** How much fine detail a frame holds: the energy of its high frequencies over the lit part, for its brightness. */
@@ -851,8 +872,22 @@ public final class MoonStack {
         double refUp = frames.get(ref).upPa;
         double litDir = !Double.isNaN(opt.brightLimbPa) && !Double.isNaN(refUp) ? MoonGeo.norm360(opt.brightLimbPa - refUp) : Double.NaN;
         Disk disk = findDisk(lums.get(ref), w, h, opt.expectedRadius, litDir);
-        log.append(String.format(Locale.US, "moon stack: %d frames %dx%d; reference %d (sharpness %.3g, the median %.3g); disk %s",
-                n, w, h, ref, q[ref], median(q), disk));
+        // no tilt known (no gravity reading, or the phone pointed nearly straight up): the lit side shows the way, since
+        // the ephemeris says where the bright limb is on the sky
+        String upHow = Double.isNaN(refUp) ? "unknown" : "from the phone's tilt";
+        if (!Double.isNaN(opt.brightLimbPa) && disk.ok && !Double.isNaN(disk.litDir) && disk.litFrac < 0.93) {
+            double fromLimb = MoonGeo.norm360(opt.brightLimbPa - disk.litDir);
+            if (Double.isNaN(refUp)) {
+                refUp = fromLimb;
+                upHow = "from the lit side";
+            } else if (Math.abs(MoonGeo.norm180(fromLimb - refUp)) > 20) {
+                // the tilt and the lit side disagree (a phone held flat, a sensor fooled by a jolt): the Moon itself wins
+                upHow = String.format(Locale.US, "from the lit side (the tilt said %.0f, %.0f off)", refUp, MoonGeo.norm180(fromLimb - refUp));
+                refUp = fromLimb;
+            }
+        }
+        log.append(String.format(Locale.US, "moon stack: %d frames %dx%d; reference %d (sharpness %.3g, the median %.3g); disk %s; up %s",
+                n, w, h, ref, q[ref], median(q), disk, upHow));
         if (!disk.ok) {
             log.append("; no Moon found");
             Result bad = new Result();
