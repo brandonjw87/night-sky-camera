@@ -237,7 +237,21 @@ public class Night {
         run(1000);
         String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
         wshot("ready");
-        if (!face.startsWith("Ready") || !face.contains("[Start, Sky]")) Monkey.problem(scenario + ": the watch's ready screen: " + face);
+        if (!face.startsWith("Ready") || !face.contains("[Start, Sky, Moon]")) Monkey.problem(scenario + ": the watch's ready screen: " + face);
+        // the Moon screen (3.0) from Ready, with the phone's Moonshot closed: the phase, how much is lit, only Back
+        wa.action("moon");
+        run(500);
+        String moon = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        wshot("moon");
+        Monkey.say("  the watch's Moon screen: " + moon);
+        if (!moon.matches("(New Moon|Waxing crescent|First quarter|Waxing gibbous|Full Moon|Waning gibbous|Last quarter|Waning crescent)"
+                + " \\| \\d+% \\| .*\\| \\[Back\\] \\|.*")) {
+            Monkey.problem(scenario + ": the watch's Moon screen: " + moon);
+        }
+        wa.action("moon-back");
+        run(500);
+        face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        if (!face.startsWith("Ready") || !face.contains("[Start, Sky, Moon]")) Monkey.problem(scenario + ": Back from the watch's Moon screen: " + face);
         // the Sky Pointer (2.6), from the ready screen, while the phone waits
         wristSky();
         // the crown: a setup picked on the watch becomes the phone's
@@ -2407,11 +2421,20 @@ public class Night {
             Monkey.problem(scenario + ": no photo with a video to save again");
             return;
         }
-        Bitmap pic = decode(r.jpeg);
-        if (pic == null) {
+        Bitmap decoded = decode(r.jpeg);
+        if (decoded == null) {
             Monkey.problem(scenario + ": the photo doesn't decode, to save it again");
             return;
         }
+        // its pixels alone, as the app's own photo is before it's saved: Robolectric's decoder (4.18, Android 17) keeps
+        // the photo's brightness map out of sight of hasGainmap and getGainmap, yet its encoder still writes it, so the
+        // map would come back in a photo saved "without" one (a phone shows the map, and the app takes it off itself)
+        int pw = decoded.getWidth(), ph = decoded.getHeight();
+        int[] px = new int[pw * ph];
+        decoded.getPixels(px, 0, pw, 0, 0, pw, ph);
+        Bitmap pic = Bitmap.createBitmap(px, pw, ph, Bitmap.Config.ARGB_8888);
+        px = null;
+        decoded.recycle();
         Integer before = HdrScreen.readsBackForced;
         try {
             String[] names = {"fallback-video", "fallback-plain", "read-back"};
