@@ -8,6 +8,8 @@
 #   robo/run.sh EditFlow             edits a kept session (SESSIONS: the one folder of sessions sim/G3Test writes)
 #   robo/run.sh Intro                the opening film: when it plays, how it ends, and that it never stands in the way
 #   robo/run.sh Stops                the stop recorder (2.1): crashes written down, Android's records of the app ending, its card
+#   robo/run.sh Moon                 the Moonshot (3.0) on a simulated telephoto: finding, metering, focusing, a burst stacked and
+#                                    saved, the watch's Shoot and Catch, the ISS crossing the Moon caught by itself
 #
 # Output goes to $OUT (default build/robo): the test's log and pictures, and TEST.out (the console, whose end is shown).
 # Environment: ROBO_HOME (as for robo/setup.sh); ANDROID_JAR and ANDROID_RES_JAR (as for tools/build_apk.sh); SESSIONS,
@@ -17,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-TEST=${1:?usage: robo/run.sh Night|Monkey|Shots|Launches|EditFlow|Intro|Stops [only]}
+TEST=${1:?usage: robo/run.sh Night|Monkey|Shots|Launches|EditFlow|Intro|Stops|Moon [only]}
 ONLY=${2:-}
 ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo17}
 ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-37.jar}
@@ -50,7 +52,7 @@ echo "== tests"
 CP="$B/test:$B/cfg:$B/app:$(ls "$ROBO_HOME"/deps/*.jar | tr '\n' ':')$ROBO_HOME/androidx-test-stubs.jar:$ROBO_HOME/sdk/android-all-$SDK_VERSION.jar"
 # the watch app (2.5) too, with the relay's stand-in: Night's wrist scenario pairs it with the phone
 javac -source 8 -target 8 -Xlint:-options -nowarn -encoding UTF-8 -cp "$CP" -d "$B/test" robo/src/com/brandon/nightsky/*.java \
-    sim/src/com/brandon/nightsky/sim/SkySim.java sim/src/com/brandon/nightsky/sim/MockNtfy.java \
+    sim/src/com/brandon/nightsky/sim/SkySim.java sim/src/com/brandon/nightsky/sim/MockNtfy.java sim/src/com/brandon/nightsky/sim/MoonSim.java \
     $(find watch/src/main/java robo/src/com/brandon/nightsky/watch -name '*.java') 2>&1 | grep -v "^Note:" || true
 [ -f "$B/test/com/brandon/nightsky/$TEST.class" ] || { echo "the tests didn't compile"; exit 1; }
 

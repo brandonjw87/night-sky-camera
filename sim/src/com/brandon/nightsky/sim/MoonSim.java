@@ -393,10 +393,28 @@ public final class MoonSim {
         double a = -rotDeg * D, cs = Math.cos(a), sn = Math.sin(a);
         double rx = dx * cs + dy * sn, ry = -dx * sn + dy * cs;
         double tx = T / 2.0 + rx * os, ty = T / 2.0 + ry * os, h = os / 2.0;
+        if (smoothBlur) {
+            // between the two drawn blurs either side, mixed so the blur's spread (its variance) is the one asked for
+            double bb = Math.max(0, Math.min(blurs[blurs.length - 1], blurPx));
+            int lo = 0;
+            while (lo < blurs.length - 2 && blurs[lo + 1] <= bb) lo++;
+            double v0 = blurs[lo] * blurs[lo], v1 = blurs[lo + 1] * blurs[lo + 1];
+            double w = Math.max(0, Math.min(1, (bb * bb - v0) / (v1 - v0)));
+            double[] s0 = sat[lo][c], s1 = sat[lo + 1][c];
+            double a0 = at(s0, tx + h, ty + h) - at(s0, tx - h, ty + h) - at(s0, tx + h, ty - h) + at(s0, tx - h, ty - h);
+            double a1 = w > 0 ? at(s1, tx + h, ty + h) - at(s1, tx - h, ty + h) - at(s1, tx + h, ty - h) + at(s1, tx - h, ty - h) : 0;
+            return ((1 - w) * a0 + w * a1) / (os * os);
+        }
         double[] s = sat[bi][c];
         double sum = at(s, tx + h, ty + h) - at(s, tx - h, ty + h) - at(s, tx + h, ty - h) + at(s, tx - h, ty - h);
         return sum / (os * os);
     }
+
+    /**
+     * The blur asked for in {@link #light} made by mixing the two drawn blurs either side of it (for the robots'
+     * focus sweep, where the sharpness must change smoothly with the lens), not the nearest one.
+     */
+    public boolean smoothBlur;
 
     /** One frame's RAW crop (w x h at x0, y0 on the sensor, RGGB from the sensor's corner), the light scaled by gain. */
     public short[] frame(int w, int h, int x0, int y0, double mx, double my, double rotDeg, double blurPx, double gain, Random rnd) {

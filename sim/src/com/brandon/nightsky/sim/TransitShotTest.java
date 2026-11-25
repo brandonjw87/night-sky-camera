@@ -144,7 +144,7 @@ public final class TransitShotTest {
         MoonshotTest.Burst nb2 = MoonshotTest.shoot(sim, 180, 160, 23, 3);
         MoonStack.Result none2 = MoonStack.stack(nb2.frames, spec, opt, Progress.NONE);
         check("nor with clouds passing and another hand", none2.crossing == null, none2.crossing == null ? "" : none2.crossing.toString());
-        System.out.println(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
 }

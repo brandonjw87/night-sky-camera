@@ -110,6 +110,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     private boolean firedArmed;
     private boolean askedPrecise, askedFix;
     private String countdownWords;
+    /** The last whole second the countdown beeped at (one beep a second, ten to five). */
+    private long beepedAt = -1;
     /** Frames for a crossing: nine seconds, from four before it, for the orbit's timing to be a little off. */
     static final int TRANSIT_FRAMES = 270;
     static final long TRANSIT_LEAD_MS = 4000;
@@ -124,6 +126,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         clicks = new MediaActionSound();
         clicks.load(MediaActionSound.SHUTTER_CLICK);
         clicks.load(MediaActionSound.STOP_VIDEO_RECORDING);
+        clicks.load(MediaActionSound.FOCUS_COMPLETE);
+        clicks.load(MediaActionSound.START_VIDEO_RECORDING);
         build();
     }
 
@@ -552,6 +556,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         resultBox.removeAllViews();
         resultBox.setVisibility(View.VISIBLE);
         nameCrossing(r, b);
+        // the crossing just shot is over: the list again without it (no Catch for it on the screen or the watch)
+        if (transitShot) showTransits();
         watchDone = r.crossing != null ? "Your Moon, with " + crossingLabel + " crossing it, is ready" : "Your Moon is ready";
         resultBox.addView(text(r.crossing == null ? "Your Moon" : "Your Moon, with " + crossingLabel + " crossing it", 20, GOLD, true));
         String howText = String.format(Locale.US, "The %d sharpest of %d frames, lined up and stacked: the edge's blur %.1f px in one frame, %.1f "
@@ -848,6 +854,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                     }
                     armed = h;
                     firedArmed = false;
+                    beepedAt = -1;
                     catchIt.setText("Waiting for " + h.name + " (tap to stop)");
                     tick();
                 }
@@ -889,6 +896,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 firedArmed = true;
                 transitShot = true;
                 camera.shoot(TRANSIT_FRAMES);
+                clicks.play(MediaActionSound.START_VIDEO_RECORDING);
                 catchIt.setText("Shooting " + a.name + "'s crossing…");
             } else if (left < -2000) {
                 armed = null;
@@ -900,7 +908,12 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             countdownWords = Transits.capital(a.name) + " crosses the Moon " + Transits.countdown(left) + ". Keep the Moon in the picture: the phone shoots by itself.";
             if (live != null) onLive(live);
             else say(countdownWords);
-            if (left <= 10_000 && left > 5000) clicks.play(MediaActionSound.FOCUS_COMPLETE);
+            // a beep a second from ten to five, as at a launch: then the phone shoots, and it has to be held still
+            long sec = (left + 999) / 1000;
+            if (sec <= 10 && sec > 4 && sec != beepedAt) {
+                beepedAt = sec;
+                clicks.play(MediaActionSound.FOCUS_COMPLETE);
+            }
         }
         main.postDelayed(tickTransit, left > 120_000 ? 1000 : 250);
     }

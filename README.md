@@ -14,9 +14,13 @@ your Pixel Watch** starts, follows and stops it all from your wrist, over Blueto
 photo also brings the particles from space that shot through the camera while it looked up (**Cosmic Ray Hunter**),
 the map to the Sun that the Voyagers carry, redrawn for your night (**Earth's Address**), and your sky as seen from a
 planet round another star (**Postcard from Another World**); and the watch's **Sky Pointer** names whatever you point
-your arm at.
+your arm at. Since 3.0, **the Moonshot**: the Moon from the 5x telephoto, hand-held, 150 RAW pictures stacked into
+one sharp photo with every landing site labelled where it is tonight, and the **Transit Hunter**, which catches the
+International Space Station crossing the Moon by itself, with the countdown on your watch.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.6.
+It needs **Android 17** or newer and is made for the Pixel 10 and newer.
+
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.0.
 
 ## What it does
 
@@ -154,7 +158,8 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.6.
 
 ## Install it on your phone
 
-You only need the file `NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
+Night Sky 3.0 needs Android 17 or newer (**Settings > About phone > Android version**). You only need the file
+`NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
 [`dist/NightSky.apk`](dist/NightSky.apk). Updates install over the old version and keep your settings.
 
 ### From a Windows PC with a USB cable
@@ -195,6 +200,35 @@ Install it with Google's USB tool instead:
    ```
 
    It prints `Success` when it's done.
+
+## The Moonshot (3.0)
+
+Tap **Shoot the Moon** at the top of the main screen.
+
+1. **Point the phone at the Moon.** It uses the 5x telephoto (on a phone without one, the main camera zoomed in),
+   finds the Moon anywhere in the picture and rings it, with a close-up in the corner. The line at the top says the
+   Moon's phase, how much is lit and how high it is (or when it rises).
+2. **Wait for "Ready: hold steady and shoot".** It sets the exposure on the Moon's bright parts and focuses on its
+   craters by itself, a few seconds. **Focus again** starts the focusing over.
+3. **Shoot the Moon.** Hold the phone with both hands, elbows against your chest or a wall, for five seconds: it
+   takes 150 RAW pictures. The sharpest half are lined up and stacked, which takes a few seconds more.
+4. **Your Moon:** the photo with the sky's up at the top, and the landing sites labelled (Apollo in gold). **Tap a
+   label** for its story. **One frame** shows a single picture to compare; **Every one** labels all 36 places;
+   **Mineral colours** turns the Moon's real colours way up. It's saved twice in Pictures/NightSky, with and without
+   the labels; **Share** sends it.
+
+**The Transit Hunter** card below lists the times the International Space Station or Tiangong cross the Moon within
+60 km of you in the next ten days: when, how far and which way to go, and how wide the strip is where it's seen.
+**Show the nearest strip on the map** opens Maps there. When a crossing is seen right where you are within six hours,
+tap **Catch the ISS at ...**, keep the Moon in the picture, and the phone shoots by itself four seconds before (it
+beeps from ten). The photo then shows the station's silhouettes and its path: **Your Moon, with ISS crossing it**.
+Tap the button again to stop waiting.
+
+- The strips are only a few kilometres wide, so allow **Precise location** when it asks.
+- The orbits come from CelesTrak with **Satellite data** on in Settings (it's on unless you turned it off). They
+  change a little with every update: look again the day before.
+- Something else crossing the Moon while you shoot (a plane, a bird) is found too, as a **Mystery flyer**.
+- Best Moon nights: a half Moon (the craters along the line between day and night throw long shadows), high up.
 
 ## Night Sky on your Pixel Watch
 
@@ -299,6 +333,12 @@ You pair once: from then on, opening Night Sky on the watch finds the phone by i
     few times, away from cars and metal railings.
   - It takes your arm's direction from the watch's crown side, toward your hand, as a watch is usually worn. If you
     wear yours with the crown toward your elbow, tap the middle of the Sky Pointer once: it flips, and remembers.
+
+- **Moon** (3.0): tap **Moon** (on Ready, and on Done when there's room). The Moon as it looks tonight (its lit side
+  and seas turned as they are), how much is lit, how high and which way, and the next Space Station crossing near
+  you. While the Moonshot is open on the phone the watch shows it by itself: **Shoot** takes the burst without
+  touching the phone, **Catch** arms a crossing. A crossing is counted down to the second with buzzes: a long one at
+  a minute, two at ten seconds, taps at three, two and one, and a long one at now. **Back** closes it.
 
 If the watch says **Looking for the phone**, open Night Sky on the phone: the phone only listens while the app is
 open or a photo is running. If the Bluetooth way never connects, the internet way still does; check that Night Sky
@@ -704,6 +744,9 @@ app/src/main/java/com/brandon/nightsky/
     SongPlayer, SongVideo  the song through the speaker (AudioTrack); the song as a video with its sound
     RemoteHost          the remote viewer and Mission Control: what the web pages show and the commands they send
     WatchLink           the Pixel Watch's link on the phone (2.5): pairing, the status and live picture out, its commands in
+    MoonActivity        the Moonshot (3.0): the telephoto's picture, the photo and its labels, the Transit Hunter's card
+    MoonCamera          the Moonshot's camera: the telephoto's RAW frames, finding the Moon, metering, the focus sweep, bursts
+    Transits            the Transit Hunter's list, worked out from the satellite orbits for this place
     link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
                         the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
@@ -765,11 +808,17 @@ app/src/main/java/com/brandon/nightsky/
         GoldenRecord    Earth's Address (2.6): the pulsar map redrawn for a night, its picture, the pulsars' tour
         Postcard        Postcard from Another World (2.6): the sky from another star's planet, the card, its message
         SkyPointer      the watch's Sky Pointer (2.6): what's in the sky, what the arm points at, the way to a target
+        MoonGeo         the Moon from here (3.0): phase, libration, its north and lit side, the picture's up from the tilt
+        MoonFinder, MoonMeter  the Moon found in a RAW frame and followed; its exposure from the phase, then measured
+        MoonStack       the Moonshot's stack: the sharpest frames lined up, stacked, sharpened; crossings found in them
+        MoonLook, MoonSites  the photo enlarged and finished, its labels and captions; the landing sites and their stories
+        TransitFinder   the Transit Hunter: where the Space Station's shadow-path on the Moon crosses the ground
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
 watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
                         DialView), WatchClient (Bluetooth and the relay), WatchService (following with the screen off),
-                        SkyScreen (the Sky Pointer, 2.6: the rotation sensor, the arrow and the clicks)
+                        SkyScreen (the Sky Pointer, 2.6: the rotation sensor, the arrow and the clicks), MoonFace (the
+                        Moon screen, 3.0: the Moon drawn as tonight, the crossing's countdown and its buzzes)
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
                         a night through Mission Control; MissionDemo: the page served from a simulated night)
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
@@ -839,6 +888,13 @@ and nothing else; `-Dcosmic.seed` and `-Dcosmic.sim` pick other particles and an
 catalogue), `PostcardTest` (an output folder: the sky from Proxima b and 51 Pegasi against hand sums, the card) and
 `PointerTest` (the Sky Pointer's sky against an independent sidereal-time sum, the arm from the sensor, pointing and
 finding, its speed).
+The 3.0 tests: `MoonGeoTest` (the Moon's phase, libration, north and lit side against published values),
+`MoonCamTest` (the Moon found in a whole frame beside a street light, the exposure settling from far off),
+`MoonshotTest` (an output folder: a simulated hand-held Moon stacked, its sharpness and geometry against the truth,
+lamps on the simulated Moon to check that every label lands where its place is), `TransitTest` (the Transit Hunter
+against an independent calculation: the strip's middle, its edges, how long a crossing lasts) and `TransitShotTest`
+(an output folder: the ISS put in front of a simulated Moon, found again in the frames where it was, nothing found
+without it). `MoonSim` is the simulated Moon they share.
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -853,4 +909,8 @@ with a simulated camera that renders the real stars and can stop, stall, fail or
 the stop recorder, and `robo/run.sh Night wrist` (2.5) pairs the watch app with the phone and runs a session from
 it, over the internet alone and then over Bluetooth alone, drawing each watch screen to a picture (since 2.6 it also
 points the watch's Sky Pointer at a star and steers it to the Moon, through a simulated rotation sensor).
+`robo/run.sh Moon` (3.0) runs the Moonshot on a simulated 5x telephoto (whole 12-megapixel RAW frames of `MoonSim`'s
+Moon in a shaking hand, a lens to focus, a sensor brighter than the meter's guess): it finds, meters and focuses,
+shoots from the watch's Shoot, stacks and saves, then catches a staged ISS crossing from the watch's Catch,
+checking the watch's Moon screen and buzzes on the way, and draws every screen to a picture.
 [robo/README.md](robo/README.md) lists every scenario.

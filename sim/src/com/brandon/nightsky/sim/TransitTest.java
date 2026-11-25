@@ -144,7 +144,7 @@ public final class TransitTest {
         for (TransitFinder.Transit tr : mine) inWide &= near(wide, tr) != null;
         check("the near ones are among the wide search's", inWide, "");
 
-        System.out.println(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
 

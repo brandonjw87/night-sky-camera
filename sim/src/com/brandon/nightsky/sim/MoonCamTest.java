@@ -95,7 +95,7 @@ public final class MoonCamTest {
         check("a lot of light needed: the ISO first, then the time to 1/125 s at most", dim.ns <= MoonMeter.LONG_NS && dim.iso >= MoonMeter.ISO_CAP, dim.toString());
         MoonMeter.Exposure bright = MoonMeter.split(0.02, lim);
         check("little light needed: the lowest ISO, shorter than 1/1000 s", bright.iso == lim.minIso && bright.ns < MoonMeter.SHORT_NS, bright.toString());
-        System.out.println(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
 }

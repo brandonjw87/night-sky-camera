@@ -10,8 +10,8 @@ android {
         applicationId 'com.brandon.nightsky'
         minSdk 37
         targetSdk 37
-        versionCode 18
-        versionName '2.6'
+        versionCode 19
+        versionName '3.0'
     }
 
     buildTypes {

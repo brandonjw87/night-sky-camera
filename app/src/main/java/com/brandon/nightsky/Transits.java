@@ -108,10 +108,11 @@ final class Transits {
         return t.here() ? t.hereMs : t.timeMs;
     }
 
-    /** The next one seen from right here, or null. */
+    /** The next one seen from right here that isn't over yet, or null. */
     static TransitFinder.Transit nextHere(List<TransitFinder.Transit> l) {
         if (l == null) return null;
-        for (TransitFinder.Transit t : l) if (t.here()) return t;
+        long now = System.currentTimeMillis();
+        for (TransitFinder.Transit t : l) if (t.here() && when(t) > now - 2000) return t;
         return null;
     }
 

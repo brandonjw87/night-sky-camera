@@ -468,7 +468,7 @@ public final class MoonshotTest {
             MoonStack.Result er = MoonStack.stack(empty, spec, new MoonStack.Options(), Progress.NONE);
             check("says so, without a picture", er != null && er.r == null && !er.disk.ok, er == null ? "null" : er.log);
         }
-        System.out.println(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
 }

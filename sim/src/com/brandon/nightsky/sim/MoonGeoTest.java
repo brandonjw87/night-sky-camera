@@ -137,7 +137,7 @@ public final class MoonGeoTest {
             for (MoonSites.Site s : MoonSites.ALL) if (s.story.length() < 40 || s.label.isEmpty()) stories = false;
             check("every site has a label and a story", stories, "");
         }
-        System.out.println(failed == 0 ? "ALL PASSED" : failed + " FAILED");
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
 }

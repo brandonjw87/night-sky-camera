@@ -3,10 +3,10 @@
 #
 #   robo/setup.sh
 #
-# Everything goes in $ROBO_HOME (default ~/.cache/nightsky-robo):
-#   deps/                     Robolectric 4.17 and JUnit, from Maven Central (pom.xml)
-#   sdk/                      Robolectric's Android 16 jars: the plain one (on the classpath) and the instrumented one
-#                             it runs SDK 36 on
+# Everything goes in $ROBO_HOME (default ~/.cache/nightsky-robo17):
+#   deps/                     Robolectric 4.18.1 and JUnit, from Maven Central (pom.xml)
+#   sdk/                      Robolectric's Android 17 jars: the plain one (on the classpath) and the instrumented one
+#                             it runs SDK 37 on (3.0 needs Android 17)
 #   androidx-test-stubs.jar   stand-ins for the androidx.test classes Robolectric refers to (they're Google-Maven only)
 #
 # Needs java 17 or newer, curl, and mvn (fetched from Maven Central if missing). Behind an HTTPS proxy ($HTTPS_PROXY),

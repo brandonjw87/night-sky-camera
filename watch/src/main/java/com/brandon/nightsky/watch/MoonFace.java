@@ -12,7 +12,8 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * The Moon on the wrist (3.0, the Moonshot): its phase drawn as it looks tonight (the lit side where the sky has it),
+ * The Moon on the wrist (3.0, the Moonshot): its phase drawn as it looks tonight (the lit side where the sky has it, its
+ * seas turned as they are),
  * how much of it is lit and how high it is; with the phone's Moonshot open, its shutter and Catch; and the next
  * space-station crossing of the Moon near here, counted down to the second with buzzes (a minute, ten seconds,
  * three, two, one, now), so the phone can be held still without looking at anything.
@@ -29,16 +30,37 @@ final class MoonFace {
     private static String phaseKey = "";
 
     /**
-     * The phase as a picture ({@code size} px square, the Moon half as wide, so the face's fade leaves it whole): the
-     * lit part bright, towards {@code limbDeg} (counterclockwise from up), the night side faint as earthshine.
+     * The seas (maria) of the Moon's near side, for its face on the watch: {latitude, longitude (east positive),
+     * radius} in degrees, as rough round patches: Imbrium, Serenitatis, Tranquillitatis, Crisium, Fecunditatis, Nectaris,
+     * Nubium, Humorum, the Ocean of Storms (two), Frigoris (three), Vaporum, Insularum, Cognitum.
      */
-    static Bitmap phase(int size, double illum, double limbDeg) {
-        String key = size + "|" + Math.round(illum * 200) + "|" + Math.round(limbDeg);
+    static final double[][] SEAS = {
+            {33, -16, 17}, {28, 17.5, 10}, {8.5, 31, 11}, {17, 59, 8}, {-7.8, 51, 9}, {-15, 35, 5}, {-21, -17, 10}, {-24, -39, 6},
+            {22, -55, 15}, {2, -48, 12}, {56, 0, 6}, {57, 25, 6}, {55, -28, 6}, {13, 3.5, 4}, {7.5, -31, 7}, {-10, -23, 5},
+    };
+
+    /** The lit part's brightness on the watch (the words go over it, so it stays dim), and the night side's (earthshine). */
+    static final double LIT = 0.42, EARTHSHINE = 0.05;
+
+    /**
+     * The phase as a picture ({@code size} px square, the Moon half as wide, so the face's fade leaves it whole): the
+     * lit part towards {@code limbDeg} (counterclockwise from up), the night side faint as earthshine, and the dark
+     * seas where they are with the Moon's north at {@code axisDeg} (counterclockwise from up; NaN: no seas drawn).
+     */
+    static Bitmap phase(int size, double illum, double limbDeg, double axisDeg) {
+        String key = size + "|" + Math.round(illum * 200) + "|" + Math.round(limbDeg) + "|" + (Double.isNaN(axisDeg) ? "-" : Math.round(axisDeg));
         if (phaseBmp != null && key.equals(phaseKey)) return phaseBmp;
         int[] px = new int[size * size];
         double c = (size - 1) / 2.0, R = size * 0.27;
         double t = Math.toRadians(limbDeg), lx = -Math.sin(t), ly = -Math.cos(t);
         double k = Math.max(0, Math.min(1, illum));
+        boolean seas = !Double.isNaN(axisDeg);
+        double th = seas ? Math.toRadians(axisDeg) : 0, ct = Math.cos(th), st = Math.sin(th);
+        double[][] sea = new double[SEAS.length][];
+        for (int i = 0; i < SEAS.length; i++) {
+            double la = Math.toRadians(SEAS[i][0]), lo = Math.toRadians(SEAS[i][1]);
+            sea[i] = new double[]{Math.cos(la) * Math.sin(lo), Math.sin(la), Math.cos(la) * Math.cos(lo), Math.cos(Math.toRadians(SEAS[i][2]))};
+        }
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
                 double lit = 0, disc = 0;
@@ -55,7 +77,25 @@ final class MoonFace {
                     }
                 }
                 double a = disc / 9, l = disc > 0 ? lit / disc : 0;
-                int g = (int) Math.round(255 * a * (0.10 + 0.90 * l));
+                double tone = 1;
+                if (seas && disc > 0) {
+                    // the point on the Moon's face (its north up, east to the right as the sky has it), turned as tonight
+                    double X = (x - c) / R, Y = (y - c) / R;
+                    double mx = X * ct - Y * st, my = X * st + Y * ct;
+                    double q = mx * mx + my * my;
+                    if (q < 1) {
+                        double ex = mx, ny = -my, ez = Math.sqrt(1 - q);
+                        double dark = 0;
+                        for (double[] m : sea) {
+                            double cosd = ex * m[0] + ny * m[1] + ez * m[2];
+                            // inside the patch, and softly a little way out of it
+                            double edge = (cosd - m[3]) / (1 - m[3] + 1e-9);
+                            dark = Math.max(dark, Math.max(0, Math.min(1, 0.5 + 2.5 * edge)));
+                        }
+                        tone = 1 - 0.42 * dark;
+                    }
+                }
+                int g = (int) Math.round(255 * a * (EARTHSHINE + (LIT - EARTHSHINE) * l * tone));
                 px[y * size + x] = 0xFF000000 | (g << 16) | (g << 8) | g;
             }
         }
@@ -93,7 +133,7 @@ final class MoonFace {
             return;
         }
         double illum = moon.num("illum", 0.5);
-        f.picture = phase(200, illum, moon.num("limb", moon.bool("waxing", true) ? 270 : 90));
+        f.picture = phase(200, illum, moon.num("limb", moon.bool("waxing", true) ? 270 : 90), moon.has("axis") ? moon.num("axis", 0) : Double.NaN);
         f.title = moon.str("phase", "The Moon");
         boolean open = moon.bool("open", false);
         long at = target(moon, now);

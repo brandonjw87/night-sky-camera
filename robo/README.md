@@ -1,7 +1,7 @@
 # Robolectric tests: the real app off the phone
 
 These run the app itself (MainActivity, CaptureService, SessionController and everything under them) on a desktop
-JVM with [Robolectric](https://robolectric.org) 4.17, without Gradle and without Google's Maven repository. The
+JVM with [Robolectric](https://robolectric.org) 4.18.1 on Android 17 (SDK 37), without Gradle and without Google's Maven repository. The
 simulator tests in `sim/` check the processing; these check the app around it: its screens, its state machine and
 what it does when the camera misbehaves.
 
@@ -13,13 +13,14 @@ what it does when the camera misbehaves.
 | `Launches` | Opens the app every way Android can: the launcher, shortcuts, the widget, the quick settings tile, notifications. | `launches/` |
 | `EditFlow` | Edits a kept session through the session controller, on the session `sim/G3Test` makes: an edit that changes nothing, edits of how it's rendered and ones that stack it again, a kept stack reused, a render whose stack was deleted made again, a re-stack cancelled, and the new processing for older renders (stacked again for an older stack, only rendered again for a render from before 1.4). The photo's video (1.8): an edit stacked again is saved as a Motion Photo with its own video, a render made again keeps it, and an edit of the look only has none. | `EditFlow.out`: each check, then the session's log |
 | `Stops` | The stop recorder (2.1): a crash written down as it happens (and in its session's log), Android's own records of the process ending (memory while developing a rehearsal, a freeze with its trace, a kill from a version that said nothing, and the endings that are part of normal life: an idle app tidied away, an update, the app closing itself), the home screen's card for each, Share the details, and Dismiss putting them away for good. | `stops/stops.log`: each check, with the details shared |
+| `Moon` | The Moonshot (3.0) end to end. The phone's three back cameras are described to Android as a Pixel 10 Pro XL describes them, so the app picks the 5x telephoto itself; `FakeMoonCamera` opens it without Camera2 and `SimTele` feeds the real `MoonCamera` whole 12-megapixel RAW frames of `sim/MoonSim`'s Moon in a shaking hand, with the exposure and focus the app asked for three frames before, a lens that blurs away from its sharpest setting and a sensor brighter than the meter's guess. It checks the Moon found, metered and focused; the watch's Shoot taking a burst; the stack, the photo upright from the phone's tilt, the labels and a tapped story, both photos saved; the Transit Hunter's card and map; then a staged ISS crossing twenty seconds away, armed from the watch's Catch, counted down (the watch's buzzes, the phone's beeps), shot by itself four seconds before, the station put in the frames at that moment, found and named; and the screen closing. | `moon/`: every screen and the watch's Moon screens as PNGs, the saved photos in `moon/media/`; `Moon.out`: each check |
 | `Intro` | The opening film (2.0) around Robolectric's stand-in for the phone's video player: when it plays and when it doesn't (once, from the icon only, never over a session), that it never stands in the app's way (a tap, a film that can't be played, a player that never shows a picture, the app left or closed while it plays), its sound, its night-red look, how it fills screens of other shapes, and its setting with Play it now. | `Intro.out`: each check |
 
 ## Set up (once)
 
     robo/setup.sh
 
-It puts Robolectric, JUnit and Robolectric's Android 16 jars (about 400 MB) in `~/.cache/nightsky-robo`, all from
+It puts Robolectric, JUnit and Robolectric's Android 17 jars (about 400 MB) in `~/.cache/nightsky-robo17`, all from
 Maven Central, and builds stand-ins for the few `androidx.test` classes Robolectric refers to. It needs Java 17 or
 newer, curl, and the Android build tools and jars that `tools/build_apk.sh` uses (`aapt2`, and the platform jars in
 `/opt/android-jars`, or say where with `ANDROID_JAR` and `ANDROID_RES_JAR`).
@@ -32,6 +33,7 @@ newer, curl, and the Android build tools and jars that `tools/build_apk.sh` uses
     SESSIONS=/path/to/g3/sessions robo/run.sh EditFlow    # after: java ... sim.G3Test /path/to/g3 2 16
     robo/run.sh Intro
     robo/run.sh Stops
+    robo/run.sh Moon
 
 Each run compiles the app and the tests from this tree first. `Night` runs its fake clock at twice the real one
 (`SPEED`), so a 5-minute session takes a few minutes; the whole list takes hours. A run ends with a summary: each
@@ -97,7 +99,10 @@ that the scenario didn't mean to cause, a session that failed when it shouldn't 
   lands in `night/media/`, named by its row and display name, to be read back. Without ffmpeg the video is a stand-in
   and its frames aren't checked.
 
-- `CameraRig` itself is replaced, so its ImageReader, abort and restart code never runs here.
+- `CameraRig` itself is replaced, so its ImageReader, abort and restart code never runs here. The same for the
+  Moonshot's Camera2 session (`MoonCamera.open`): the lens choice, its setup and everything from the frame on are the
+  app's own, but the telephoto's real exposures, focus and stabiliser can only be seen on the phone. The live
+  picture's TextureView draws nothing here (it's white in the pictures).
 - The watch (2.5): Robolectric's Bluetooth sockets don't reach each other, so the test joins the watch's and the
   phone's with two threads, each copying one end's output into the other's input (each end's own code runs as on the
   devices, down to the frames it writes). The internet way goes to `sim/MockNtfy` instead of ntfy.sh, and the watch's

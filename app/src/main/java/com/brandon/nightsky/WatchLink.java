@@ -650,6 +650,8 @@ final class WatchLink {
             j.put("alt", v.alt, 1).put("dir", MoonActivity.compass(v.az));
             // the lit side's direction from the Moon's middle, counterclockwise from straight up in the sky
             j.put("limb", MoonGeo.norm360(v.chi - v.q), 1);
+            // and the Moon's north (its seas turned as they are tonight), the same way
+            j.put("axis", MoonGeo.norm360(v.p - v.q), 1);
         }
         String screen = MoonActivity.watchState(j);
         List<TransitFinder.Transit> tl = Transits.peek();

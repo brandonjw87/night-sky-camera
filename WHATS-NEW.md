@@ -1,5 +1,92 @@
 # Night Sky Camera: what's new
 
+## Version 3.0: the Moonshot
+
+> "We choose to go to the Moon in this decade and do the other things, not because they are easy, but because they
+> are hard." President John F. Kennedy, Rice University, 12 September 1962
+
+3.0 turns the app round to face the Moon. **The Moonshot** shoots it with the Pixel's 5x telephoto, hand-held: 150 RAW
+pictures in five seconds, the sharpest lined up and stacked into one photo sharper and cleaner than any single shot,
+with every place people and their robots have landed on the Moon marked where it really is tonight. **The Transit
+Hunter** tells you when the International Space Station will fly across the face of the Moon near you, and the phone
+catches it by itself. And the watch gets **a Moon screen**: the Moon as it looks tonight, the phone's shutter on your
+wrist, and the countdown to the Space Station's crossing in buzzes you can feel. Night Sky now needs **Android 17**:
+it's made for the Pixel 10 and newer.
+
+### What's new
+
+- **The Moonshot.** A new card at the top of the main screen: **Shoot the Moon**. Point the phone at the Moon and it
+  does the rest:
+  - It picks the longest lens that gives RAW pictures (the 5x telephoto on the Pixel 10 Pro and Pro XL), finds the
+    Moon anywhere in the picture, rings it, and shows a close-up in the corner.
+  - It sets the exposure for the Moon's bright parts. The Moon is a sunlit landscape, not a night sky: about 1/1000
+    of a second. It starts from the phase and how high the Moon is, then measures every frame until the bright
+    highlands sit just under white, nothing burnt out.
+  - It focuses on the craters: it steps the lens out from infinity, scores each step, and keeps the sharpest.
+  - **Shoot the Moon** takes 150 RAW pictures in five seconds. Hold the phone with both hands, elbows against your
+    chest. The sharpest half are kept, each lined up on the others to a fraction of a pixel (your hand's shake and
+    twist undone), stacked, and sharpened. The photo comes out with the sky's up at the top whichever way you held
+    the phone (from its tilt sensor), enlarged to 1440 pixels square.
+  - **Every landing labelled where it is tonight:** Apollo 11, 12, 14, 15, 16 and 17 in gold, and 30 more: Luna 2
+    (the first thing people ever sent to the Moon, 1959), Luna 9, the Lunokhod rovers, Ranger, Surveyor, Chang'e 3 to
+    6, Chandrayaan-3, SLIM, Odysseus, Blue Ghost and the rest. The Moon rocks a little as seen from here (libration),
+    so the places shift a bit from night to night: the labels follow. **Tap a label** for its story: who went, what
+    they did, and whether the Sun is up there tonight.
+  - **One frame** and **Stacked** to see what the stacking did; **No labels**, **Landings**, **Every one**; and
+    **Mineral colours**: the Moon's real colours turned way up, the titanium-rich seas blue and the iron-rich ones
+    orange, as NASA's Galileo spacecraft showed them on its way to Jupiter.
+  - Saved twice in Pictures/NightSky, plain and labelled. **Share** sends it.
+- **The Transit Hunter.** Now and then the International Space Station (or China's Tiangong) flies across the face
+  of the Moon: a black silhouette, there and gone in less than a second, seen only from a strip of ground a few
+  kilometres wide. The Moonshot screen works out every crossing within 60 km of you in the next ten days, from the
+  same orbits the app already downloads to name satellites: when (to the second), which way to go and how far, how
+  wide the strip is, how long the crossing lasts, how high the Moon is, day or night. **Show the nearest strip on
+  the map** opens it in Maps.
+  - When one crosses right where you are in the next six hours, it says **Catch the ISS at 9:41:07 PM**. Tap it and
+    keep the Moon in the picture: the phone counts down, beeps once a second from ten, and four seconds before the
+    moment it starts shooting by itself: 270 pictures, nine seconds, in case the orbit's timing is a little off.
+  - The stack finds the station's silhouette in every frame where it crossed the bright Moon, puts each one where
+    it was, and draws its path on the photo: **Your Moon, with ISS crossing it**, how long it took and how many times
+    it was caught.
+  - Anything else that flies straight across the Moon while you shoot (a plane, a bird, a bat) is found too, as a
+    **Mystery flyer**.
+  - The strips are narrow, so the screen asks for your **precise location**. The orbits come from CelesTrak (on
+    unless you turned **Satellite data** off in Settings).
+- **The Moon on your watch.** A **Moon** button on the watch (on Ready, and on Done when there's room):
+  - The Moon drawn as it looks tonight: the lit side where the sky has it, and its dark seas turned the way they are.
+  - How much is lit, how high it is and which way, and the next Space Station crossing near you.
+  - While the Moonshot is open on the phone the watch shows the Moon screen by itself, with **Shoot** (the burst
+    starts without you touching the phone, so it doesn't shake) and **Catch** (arms the crossing).
+  - A crossing counted down to the second, with buzzes you can feel without looking: a long one at a minute, two at
+    ten seconds, taps at three, two and one, and a long one at **now**. With your wrist down it keeps counting in a
+    notification.
+- **Android 17.** Night Sky 3.0 needs Android 17 or newer, and it's made for the Pixel 10 and newer. On a phone
+  without a telephoto, the Moonshot uses the main camera zoomed in.
+
+### Try tonight
+
+Times for the eastern US (New York):
+
+1. **Tonight, Wednesday 25 November:** the Moon is just past full (96% lit) and about 34° up in the east by 9 PM,
+   higher after that. Open Night Sky, tap **Shoot the Moon**, wait for **Ready**, brace your elbows and shoot. Then
+   tap Apollo 11 on the photo. Thanksgiving night (Thursday) works too: 91% lit, best after about 10 PM.
+2. **Wednesday 16 to Friday 18 December, evenings:** a half Moon high in the south-west. The craters along the line
+   between day and night throw long shadows, so this is when the Moonshot shows the most detail.
+3. **Look at the Transit Hunter card** whenever you open the Moonshot: if a crossing comes within driving distance,
+   it says when and where. The strips move with every orbit update, so look again the day before.
+
+### Tested
+
+- A robot phone with a simulated 5x telephoto (whole 12-megapixel RAW frames of a simulated Moon, a shaky hand, a
+  lens to focus and a sensor brighter than the meter expects) drove the real Moonshot screen from start to finish.
+  It found the Moon, brought the exposure down from burnt-out, focused on the lens's sharpest setting, shot,
+  stacked, and saved both photos. Then it caught a staged ISS crossing by itself, four seconds early, found the
+  station in the frames and named it. The watch's Shoot, Catch and countdown buzzes were checked against the phone.
+- The crossings themselves were checked against a second, independent calculation. From the middle of each
+  predicted strip the station passes over the middle of the Moon; just inside the strip's edge it crosses, and just
+  outside it misses.
+- Nothing has run on a real Pixel yet: the first Moon night will tell how the real telephoto does.
+
 ## Version 2.6: the Sky Pointer, and three more from NASA's notebook
 
 One more thing for the watch and three more NASA-style surprises on the phone. On the watch, the **Sky Pointer**:

@@ -141,6 +141,48 @@ public final class WatchProbe {
         return d.draw(side);
     }
 
+    // ---- the Moon screen (3.0)
+
+    /** The Moon screen as the watch would make it from the phone's status message (JSON), in words as {@link #face(Activity)}. */
+    public static String moonWords(String status, long now) {
+        DialView.Face f = moonFace(status, now);
+        StringBuilder b = new StringBuilder();
+        b.append(f.title).append(" | ").append(f.big).append(" | ").append(f.line1).append(" | ").append(f.line2).append(" | [");
+        for (int i = 0; i < f.buttons.size(); i++) {
+            DialView.Button x = f.buttons.get(i);
+            b.append(i > 0 ? ", " : "").append(x.label).append(x.enabled ? "" : " (off)");
+        }
+        b.append("] | ").append(f.top);
+        if (f.progress >= 0) b.append(String.format(java.util.Locale.US, " | ring %.2f", f.progress));
+        if (f.picture != null) b.append(" | picture");
+        return b.toString();
+    }
+
+    /** That screen drawn {@code side} pixels across. */
+    public static Bitmap moonDraw(Context c, String status, long now, int side) {
+        DialView d = new DialView(c);
+        d.show(moonFace(status, now));
+        return d.draw(side);
+    }
+
+    /** The watch's tick for the countdown's buzzes at {@code now}: whether a countdown runs. */
+    public static boolean moonTick(Context c, String status, long now) {
+        JsonTree.Obj s = JsonTree.object(status);
+        return MoonFace.tick(c, s != null ? s.obj("moon") : null, now);
+    }
+
+    /** The time the watch counts down to (0: none). */
+    public static long moonTarget(String status, long now) {
+        JsonTree.Obj s = JsonTree.object(status);
+        return MoonFace.target(s != null ? s.obj("moon") : null, now);
+    }
+
+    private static DialView.Face moonFace(String status, long now) {
+        DialView.Face f = new DialView.Face();
+        MoonFace.face(f, JsonTree.object(status), "Bluetooth", true, now, 0);
+        return f;
+    }
+
     // ---- the Sky Pointer (2.6)
 
     /** Where the watch thinks it is (the phone's place, as last said), or null. */
