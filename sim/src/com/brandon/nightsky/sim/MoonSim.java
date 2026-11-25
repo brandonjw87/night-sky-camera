@@ -26,8 +26,9 @@ public final class MoonSim {
     /** Blurs of the drawn Moon (extra sigma in sensor pixels) and their summed-area tables: [blur][channel]. */
     final double[] blurs = {0, 0.5, 1.0, 1.6, 2.4};
     final double[][][] sat;
-    /** The drawn Moon itself, unblurred: {r, g, b}, T x T. */
+    /** The drawn Moon itself, unblurred: {r, g, b}, T x T, and its summed-area tables. */
     final float[][] truth;
+    final double[][] satTruth;
     /** The camera's colour: raw counts per unit of sRGB light (green = 1), as ColorMath's fallback assumes. */
     public final double[] camRgb = {0.5, 1, 0.65};
     public int black = 64, white = 1023;
@@ -48,6 +49,8 @@ public final class MoonSim {
         rPx = view.radius * 3600 / arcsecPerPx;
         T = 2 * (int) Math.ceil(os * rPx * 1.12) + 2;
         truth = draw();
+        satTruth = new double[3][];
+        for (int c = 0; c < 3; c++) satTruth[c] = summed(truth[c], T);
         // the lens: 18" across at half height
         double lensSigma = 18.0 / 2.355 / arcsecPerPx;
         sat = new double[blurs.length][][];
@@ -89,6 +92,8 @@ public final class MoonSim {
     };
 
     private final List<double[]> craters = new ArrayList<double[]>();
+    /** The craters a point is inside (set by slope). */
+    private final List<double[]> inside = new ArrayList<double[]>();
     private List<double[]>[] cells;
     private static final int CELL = 6;
 
@@ -137,11 +142,13 @@ public final class MoonSim {
             double ml = Math.cos(m[0] * D);
             double dot = px * ml * Math.cos(m[1] * D) + py * ml * Math.sin(m[1] * D) + pz * Math.sin(m[0] * D);
             double d = Math.acos(Math.max(-1, Math.min(1, dot))) / D;
+            // ragged shores: the distance wobbled by a slow noise on the sphere
+            d += m[2] * 0.35 * (2 * noise3(px * 5 + 17, py * 5 + 3, pz * 5 - 11) - 1);
             double t = 1 - d / m[2];
             if (t <= 0) continue;
             double s = Math.min(1, t * 3);
             s = s * s * (3 - 2 * s);
-            double v = s * m[3];
+            double v = s * m[3] * (0.85 + 0.3 * noise3(px * 11 - 5, py * 11 + 7, pz * 11 + 2));
             if (v > dark) dark = v;
             blue += v * m[4];
             wsum += v;
@@ -151,7 +158,8 @@ public final class MoonSim {
 
     /** The height field's slope at a point (unit vector p): its gradient in the tangent plane, as a 3-vector. */
     private void slope(double px, double py, double pz, double lat, double lon, double[] g) {
-        g[0] = g[1] = g[2] = 0;
+        g[0] = g[1] = g[2] = g[3] = 0;
+        inside.clear();
         int nl = 180 / CELL, nn = 360 / CELL;
         int a = Math.max(0, Math.min(nl - 1, (int) Math.floor((lat + 90) / CELL)));
         int o = ((int) Math.floor((lon + 180) / CELL) % nn + nn) % nn;
@@ -161,8 +169,15 @@ public final class MoonSim {
             double d = Math.acos(Math.min(1, dot)), r = d / c[3];
             // depth 0.12 of the diameter; a rim a fifth of the depth that falls away outside
             double depth = 0.24 * c[3], rim = 0.2 * depth, dhdr;
-            if (r < 1) dhdr = 2 * depth * r;
-            else dhdr = -rim * 2 * (r - 1) / 0.12 * Math.exp(-(r - 1) * (r - 1) / 0.12);
+            if (r < 1) {
+                dhdr = 2 * depth * r;
+                g[3] += depth * (r * r - 1) + rim;
+                inside.add(c);
+            } else {
+                double e = Math.exp(-(r - 1) * (r - 1) / 0.12);
+                dhdr = -rim * 2 * (r - 1) / 0.12 * e;
+                g[3] += rim * e;
+            }
             double dh = dhdr / c[3];
             // the direction away from the crater's centre in the tangent plane
             double ux = px - dot * c[0], uy = py - dot * c[1], uz = pz - dot * c[2];
@@ -221,7 +236,7 @@ public final class MoonSim {
         double[] sun = {Math.cos(sl) * Math.cos(so), Math.cos(sl) * Math.sin(so), Math.sin(sl)};
         double phaseFactor = Math.pow(10, -0.4 * 0.016 * view.phase);
         double half = T / 2.0, scale = os * rPx;
-        double[] g = new double[3];
+        double[] g = new double[4];
         for (int j = 0; j < T; j++) {
             for (int i = 0; i < T; i++) {
                 double u = (i - half + 0.5) / scale, v = -(j - half + 0.5) / scale;
@@ -256,6 +271,27 @@ public final class MoonSim {
                 ny /= nn;
                 nz /= nn;
                 double mu0 = nx * sun[0] + ny * sun[1] + nz * sun[2];
+                // the Sun's height over the smooth sphere here: past the terminator only what stands high is lit
+                double mus = px * sun[0] + py * sun[1] + pz * sun[2];
+                if (mus < -Math.sqrt(2 * Math.max(0, g[3]))) mu0 = 0;
+                // inside a crater, the shadow of its sunward wall
+                if (mu0 > 0 && !inside.isEmpty()) {
+                    double shx = sun[0] - mus * px, shy = sun[1] - mus * py, shz = sun[2] - mus * pz;
+                    double shn = Math.sqrt(shx * shx + shy * shy + shz * shz);
+                    double tanE = shn > 1e-9 ? mus / shn : 1e9;
+                    for (double[] c : inside) {
+                        if (shn < 1e-9) break;
+                        double dot = px * c[0] + py * c[1] + pz * c[2];
+                        // the point within the crater, in its radii, and the way to the Sun
+                        double qx = (px - dot * c[0]) / c[3], qy = (py - dot * c[1]) / c[3], qz = (pz - dot * c[2]) / c[3];
+                        double qs = (qx * shx + qy * shy + qz * shz) / shn, qq = qx * qx + qy * qy + qz * qz;
+                        double t = -qs + Math.sqrt(Math.max(0, qs * qs - qq + 1));
+                        if (mus <= 0 || 0.24 * qq + tanE * t < 0.24) {
+                            mu0 = 0;
+                            break;
+                        }
+                    }
+                }
                 double mu = Math.max(0.02, nx * ez[0] + ny * ez[1] + nz * ez[2]);
                 double lum = mu0 > 0 ? alb * 2 * mu0 / (mu0 + mu) * phaseFactor : 0;
                 // the Earth's glow on the night side (and under the day too, unseen there)
@@ -373,7 +409,15 @@ public final class MoonSim {
         return (t[iy * T + ix] * (1 - fx) + t[iy * T + ix + 1] * fx) * (1 - fy) + (t[(iy + 1) * T + ix] * (1 - fx) + t[(iy + 1) * T + ix + 1] * fx) * fy;
     }
 
-    /** The drawn Moon averaged over a box of side {@code px} sensor pixels around a place (channel c). */
+    /** The drawn Moon (no lens blur) averaged over a box of side {@code px} sensor pixels around a place (channel c). */
+    public double truthSharp(int c, double dx, double dy, double px) {
+        double[] s = satTruth[c];
+        double tx = T / 2.0 + dx * os, ty = T / 2.0 + dy * os, h = px * os / 2.0;
+        double sum = at(s, tx + h, ty + h) - at(s, tx - h, ty + h) - at(s, tx + h, ty - h) + at(s, tx - h, ty - h);
+        return sum / (4 * h * h);
+    }
+
+    /** The Moon as the lens delivers it (its blur, no shake) averaged over a box of side {@code px} sensor pixels (channel c). */
     public double truthBox(int c, double dx, double dy, double px) {
         double[] s = sat[0][c];
         double tx = T / 2.0 + dx * os, ty = T / 2.0 + dy * os, h = px * os / 2.0;

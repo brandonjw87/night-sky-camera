@@ -52,14 +52,20 @@ public final class MoonStack {
         /** How much finer the result's grid is than the sensor's. */
         public int scale = 2;
         /** Share of the frames merged (the sharpest), and the fewest. */
-        public double keep = 0.4;
+        public double keep = 0.5;
         public int minKeep = 12;
         /** The Moon's radius in the crop's pixels as the lens and the ephemeris predict it (NaN: found freely). */
         public double expectedRadius = Double.NaN;
         /** The result's up as a position angle (degrees): the sky's up (the parallactic angle); NaN: the reference's. */
         public double outUpPa = Double.NaN;
+        /** The bright limb's middle as a position angle (degrees, the ephemeris's chi); NaN: found from the pictures. */
+        public double brightLimbPa = Double.NaN;
         public boolean deconvolve = true;
-        public int rlIterations = 14;
+        public int rlIterations = 20;
+        /** The sharpening's blur as a share of the blur measured on the bright limb. */
+        public double rlSigma = 1.0;
+        /** The merge's two kernels' widths (sigma, in the sensor's pixels). */
+        public double fineKernel = 0.36, coarseKernel = 0.85;
     }
 
     /** The Moon's disk found in a picture. */
@@ -71,6 +77,8 @@ public final class MoonStack {
         public double litDir = Double.NaN;
         /** Lit share of the disk's area. */
         public double litFrac;
+        /** The Moon's brightness over the picture's noise (an empty sky has a few). */
+        public double contrast;
         public boolean ok;
 
         @Override
@@ -201,33 +209,54 @@ public final class MoonStack {
         return s[Math.max(0, Math.min(m - 1, (int) Math.round(q * (m - 1))))];
     }
 
-    /**
-     * Finds the Moon's disk: the lit part's edge points, a circle through them that keeps the sky outside (the
-     * terminator's edge goes the other way and is left out), the radius held near {@code rExp} if it is known.
-     */
+    /** The noise of a picture: from the differences of pixels two apart (their median: the Moon's edges hardly move it). */
+    static double noise(float[] L, int w, int h) {
+        int n = w * h, step = Math.max(1, n / 30000);
+        float[] d = new float[n / step + 1];
+        int m = 0;
+        for (int k = 0; k < n; k += step) if (k % w < w - 2) d[m++] = Math.abs(L[k] - L[k + 2]);
+        if (m == 0) return 0;
+        Arrays.sort(d, 0, m);
+        return d[m / 2] * 1.4826 / Math.sqrt(2);
+    }
+
+    /** Finds the Moon's disk with nothing known of where its lit side is. */
     public static Disk findDisk(float[] L, int w, int h, double rExp) {
+        return findDisk(L, w, h, rExp, Double.NaN);
+    }
+
+    /**
+     * Finds the Moon's disk: the lit part's edge, each point of it placed where the brightness is halfway between the
+     * Moon's and the sky's (unbiased by the blur), a circle through them that keeps the sky outside. Only the bright
+     * limb is the Moon's true edge: the terminator is the shadow's, so the circle is fitted to the limb's side, within
+     * 75 degrees of the lit side's middle ({@code litDirDeg}: counterclockwise from the picture's up, from the
+     * ephemeris and the gravity sensor; NaN: found from the picture, a first fit giving the direction).
+     */
+    public static Disk findDisk(float[] L, int w, int h, double rExp, double litDirDeg) {
         Disk d = new Disk();
         float bg = percentile(L, 0.05), hi = percentile(L, 0.998);
-        if (!(hi > bg + 1e-4)) return d;
+        double nz = noise(L, w, h);
+        d.contrast = nz > 0 ? (hi - bg) / nz : (hi > bg ? 1e9 : 0);
+        // a Moon is hundreds of times brighter than the noise; an empty sky is not
+        if (!(hi > bg + 1e-4) || d.contrast < 25) return d;
         float t = bg + 0.3f * (hi - bg);
         // the lit part's centroid and area
-        double sx = 0, sy = 0, sw = 0;
+        double sx = 0, sy = 0;
         int area = 0;
         for (int j = 0; j < h; j++) {
             for (int i = 0; i < w; i++) {
-                float v = L[j * w + i];
-                if (v > t) {
+                if (L[j * w + i] > t) {
                     area++;
                     sx += i;
                     sy += j;
-                    sw++;
                 }
             }
         }
         if (area < 20) return d;
-        double mx = sx / sw, my = sy / sw;
-        // edge points: the lit part's boundary, placed where the brightness crosses the threshold
+        double mx = sx / area, my = sy / area;
+        // edge points: where the lit part ends, then moved along the downhill direction to the halfway brightness
         List<double[]> pts = new ArrayList<double[]>();
+        double[] prof = new double[17];
         for (int j = 1; j < h - 1; j++) {
             for (int i = 1; i < w - 1; i++) {
                 int k = j * w + i;
@@ -236,24 +265,65 @@ public final class MoonStack {
                 if (!edge) continue;
                 double gx = (L[k + 1] - L[k - 1]) * 0.5, gy = (L[k + w] - L[k - w]) * 0.5, gn = Math.hypot(gx, gy);
                 if (gn < 1e-6) continue;
-                // step along the downhill gradient to where it crosses t
                 double ux = -gx / gn, uy = -gy / gn;
-                double v0 = L[k], v1 = sample(L, w, h, i + ux, j + uy);
-                double f = v0 > v1 ? Math.max(0, Math.min(1, (v0 - t) / (v0 - v1))) : 0.5;
-                pts.add(new double[]{i + ux * f, j + uy * f, ux, uy, gn});
+                for (int s = 0; s < 17; s++) prof[s] = sample(L, w, h, i + ux * (s - 8) * 0.5, j + uy * (s - 8) * 0.5);
+                double inner = (prof[0] + prof[1] + prof[2]) / 3, outer = (prof[14] + prof[15] + prof[16]) / 3;
+                if (inner - outer < 0.5 * (t - bg)) continue;
+                double mid = 0.5 * (inner + outer), at = Double.NaN;
+                for (int s = 1; s < 17; s++) {
+                    if (prof[s - 1] >= mid && prof[s] < mid) {
+                        at = (s - 1 + (prof[s - 1] - mid) / (prof[s - 1] - prof[s]) - 8) * 0.5;
+                        break;
+                    }
+                }
+                if (Double.isNaN(at)) continue;
+                pts.add(new double[]{i + ux * at, j + uy * at, ux, uy, gn});
             }
         }
         d.edges = pts.size();
         if (pts.size() < 8) return d;
+        double[] c = fitCircle(pts, rExp, w, h, Double.NaN);
+        if (c == null) return d;
+        double dir = litDirDeg;
+        if (Double.isNaN(dir) && Math.hypot(mx - c[0], my - c[1]) > 0.004 * c[2])
+            dir = MoonGeo.norm360(Math.toDegrees(Math.atan2(-(mx - c[0]), -(my - c[1]))));
+        if (!Double.isNaN(dir)) {
+            double[] c2 = fitCircle(pts, rExp, w, h, dir);
+            if (c2 != null) c = c2;
+        }
+        d.cx = c[0];
+        d.cy = c[1];
+        d.r = c[2];
+        d.inliers = (int) c[3];
+        d.ok = d.inliers >= 8 && d.r > 3 && d.inliers >= 0.25 * Math.PI * d.r;
+        // the lit part: its share of the disk and its direction from the centre
+        double lx = mx - d.cx, ly = my - d.cy;
+        d.litFrac = Math.min(1, area / (Math.PI * d.r * d.r));
+        if (Math.hypot(lx, ly) > 0.004 * d.r) d.litDir = MoonGeo.norm360(Math.toDegrees(Math.atan2(-lx, -ly)));
+        else if (!Double.isNaN(litDirDeg)) d.litDir = litDirDeg;
+        return d;
+    }
+
+    /**
+     * RANSAC, then least squares (geometric, Gauss-Newton), the radius softly held near {@code rExp}: {cx, cy, r,
+     * inliers}, from the edge points whose outward direction is within 75 degrees of {@code dirDeg} (all if NaN).
+     */
+    private static double[] fitCircle(List<double[]> all, double rExp, int w, int h, double dirDeg) {
+        List<double[]> pts = all;
+        if (!Double.isNaN(dirDeg)) {
+            pts = new ArrayList<double[]>();
+            for (double[] p : all) {
+                double a = Math.toDegrees(Math.atan2(-p[2], -p[3]));
+                if (Math.abs(MoonGeo.norm180(a - dirDeg)) < 75) pts.add(p);
+            }
+            if (pts.size() < 8) return null;
+        }
         double rLo = Double.isNaN(rExp) ? 4 : rExp * 0.8, rHi = Double.isNaN(rExp) ? Math.max(w, h) : rExp * 1.2;
-        // RANSAC over triples, deterministic
         java.util.Random rnd = new java.util.Random(12345);
         double[] best = null;
-        int bestN = 0;
-        int n = pts.size();
+        int bestN = 0, n = pts.size();
         for (int it = 0; it < 400; it++) {
-            double[] a = pts.get(rnd.nextInt(n)), b = pts.get(rnd.nextInt(n)), c = pts.get(rnd.nextInt(n));
-            double[] circ = circle3(a, b, c);
+            double[] circ = circle3(pts.get(rnd.nextInt(n)), pts.get(rnd.nextInt(n)), pts.get(rnd.nextInt(n)));
             if (circ == null || circ[2] < rLo || circ[2] > rHi) continue;
             int in = 0;
             for (double[] p : pts) if (onLimb(p, circ, 1.5)) in++;
@@ -262,12 +332,12 @@ public final class MoonStack {
                 best = circ;
             }
         }
-        if (best == null) return d;
-        // least squares on the inliers (geometric, a few Gauss-Newton steps), the radius pulled towards rExp
+        if (best == null) return null;
         double cx = best[0], cy = best[1], r = best[2];
+        int inliers = 0;
         for (int round = 0; round < 3; round++) {
             List<double[]> in = new ArrayList<double[]>();
-            for (double[] p : pts) if (onLimb(p, new double[]{cx, cy, r}, round == 0 ? 1.5 : 1.0)) in.add(p);
+            for (double[] p : pts) if (onLimb(p, new double[]{cx, cy, r}, round == 0 ? 1.5 : 0.8)) in.add(p);
             if (in.size() < 6) break;
             for (int gn = 0; gn < 8; gn++) {
                 double[] H = new double[9], g = new double[3];
@@ -294,17 +364,9 @@ public final class MoonStack {
                 r -= step[2];
                 if (Math.abs(step[0]) + Math.abs(step[1]) + Math.abs(step[2]) < 1e-4) break;
             }
-            d.inliers = in.size();
+            inliers = in.size();
         }
-        d.cx = cx;
-        d.cy = cy;
-        d.r = r;
-        d.ok = d.inliers >= 8 && r > 3;
-        // the lit part: its share of the disk and its direction from the centre
-        double lx = mx - cx, ly = my - cy;
-        d.litFrac = Math.min(1, area / (Math.PI * r * r));
-        if (Math.hypot(lx, ly) > 0.02 * r) d.litDir = MoonGeo.norm360(Math.toDegrees(Math.atan2(-lx, -ly)));
-        return d;
+        return new double[]{cx, cy, r, inliers};
     }
 
     /** A point on the bright limb of this circle: near it, with the sky (downhill) outward. */
@@ -513,9 +575,10 @@ public final class MoonStack {
     }
 
     /** Drizzles frames' RAW samples onto the grid: {r, g, b} (balanced camera colour), each from both kernels blended. */
-    static float[][] drizzle(List<float[]> bals, List<boolean[]> sats, List<Frame> frames, List<Warp> warps, SensorSpec spec, Grid gr) {
+    static float[][] drizzle(List<float[]> bals, List<boolean[]> sats, List<Frame> frames, List<Warp> warps, SensorSpec spec, Grid gr,
+                             double fineK, double coarseK) {
         int W = gr.W, H = gr.H, np = W * H;
-        final double s1 = 0.36 * gr.S, s2 = 0.85 * gr.S;
+        final double s1 = fineK * gr.S, s2 = coarseK * gr.S;
         final double k1 = -1 / (2 * s1 * s1), k2 = -1 / (2 * s2 * s2);
         double[][] a1 = new double[3][np], w1 = new double[3][np], a2 = new double[3][np], w2 = new double[3][np];
         double[] ref = new double[2], o = new double[2];
@@ -565,6 +628,69 @@ public final class MoonStack {
             }
         }
         return out;
+    }
+
+    /**
+     * One frame developed the ordinary way, for the "before": bilinear demosaicking (each colour from its nearest
+     * samples), then cubic resampling onto the result's grid through the same geometry as the stack.
+     */
+    static float[][] ordinary(float[] bal, Frame f, Warp wp, SensorSpec spec, Grid gr) {
+        int w = f.w, h = f.h;
+        float[][] full = new float[3][w * h];
+        float[] sum = new float[3];
+        int[] cnt = new int[3];
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                sum[0] = sum[1] = sum[2] = 0;
+                cnt[0] = cnt[1] = cnt[2] = 0;
+                int own = spec.cfa[((j + f.y0) & 1) * 2 + ((i + f.x0) & 1)];
+                for (int dy = -1; dy <= 1; dy++) {
+                    int y = j + dy;
+                    if (y < 0 || y >= h) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int x = i + dx;
+                        if (x < 0 || x >= w) continue;
+                        int c = spec.cfa[((y + f.y0) & 1) * 2 + ((x + f.x0) & 1)];
+                        if (c == own && (dx != 0 || dy != 0)) continue;
+                        sum[c] += bal[y * w + x];
+                        cnt[c]++;
+                    }
+                }
+                for (int c = 0; c < 3; c++) full[c][j * w + i] = cnt[c] > 0 ? sum[c] / cnt[c] : 0;
+            }
+        }
+        int W = gr.W, H = gr.H;
+        float[][] out = new float[3][W * H];
+        double c = Math.cos(gr.psi), s = Math.sin(gr.psi);
+        double[] o = new double[2];
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                double ox = (x - gr.oc) / gr.S, oy = (y - gr.oc) / gr.S;
+                wp.fwd(gr.rcx + c * ox - s * oy, gr.rcy + s * ox + c * oy, o);
+                for (int ch = 0; ch < 3; ch++) out[ch][y * W + x] = cubic(full[ch], w, h, o[0], o[1]);
+            }
+        }
+        return out;
+    }
+
+    /** Catmull-Rom bicubic sampling (edges clamped). */
+    static float cubic(float[] img, int w, int h, double x, double y) {
+        int ix = (int) Math.floor(x), iy = (int) Math.floor(y);
+        double fx = x - ix, fy = y - iy;
+        double[] wx = cr(fx), wy = cr(fy);
+        double v = 0;
+        for (int b = 0; b < 4; b++) {
+            int yy = Math.max(0, Math.min(h - 1, iy - 1 + b));
+            double row = 0;
+            for (int a = 0; a < 4; a++) row += wx[a] * img[yy * w + Math.max(0, Math.min(w - 1, ix - 1 + a))];
+            v += wy[b] * row;
+        }
+        return (float) v;
+    }
+
+    private static double[] cr(double t) {
+        double t2 = t * t, t3 = t2 * t;
+        return new double[]{-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1, -1.5 * t3 + 2 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2};
     }
 
     /** The bright limb's blur: the sigma of the edge's derivative across it, the median over the lit edge (result's px). */
@@ -650,7 +776,9 @@ public final class MoonStack {
             if (ref < 0 || q[i] > q[ref]) ref = i;
         }
         if (ref < 0) ref = 0;
-        Disk disk = findDisk(lums.get(ref), w, h, opt.expectedRadius);
+        double refUp = frames.get(ref).upPa;
+        double litDir = !Double.isNaN(opt.brightLimbPa) && !Double.isNaN(refUp) ? MoonGeo.norm360(opt.brightLimbPa - refUp) : Double.NaN;
+        Disk disk = findDisk(lums.get(ref), w, h, opt.expectedRadius, litDir);
         log.append(String.format(Locale.US, "moon stack: %d frames %dx%d; reference %d (sharpness %.3g, the median %.3g); disk %s",
                 n, w, h, ref, q[ref], median(q), disk));
         if (!disk.ok) {
@@ -740,22 +868,13 @@ public final class MoonStack {
         gr.S = opt.scale;
         gr.rcx = disk.cx;
         gr.rcy = disk.cy;
-        double refUp = frames.get(ref).upPa;
         gr.psi = !Double.isNaN(opt.outUpPa) && !Double.isNaN(refUp) ? Math.toRadians(refUp - opt.outUpPa) : 0;
         int half = (int) Math.ceil(gr.S * (disk.r + Math.max(8, 0.12 * disk.r)));
         gr.W = gr.H = 2 * half + 1;
         gr.oc = half;
         pr.update("Stacking the sharpest", 0.72f);
-        float[][] cam = drizzle(useB, useS, useF, useW, spec, gr);
-        List<Frame> one = new ArrayList<Frame>();
-        one.add(frames.get(ref));
-        List<float[]> oneB = new ArrayList<float[]>();
-        oneB.add(bals.get(ref));
-        List<boolean[]> oneS = new ArrayList<boolean[]>();
-        oneS.add(sats.get(ref));
-        List<Warp> oneW = new ArrayList<Warp>();
-        oneW.add(warps.get(ref));
-        float[][] cam1 = drizzle(oneB, oneS, one, oneW, spec, gr);
+        float[][] cam = drizzle(useB, useS, useF, useW, spec, gr, opt.fineKernel, opt.coarseKernel);
+        float[][] cam1 = ordinary(bals.get(ref), frames.get(ref), warps.get(ref), spec, gr);
         Result res = new Result();
         res.w = gr.W;
         res.h = gr.H;
@@ -787,7 +906,7 @@ public final class MoonStack {
         res.edgeStack = edgeSigma(Y, gr.W, gr.H, gr.oc, gr.oc, res.radius);
         if (opt.deconvolve && !Double.isNaN(res.edgeStack)) {
             pr.update("Sharpening", 0.85f);
-            double sig = Math.max(0.5, Math.min(3.0, 0.85 * res.edgeStack));
+            double sig = Math.max(0.5, Math.min(3.0, opt.rlSigma * res.edgeStack));
             float floor = 0.002f;
             float[] Ys = richardsonLucy(Y, gr.W, gr.H, sig, opt.rlIterations, floor);
             for (int c = 0; c < 3; c++) {

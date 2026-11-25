@@ -234,12 +234,12 @@ public final class MoonGeo {
         return Math.max(-1, Math.min(1, x));
     }
 
-    static double norm360(double d) {
+    public static double norm360(double d) {
         double r = d % 360;
         return r < 0 ? r + 360 : r;
     }
 
-    static double norm180(double d) {
+    public static double norm180(double d) {
         double r = norm360(d);
         return r >= 180 ? r - 360 : r;
     }
