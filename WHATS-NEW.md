@@ -85,6 +85,9 @@ Times for the eastern US (New York):
 - The crossings themselves were checked against a second, independent calculation. From the middle of each
   predicted strip the station passes over the middle of the Moon; just inside the strip's edge it crosses, and just
   outside it misses.
+- Everything 2.6 does was checked again on 3.0, now on a simulated Android 17 phone: 51 simulator tests, six
+  simulated nights that came out exactly as 2.6's, the robot's whole night and its watch night (the watch's new Moon
+  button too), every way to open the app, and a robot tapping every button on 40 screens (962 taps, nothing broke).
 - Nothing has run on a real Pixel yet: the first Moon night will tell how the real telephoto does.
 
 ## Version 2.6: the Sky Pointer, and three more from NASA's notebook
