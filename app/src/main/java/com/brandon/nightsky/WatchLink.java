@@ -16,7 +16,10 @@ import com.brandon.nightsky.link.LinkKeys;
 import com.brandon.nightsky.link.Pairing;
 import com.brandon.nightsky.link.Relay;
 import com.brandon.nightsky.link.ReplayGuard;
+import com.brandon.nightsky.processing.MoonGeo;
+import com.brandon.nightsky.processing.MoonLook;
 import com.brandon.nightsky.processing.Preset;
+import com.brandon.nightsky.processing.TransitFinder;
 import com.brandon.nightsky.remote.Json;
 import com.brandon.nightsky.remote.JsonTree;
 
@@ -459,6 +462,10 @@ final class WatchLink {
                 return controller.remoteMute(false);
             case "preset":
                 return service.presetFromWatch(m.str("preset", ""));
+            case "moonshot":
+                return MoonActivity.fromWatch("shoot");
+            case "moon-catch":
+                return MoonActivity.fromWatch("catch");
             default:
                 return "The phone doesn't know \"" + cmd + "\": update Night Sky on the phone";
         }
@@ -621,12 +628,65 @@ final class WatchLink {
         if (place != null && !Double.isNaN(place.latDeg) && !Double.isNaN(place.lonDeg)) {
             j.put("lat", Math.round(place.latDeg * 10) / 10.0, 6).put("lon", Math.round(place.lonDeg * 10) / 10.0, 6);
         }
+        String moonSig = moon(j, place);
         j.put("app", BuildInfo.VERSION);
         j.end();
         String sig = state + "|" + s.phase + "|" + headline + "|" + detail + "|" + frame + "/" + s.planned + "|" + s.muted + "|" + canStart + "|"
-                + prefs.preset() + "|" + setup + "|" + (pic ? s.previewVersion : -1) + "|" + Math.round(s.progress * 50);
+                + prefs.preset() + "|" + setup + "|" + (pic ? s.previewVersion : -1) + "|" + Math.round(s.progress * 50) + "|" + moonSig;
         return new String[]{j.toString(), sig};
     }
+
+    /**
+     * The Moon for the watch's Moon screen (3.0): its phase, its height here and which side is lit, the Moonshot screen
+     * (open, ready, what it says, the crossing it waits for), and the next station crossing near here. What of it
+     * counts as a change.
+     */
+    private String moon(Json j, Locator.Place place) {
+        long now = System.currentTimeMillis();
+        MoonGeo.View v = MoonGeo.view(now, place != null ? place.latDeg : 0, place != null ? place.lonDeg : 0);
+        j.obj("moon");
+        j.put("phase", MoonLook.phaseName(v)).put("illum", v.illum, 3).put("waxing", v.waxing);
+        if (place != null) {
+            j.put("alt", v.alt, 1).put("dir", MoonActivity.compass(v.az));
+            // the lit side's direction from the Moon's middle, counterclockwise from straight up in the sky
+            j.put("limb", MoonGeo.norm360(v.chi - v.q), 1);
+        }
+        String screen = MoonActivity.watchState(j);
+        List<TransitFinder.Transit> tl = Transits.peek();
+        String next = "";
+        if (tl != null && !tl.isEmpty()) {
+            TransitFinder.Transit t = tl.get(0);
+            for (TransitFinder.Transit x : tl) if (x.here()) {
+                t = x;
+                break;
+            }
+            long at = Transits.when(t);
+            j.obj("next").put("name", t.name).put("at", at).put("here", t.here()).put("km", t.distKm, 1)
+                    .put("dir", MoonActivity.compass(t.bearingDeg)).put("alt", t.moonAlt, 0).put("s", t.here() ? t.hereS : t.durationS, 2).end();
+            next = t.name + at;
+        }
+        j.end();
+        // worked out now and then while a watch looks (the Moonshot screen works it out too)
+        if (place != null && Transits.stale() && now - transitsTried > 15 * 60_000L) {
+            transitsTried = now;
+            final Locator.Place p = place;
+            Thread th = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Transits.find(ctx, p, new StringBuilder());
+                    } catch (RuntimeException e) {
+                        android.util.Log.w("NightSky", "watch transits", e);
+                    }
+                }
+            }, "watch-transits");
+            th.setDaemon(true);
+            th.start();
+        }
+        return screen + "|" + next;
+    }
+
+    private volatile long transitsTried;
 
     private static String cap(String s, int n) {
         if (s == null) return "";

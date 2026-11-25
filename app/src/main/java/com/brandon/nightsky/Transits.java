@@ -91,6 +91,18 @@ final class Transits {
         return out;
     }
 
+    /** What was last worked out, without working anything out (null if nothing yet or it is old). */
+    static synchronized List<TransitFinder.Transit> peek() {
+        long now = System.currentTimeMillis();
+        if (cached == null || now - cachedAt > 6 * 3600_000L) return null;
+        return future(cached, now);
+    }
+
+    /** Whether the list is due to be worked out again (none yet, or older than a quarter of an hour). */
+    static synchronized boolean stale() {
+        return cached == null || System.currentTimeMillis() - cachedAt > KEEP_MS;
+    }
+
     /** The moment to be ready for: as seen from here if it crosses here, else on the centre line. */
     static long when(TransitFinder.Transit t) {
         return t.here() ? t.hereMs : t.timeMs;

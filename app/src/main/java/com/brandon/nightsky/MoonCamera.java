@@ -457,8 +457,12 @@ final class MoonCamera {
         builder = b;
     }
 
+    /** The frame count when the request last changed. */
+    int appliedFrame;
+
     /** Puts the current exposure and focus on the repeating request (camera thread). */
     void apply() {
+        appliedFrame = frameNo;
         if (session == null || builder == null) return;
         try {
             long frameNs = Math.max(minFrameNs, 1_000_000_000L / FPS);
@@ -593,7 +597,7 @@ final class MoonCamera {
             lost++;
         }
         long[] res = results.get(tNs);
-        boolean asked = res == null || (res[0] == exposure.ns && res[1] == exposure.iso);
+        boolean asked = shotAsAsked(res);
         if (spot == null || lost >= 5) {
             if (stage != Stage.SHOOTING) stage = Stage.SEARCHING;
             if (stage == Stage.SHOOTING && lost > 15) {
@@ -644,6 +648,19 @@ final class MoonCamera {
             int[] cu = MoonLook.closeUp(crop, side, side, c[0], c[1], spec, Math.max(0.05, spot.level));
             live(now, cu, side / 2, side / 2, w, h, words());
         }
+    }
+
+    /**
+     * Whether this frame was taken with the exposure last asked for: its capture result says so (to the camera's own
+     * rounding: a few percent), or, with no result for it, enough frames have passed since (the camera's pipeline is a
+     * few frames deep, so a frame just after the change still has the old exposure and must not be measured again).
+     */
+    boolean shotAsAsked(long[] res) {
+        if (res != null && res[0] > 0 && res[1] > 0) {
+            return Math.abs(res[0] - exposure.ns) <= Math.max(20_000L, exposure.ns * 0.03)
+                    && Math.abs(res[1] - exposure.iso) <= Math.max(2, exposure.iso * 0.03);
+        }
+        return frameNo - appliedFrame > 6;
     }
 
     /** The picture's up as a position angle, from the phone's tilt now (NaN looking straight up, or the Moon unknown). */

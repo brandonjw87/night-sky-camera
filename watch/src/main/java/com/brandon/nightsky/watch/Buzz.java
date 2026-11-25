@@ -48,6 +48,17 @@ final class Buzz {
         buzz(c, "found", new long[]{0, 180, 90, 180});
     }
 
+    /**
+     * A station's crossing of the Moon counting down (3.0): a minute to go (long), ten seconds (two), three, two, one
+     * (taps) and now (long), felt without looking so the phone stays still.
+     */
+    static void transit(Context c, int secondsLeft) {
+        if (secondsLeft >= 60) buzz(c, "transit-60", new long[]{0, 350});
+        else if (secondsLeft >= 10) buzz(c, "transit-10", new long[]{0, 150, 120, 150});
+        else if (secondsLeft > 0) buzz(c, "transit-" + secondsLeft, new long[]{0, 45});
+        else buzz(c, "transit-now", new long[]{0, 600});
+    }
+
     private static void buzz(Context c, String what, long[] pattern) {
         count++;
         last = what;

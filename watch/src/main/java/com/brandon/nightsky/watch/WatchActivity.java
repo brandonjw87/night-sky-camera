@@ -26,6 +26,10 @@ import java.util.regex.Pattern;
  *
  * <p>2.6: the Sky Pointer ({@link SkyScreen}): Sky on the Ready, Done and phone-search screens (and a tap on the
  * middle while the phone captures) turns the watch into a pointer: hold the arm at the sky and it says what's there.
+ *
+ * <p>3.0: the Moon ({@link MoonFace}): Moon on the Ready and Done screens, and by itself when the phone's Moonshot opens:
+ * the phase as it looks tonight, the Moonshot's shutter and Catch, and the countdown to a station crossing the Moon,
+ * buzzed to the second.
  */
 public final class WatchActivity extends Activity implements WatchClient.Listener, DialView.Actions {
     /** On screen now (the service then leaves the link to it). */
@@ -47,6 +51,8 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     /** The Sky Pointer (2.6), and when the screen came on (the hint to tap for it shows for a while then). */
     private SkyScreen sky;
     private long startedAt;
+    /** The Moon screen (3.0): on, and whether Back put it away while the phone's Moonshot stays open. */
+    private boolean moonOn, moonAuto, moonDismissed;
     private static final long SKY_HINT_MS = 12_000L;
 
     @Override
@@ -127,9 +133,14 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
     private final Runnable clock = new Runnable() {
         @Override
         public void run() {
-            if (sky.idle(System.currentTimeMillis())) sky.close();
+            long now = System.currentTimeMillis();
+            if (sky.idle(now)) sky.close();
+            JsonTree.Obj s = client.status();
+            MoonFace.tick(WatchActivity.this, s != null ? s.obj("moon") : null, now);
             refresh();
-            h.postDelayed(this, 1000);
+            // a countdown's last seconds: the screen's clock to the quarter second
+            long at = MoonFace.target(s != null ? s.obj("moon") : null, now);
+            h.postDelayed(this, at > 0 && at - now < 15_000L && at - now > -2000 ? 250 : 1000);
         }
     };
 
@@ -148,7 +159,8 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
 
     private boolean following() {
         JsonTree.Obj s = client.status();
-        return client.paired() && s != null && !client.via().isEmpty() && active(s.str("state", ""));
+        return client.paired() && s != null && !client.via().isEmpty()
+                && (active(s.str("state", "")) || s.obj("moon") != null && s.obj("moon").lng("armedAt", 0) > System.currentTimeMillis());
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -161,7 +173,8 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         if (visible && following() && !WatchService.running) WatchService.start(this);
         // the screen stays on through the countdown, so the button to press is still there, and while the arm points
         JsonTree.Obj s = client.status();
-        boolean keepOn = sky.on || s != null && "countdown".equals(s.str("state", "")) && client.fresh();
+        boolean keepOn = sky.on || s != null && "countdown".equals(s.str("state", "")) && client.fresh()
+                || moonOn && MoonFace.target(s != null ? s.obj("moon") : null, System.currentTimeMillis()) > 0;
         if (keepOn) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
@@ -177,6 +190,9 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         } else if (sky.on) {
             sky.face(f, now);
             skyNews(f, now);
+        } else if (moonShown(now)) {
+            JsonTree.Obj s = client.status();
+            MoonFace.face(f, s, client.via(), client.fresh(), now, now - client.statusAtMs);
         } else if (more) {
             more(f);
         } else {
@@ -201,6 +217,32 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
         } else if ("done".equals(state)) {
             f.top = "Your photo is ready";
         }
+    }
+
+    /**
+     * Whether the Moon screen shows: chosen, or by itself while the phone's Moonshot is open and no session runs (until
+     * Back; it comes back the next time the Moonshot opens).
+     */
+    private boolean moonShown(long now) {
+        JsonTree.Obj s = client.status();
+        JsonTree.Obj moon = s != null && !client.via().isEmpty() ? s.obj("moon") : null;
+        boolean open = moon != null && moon.bool("open", false);
+        if (!open) {
+            moonDismissed = false;
+            if (moonAuto) {
+                moonAuto = false;
+                moonOn = false;
+            }
+        } else if (!moonOn && !moonDismissed && !more && !active(s.str("state", ""))) {
+            moonOn = true;
+            moonAuto = true;
+        }
+        return moonOn && s != null;
+    }
+
+    /** The Moon screen's button. */
+    private static DialView.Button moonButton() {
+        return new DialView.Button("moon", "Moon", false);
     }
 
     /** The Sky Pointer's button. */
@@ -365,6 +407,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             f.buttons.add(start);
             if (s.bool("canAdd", false)) f.buttons.add(new DialView.Button("add-time", "+5 min", false));
             f.buttons.add(skyButton());
+            if (f.buttons.size() < 3 && s.obj("moon") != null) f.buttons.add(moonButton());
         } else if ("failed".equals(state)) {
             f.title = "That didn't work";
             f.line1 = headline;
@@ -383,6 +426,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             start = new DialView.Button("start", "Start", true);
             f.buttons.add(start);
             f.buttons.add(skyButton());
+            if (s.obj("moon") != null) f.buttons.add(moonButton());
         }
         start.enabled = canStart;
         if (!canStart && f.toast.isEmpty()) f.toast = s.str("why", "Open Night Sky on the phone to start from the watch");
@@ -439,7 +483,23 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
                 break;
             case "sky":
                 more = false;
+                moonOn = false;
                 sky.open();
+                break;
+            case "moon":
+                more = false;
+                moonOn = true;
+                moonAuto = false;
+                break;
+            case "moon-back":
+                moonOn = false;
+                moonAuto = false;
+                JsonTree.Obj mo = s != null ? s.obj("moon") : null;
+                moonDismissed = mo != null && mo.bool("open", false);
+                break;
+            case "moonshot":
+            case "moon-catch":
+                client.send(id, null);
                 break;
             case "back":
                 more = false;
@@ -463,6 +523,7 @@ public final class WatchActivity extends Activity implements WatchClient.Listene
             }
             case "tap":
                 // the middle: the connections and Unpair, and back; while the phone works, the Sky Pointer
+                if (moonOn) break;
                 if (client.paired() && !(now < client.checkUntil)) {
                     String st = s != null && !client.via().isEmpty() ? s.str("state", "") : "";
                     if (!more && ("capturing".equals(st) || "paused".equals(st) || "developing".equals(st))) sky.open();

@@ -20,6 +20,8 @@ import com.brandon.nightsky.remote.JsonTree;
  * Follows the phone's session with the watch's screen off (2.5): the link stays up, an ongoing notification shows
  * where it has got, and when the photo is ready (or something went wrong) the watch buzzes and says so. It stops once
  * the session is over, the phone has been quiet for 10 minutes, or after 3 hours whatever happens.
+ * <p>
+ * 3.0: and a space station's crossing the Moonshot waits for, counted down and buzzed to the second ({@link MoonFace}).
  */
 public final class WatchService extends Service implements WatchClient.Listener {
     static volatile boolean running;
@@ -64,6 +66,27 @@ public final class WatchService extends Service implements WatchClient.Listener 
         client.listen(this);
         client.begin(WatchActivity.visible);
         h.postDelayed(check, 15_000L);
+        h.post(beat);
+    }
+
+    /** The crossing's countdown: its buzzes, every second (a quarter of one near the end) while one is due. */
+    private final Runnable beat = new Runnable() {
+        @Override
+        public void run() {
+            long now = System.currentTimeMillis();
+            JsonTree.Obj s = client.status();
+            JsonTree.Obj moon = s != null ? s.obj("moon") : null;
+            // the screen buzzes while it shows
+            if (!WatchActivity.visible) MoonFace.tick(WatchService.this, moon, now);
+            long at = MoonFace.target(moon, now);
+            h.postDelayed(this, at > 0 && at - now < 15_000L && at - now > -2000 ? 250 : 1000);
+        }
+    };
+
+    /** Whether the phone's Moonshot waits for a crossing still to come. */
+    static boolean moonArmed(JsonTree.Obj s) {
+        JsonTree.Obj moon = s != null ? s.obj("moon") : null;
+        return moon != null && moon.lng("armedAt", 0) > System.currentTimeMillis() - 5000;
     }
 
     @Override
@@ -81,6 +104,7 @@ public final class WatchService extends Service implements WatchClient.Listener 
     public void onDestroy() {
         running = false;
         h.removeCallbacks(check);
+        h.removeCallbacks(beat);
         client.unlisten(this);
         if (wake != null && wake.isHeld()) wake.release();
         // the screen keeps the link if it's showing; else nothing needs it
@@ -119,7 +143,7 @@ public final class WatchService extends Service implements WatchClient.Listener 
             finish(null);
             return;
         }
-        if (s != null && client.statusTs > 0 && !WatchActivity.active(state) && client.statusAtMs >= startedMs - 60_000L) {
+        if (s != null && client.statusTs > 0 && !WatchActivity.active(state) && !moonArmed(s) && client.statusAtMs >= startedMs - 60_000L) {
             // over: the photo is ready, or it failed (or the phone went back to ready)
             String[] last = null;
             if ("done".equals(state)) {
@@ -140,6 +164,12 @@ public final class WatchService extends Service implements WatchClient.Listener 
             int frame = s.integer("frame", 0), frames = s.integer("frames", 0);
             text = frames > 0 ? "Frame " + frame + " of " + frames : s.str("setup", "");
             progress = (float) s.num("progress", 0);
+        } else if (moonArmed(s)) {
+            JsonTree.Obj moon = s.obj("moon");
+            long left = moon.lng("armedAt", 0) - System.currentTimeMillis();
+            title = MoonFace.capital(moon.str("armedName", "the ISS")) + " crosses the Moon in " + WatchActivity.clock(left);
+            text = "The phone shoots it by itself: keep it on the Moon";
+            progress = -1f;
         } else if ("developing".equals(state)) {
             progress = -1f;
             title = s.str("headline", "Developing");

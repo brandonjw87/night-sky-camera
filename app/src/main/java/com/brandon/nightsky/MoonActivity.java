@@ -91,6 +91,11 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     private Locator.Place place;
     private MediaActionSound clicks;
 
+    /** The open Moonshot screen (the watch's shutter and countdown reach it), or null. */
+    static volatile MoonActivity current;
+    /** What the status line says, and what the photo came to, for the watch. */
+    private volatile String watchWords = "", watchDone = "";
+
     // the Transit Hunter: the crossings near here, and the one the camera is waiting for
     private List<TransitFinder.Transit> transits;
     private TransitFinder.Transit armed;
@@ -278,6 +283,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     @Override
     protected void onResume() {
         super.onResume();
+        current = this;
         boolean cam = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
         boolean fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         if (!cam || (!fine && !askedPrecise)) {
@@ -296,7 +302,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         super.onRequestPermissionsResult(code, perms, grants);
         if (code != REQ_CAMERA) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
-        else status.setText("The Moonshot needs the camera: allow it in Settings > Apps > Night Sky > Permissions.");
+        else say("The Moonshot needs the camera: allow it in Settings > Apps > Night Sky > Permissions.");
         freshPlace();
     }
 
@@ -349,13 +355,20 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         String why = camera.open(st);
         if (why != null) {
             camera = null;
-            status.setText(why);
+            say(why);
         }
+    }
+
+    /** The status line, also for the watch. */
+    private void say(String w) {
+        status.setText(w);
+        watchWords = w;
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        if (current == this) current = null;
         if (camera != null) {
             camera.close();
             camera = null;
@@ -377,7 +390,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         String w = l.stage == MoonCamera.Stage.SHOOTING ? String.format(Locale.US, "Shooting: %d of %d, hold steady", l.got, l.want) : l.words;
         // waiting for a crossing: the countdown first, and what the camera needs if it isn't ready
         if (armed != null && !firedArmed && countdownWords != null) w = countdownWords + (l.stage == MoonCamera.Stage.READY ? "" : "\n" + l.words);
-        status.setText(w);
+        say(w);
         details.setText(l.lens + (l.exposure.isEmpty() ? "" : " · " + l.exposure) + (l.focus.isEmpty() ? "" : " · " + l.focus)
                 + (l.fps > 0 ? String.format(Locale.US, " · %.0f frames a second", l.fps) : ""));
         boolean ready = l.stage == MoonCamera.Stage.READY && job == null;
@@ -391,7 +404,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
 
     @Override
     public void onProblem(String why) {
-        status.setText(why);
+        say(why);
         shutter.setEnabled(false);
     }
 
@@ -403,7 +416,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             armed = null;
         }
         if (b.frames.size() < 12) {
-            status.setText("The Moon slipped out of the picture: only " + b.frames.size() + " frames. Try again, braced against something.");
+            say("The Moon slipped out of the picture: only " + b.frames.size() + " frames. Try again, braced against something.");
             return;
         }
         stack(b);
@@ -475,6 +488,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                                 public void run() {
                                     bar.setProgress(Math.round(fraction * 900));
                                     barText.setText(stage + "…");
+                                    watchDone = String.format(Locale.US, "%s, %.0f%%", stage, fraction * 100);
                                 }
                             });
                         }
@@ -514,7 +528,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                         barText.setVisibility(View.GONE);
                         if (isFinishing()) return;
                         if (f != null) {
-                            if (!f.isEmpty()) status.setText(f);
+                            if (!f.isEmpty()) say(f);
                             return;
                         }
                         shown(rr, vv, pp, pp1, b);
@@ -538,6 +552,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         resultBox.removeAllViews();
         resultBox.setVisibility(View.VISIBLE);
         nameCrossing(r, b);
+        watchDone = r.crossing != null ? "Your Moon, with " + crossingLabel + " crossing it, is ready" : "Your Moon is ready";
         resultBox.addView(text(r.crossing == null ? "Your Moon" : "Your Moon, with " + crossingLabel + " crossing it", 20, GOLD, true));
         String howText = String.format(Locale.US, "The %d sharpest of %d frames, lined up and stacked: the edge's blur %.1f px in one frame, %.1f "
                 + "stacked and sharpened.", r.used, r.total, r.edgeSingle / 2, r.edgeSharp / 2);
@@ -884,10 +899,82 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         if (!firedArmed) {
             countdownWords = Transits.capital(a.name) + " crosses the Moon " + Transits.countdown(left) + ". Keep the Moon in the picture: the phone shoots by itself.";
             if (live != null) onLive(live);
-            else status.setText(countdownWords);
+            else say(countdownWords);
             if (left <= 10_000 && left > 5000) clicks.play(MediaActionSound.FOCUS_COMPLETE);
         }
         main.postDelayed(tickTransit, left > 120_000 ? 1000 : 250);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // the watch (3.0): its Moon screen's shutter, Catch and countdown
+
+    /**
+     * The Moonshot's state for the watch's status: open, ready to shoot, what it says, the crossing it waits for. Returns
+     * what of it counts as a change.
+     */
+    static String watchState(com.brandon.nightsky.remote.Json j) {
+        MoonActivity a = current;
+        j.put("open", a != null);
+        if (a == null) return "closed";
+        MoonCamera.Live l = a.live;
+        boolean ready = l != null && l.stage == MoonCamera.Stage.READY && a.job == null && a.camera != null;
+        String stage = l != null ? l.stage.name() : "OPENING";
+        // the countdown's words change every second: the watch counts down itself
+        String words = a.armed != null && !a.firedArmed && a.countdownWords != null ? "" : a.watchWords;
+        if (words.length() > 120) words = words.substring(0, 119) + "…";
+        j.put("ready", ready).put("stage", stage).put("words", words);
+        String done = a.job != null || !a.watchDone.isEmpty() ? a.watchDone : "";
+        if (!done.isEmpty()) j.put("done", done);
+        TransitFinder.Transit t = a.armed;
+        long armedAt = t != null && !a.firedArmed ? Transits.when(t) : 0;
+        if (armedAt > 0) j.put("armedAt", armedAt).put("armedName", t.name);
+        TransitFinder.Transit h = Transits.nextHere(a.transits);
+        boolean canCatch = t == null && h != null && Transits.when(h) - System.currentTimeMillis() < 6 * 3600_000L;
+        j.put("canCatch", canCatch);
+        return "open|" + ready + "|" + stage + "|" + words + "|" + done + "|" + armedAt + "|" + canCatch;
+    }
+
+    /** A command from the watch ("shoot", "catch"), run on the screen's thread: what to tell the watch. */
+    static String fromWatch(final String what) {
+        final MoonActivity a = current;
+        if (a == null) return "Open the Moonshot on the phone first";
+        final String[] out = {"The phone didn't answer"};
+        final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        a.main.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    out[0] = a.watchCommand(what);
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            done.await(3, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return out[0];
+    }
+
+    private String watchCommand(String what) {
+        if (isFinishing() || camera == null) return "The Moonshot's camera isn't on";
+        if ("shoot".equals(what)) {
+            if (job != null) return "Still stacking the last one";
+            if (live == null || live.stage != MoonCamera.Stage.READY) return live != null ? live.words : "The camera isn't ready";
+            shutter.performClick();
+            return "Shooting the Moon: hold the phone steady";
+        }
+        if ("catch".equals(what)) {
+            TransitFinder.Transit h = Transits.nextHere(transits);
+            if (h == null) return "No crossing seen from here soon";
+            if (armed == h) return "Already waiting for " + h.name;
+            if (catchIt.getVisibility() != View.VISIBLE) return "It's more than six hours away";
+            catchIt.performClick();
+            return "The phone shoots " + h.name + " at " + new SimpleDateFormat("h:mm:ss a", Locale.US).format(new Date(Transits.when(h)));
+        }
+        return "The phone doesn't know that";
     }
 
     // ------------------------------------------------------------------------------------------------
