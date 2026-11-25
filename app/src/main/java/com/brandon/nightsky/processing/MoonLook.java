@@ -321,6 +321,40 @@ public final class MoonLook {
         }
     }
 
+    /**
+     * A crossing marked beside its silhouettes (3.0, the Transit Hunter): a gold arrow alongside the track, the way it
+     * flew, and what it was, how long it took and how many times it was caught.
+     */
+    public static void track(Painter p, Picture pic, MoonStack.Result r, String name, float size) {
+        if (r.crossing == null || r.crossingAt == null || r.crossingAt.length < 2) return;
+        double k = pic.r / r.radius;
+        double[] a = r.crossingAt[0], b = r.crossingAt[r.crossingAt.length - 1];
+        double ax = pic.cx + (a[0] - r.cx) * k, ay = pic.cy + (a[1] - r.cy) * k, bx = pic.cx + (b[0] - r.cx) * k, by = pic.cy + (b[1] - r.cy) * k;
+        double dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy);
+        if (len < 1) return;
+        double ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+        // beside the track, on its side away from the Moon's middle
+        if (nx * ((ax + bx) / 2 - pic.cx) + ny * ((ay + by) / 2 - pic.cy) < 0) {
+            nx = -nx;
+            ny = -ny;
+        }
+        double off = size * 1.1;
+        float x0 = (float) (ax + nx * off - ux * size * 0.5), y0 = (float) (ay + ny * off - uy * size * 0.5);
+        float x1 = (float) (bx + nx * off + ux * size * 0.5), y1 = (float) (by + ny * off + uy * size * 0.5);
+        int gold = 0xFFFFD54F;
+        float stroke = Math.max(2f, size * 0.09f);
+        p.line(x0, y0, x1, y1, stroke, gold);
+        double hs = size * 0.45;
+        p.line(x1, y1, (float) (x1 - ux * hs + nx * hs * 0.6), (float) (y1 - uy * hs + ny * hs * 0.6), stroke, gold);
+        p.line(x1, y1, (float) (x1 - ux * hs - nx * hs * 0.6), (float) (y1 - uy * hs - ny * hs * 0.6), stroke, gold);
+        String s = String.format(Locale.US, "%s · %.2f s · caught %d times", name, r.crossing.lastS - r.crossing.firstS, r.crossing.frames.length);
+        float fs = size * 0.8f, tw = p.width(s, fs, true);
+        double tx = (ax + bx) / 2 + nx * (off + size * 1.3) - tw / 2, ty = (ay + by) / 2 + ny * (off + size * 1.3) + fs * 0.35;
+        tx = Math.max(size * 0.5, Math.min(pic.w - tw - size * 0.5, tx));
+        ty = Math.max(size * 3.2, Math.min(pic.h - size * 3, ty));
+        p.text(s, (float) tx, (float) ty, fs, true, gold);
+    }
+
     /** The photo's title and caption: across the top and the bottom. */
     public static void captions(Painter p, Picture pic, String title, String caption, float size) {
         p.gradient(0, 0, pic.w, size * 2.6f, 0xC0000000, 0x00000000);

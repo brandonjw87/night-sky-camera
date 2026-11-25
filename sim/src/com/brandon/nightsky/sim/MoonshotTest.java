@@ -85,7 +85,7 @@ public final class MoonshotTest {
             if (cloud) gain *= 0.45;
             // the crop follows the Moon (where it was a frame ago), at even places so the colours line up
             int x0 = 2 * (int) Math.round((px - crop / 2.0) / 2), y0 = 2 * (int) Math.round((py - crop / 2.0) / 2);
-            short[] raw = sim.frame(crop, crop, x0, y0, mx, my, rot, blur, gain, r);
+            short[] raw = sim.frame(crop, crop, x0, y0, mx, my, rot, blur, gain, r, t);
             MoonStack.Frame f = new MoonStack.Frame(raw, crop, crop, x0, y0, (long) (t * 1e9));
             f.upPa = sim.upPa - rot;
             b.frames.add(f);

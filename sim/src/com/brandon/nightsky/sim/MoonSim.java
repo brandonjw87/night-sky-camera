@@ -400,13 +400,54 @@ public final class MoonSim {
 
     /** One frame's RAW crop (w x h at x0, y0 on the sensor, RGGB from the sensor's corner), the light scaled by gain. */
     public short[] frame(int w, int h, int x0, int y0, double mx, double my, double rotDeg, double blurPx, double gain, Random rnd) {
+        return frame(w, h, x0, y0, mx, my, rotDeg, blurPx, gain, rnd, 0);
+    }
+
+    /**
+     * A space station in front of the Moon (the Transit Hunter's test), or null: {x, y (sensor px from the Moon's
+     * centre, in the Moon's frame) at time 0, vx, vy (px/s), its truss's angle (degrees), px per 100 m}.
+     */
+    public double[] station;
+
+    /**
+     * The station's opacity at (rx, ry) (px from the Moon's centre, in the Moon's frame) at {@code t} seconds, blurred by
+     * {@code b} px: the ISS's shape in soft pieces (its 109 m truss, the solar arrays at its ends, the modules across it).
+     */
+    public double stationAt(double rx, double ry, double t, double b) {
+        if (station == null) return 0;
+        double cx = station[0] + station[2] * t, cy = station[1] + station[3] * t;
+        if (Math.abs(rx - cx) > 12 || Math.abs(ry - cy) > 12) return 0;
+        double a = Math.toRadians(station[4]), ca = Math.cos(a), sa = Math.sin(a);
+        double dx = rx - cx, dy = ry - cy;
+        double u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+        double s = station[5];
+        double occ = piece(u, v, 0, 1.09 * s, 0.08 * s, 0.9, b) + piece(u, v, -0.45 * s, 0.25 * s, 0.73 * s, 0.6, b)
+                + piece(u, v, 0.45 * s, 0.25 * s, 0.73 * s, 0.6, b) + piece(u, v, 0, 0.12 * s, 0.6 * s, 0.9, b);
+        return Math.min(0.97, occ);
+    }
+
+    /** A soft rectangle (len along u, wid along v, centred at u = cu) of the given opacity, blurred by b. */
+    static double piece(double u, double v, double cu, double len, double wid, double opacity, double b) {
+        double su = Math.sqrt(len * len / 12 + b * b), sv = Math.sqrt(wid * wid / 12 + b * b);
+        double amp = opacity * len * wid / (2 * Math.PI * su * sv);
+        double du = u - cu;
+        return amp * Math.exp(-(du * du / (2 * su * su) + v * v / (2 * sv * sv)));
+    }
+
+    /** One frame at {@code tSec} (for the station's place). */
+    public short[] frame(int w, int h, int x0, int y0, double mx, double my, double rotDeg, double blurPx, double gain, Random rnd, double tSec) {
         short[] out = new short[w * h];
         int[] cfa = {0, 1, 1, 2};
+        double a = -rotDeg * D, cs = Math.cos(a), sn = Math.sin(a), sb = Math.sqrt(blurPx * blurPx + 0.25);
         for (int j = 0; j < h; j++) {
             for (int i = 0; i < w; i++) {
                 int X = x0 + i, Y = y0 + j;
                 int c = cfa[(Y & 1) * 2 + (X & 1)];
                 double e = light(c, X, Y, mx, my, rotDeg, blurPx) * camRgb[c] * electrons * gain;
+                if (station != null) {
+                    double dx = X - mx, dy = Y - my;
+                    e *= 1 - stationAt(dx * cs + dy * sn, -dx * sn + dy * cs, tSec, sb);
+                }
                 e += Math.sqrt(Math.max(0, e) + readE * readE) * rnd.nextGaussian();
                 long dn = Math.round(e / ePerDn + black);
                 out[j * w + i] = (short) Math.max(0, Math.min(white, dn));

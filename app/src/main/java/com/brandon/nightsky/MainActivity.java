@@ -55,6 +55,8 @@ import android.widget.VideoView;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import com.brandon.nightsky.processing.MoonGeo;
+import com.brandon.nightsky.processing.MoonLook;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.DeepSpace;
 import com.brandon.nightsky.processing.EdgeMask;
@@ -575,6 +577,17 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** The Moonshot card's line: what it does, and the Moon tonight. */
+    private String moonshotLine() {
+        String what = "The Moon from the 5x telephoto, sharper than any single photo, with every landing site labelled, and the "
+                + "Space Station caught crossing it.";
+        Locator.Place pl = Locator.best(this, prefs);
+        MoonGeo.View v = MoonGeo.view(System.currentTimeMillis(), pl != null ? pl.latDeg : 0, pl != null ? pl.lonDeg : 0);
+        String now = MoonLook.phaseName(v) + String.format(java.util.Locale.US, ", %.0f%% lit", v.illum * 100);
+        if (pl != null) now += v.alt > 0 ? String.format(java.util.Locale.US, ", %.0f° up in the %s", v.alt, MoonActivity.compass(v.az)) : ", below the horizon";
+        return what + "\nNow: " + now + ".";
+    }
+
     private void showHomePage() {
         page = PAGE_HOME;
         clearRefs();
@@ -588,6 +601,20 @@ public final class MainActivity extends Activity {
         TextView title = text("Night Sky", 30, RED, true);
         col.addView(title);
         col.addView(text("Long exposures of the stars from your Pixel's main camera", 14, RED_DIM, false), gap(4));
+
+        // the Moonshot (3.0): the Moon from the telephoto, its landing sites, the space stations crossing it
+        LinearLayout moon = card();
+        moon.addView(text("Moonshot", 20, RED, true));
+        moon.addView(text(moonshotLine(), 14, RED_DIM, false), gap(2));
+        Button shoot = button("Shoot the Moon", true);
+        shoot.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, MoonActivity.class));
+            }
+        });
+        moon.addView(shoot, gap(10));
+        col.addView(moon, gap(16));
 
         // tonight: the armed plan, a plan to re-arm, last night's summary, or the sky and a way to plan it
         nightBox = new LinearLayout(this);

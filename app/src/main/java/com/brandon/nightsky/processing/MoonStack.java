@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 
 /**
  * Lucky imaging for the Moon (3.0, the Moonshot): a burst of short RAW frames from the 5x telephoto turned into one
@@ -66,6 +67,8 @@ public final class MoonStack {
         public double rlSigma = 1.0;
         /** The merge's two kernels' widths (sigma, in the sensor's pixels). */
         public double fineKernel = 0.36, coarseKernel = 0.85;
+        /** A space station's crossing was shot: its silhouettes are found, kept out of the stack and laid on the photo. */
+        public boolean transit;
     }
 
     /** The Moon's disk found in a picture. */
@@ -105,7 +108,34 @@ public final class MoonStack {
         /** The bright limb's blur (the edge's sigma, in the result's pixels): one frame, the stack, sharpened. */
         public double edgeSingle = Double.NaN, edgeStack = Double.NaN, edgeSharp = Double.NaN;
         public Disk disk;
+        /** A station's crossing found in the frames (with {@link Options#transit}), or null. */
+        public Crossing crossing;
+        /** Where its silhouettes are on the result (px), frame by frame. */
+        public double[][] crossingAt;
         public String log = "";
+    }
+
+    /** A space station's silhouettes crossing the Moon, frame after frame. */
+    public static final class Crossing {
+        /** The frames it was found in (indices into the burst), and where (the reference crop's px). */
+        public int[] frames;
+        public double[][] at;
+        /** Its straight track: where it was at the burst's start (reference px) and how fast it went (px/s). */
+        public double x0, y0, vx, vy;
+        /** The first and last frame it was seen in (seconds from the burst's start). */
+        public double firstS, lastS;
+        /** The frames before, during and after it, left out of the stack. */
+        public int spanFrom, spanTo;
+        /** How dark it is against the Moon at its darkest (0..1). */
+        public double depth;
+        /** The darkening to lay on the photo, on the reference crop's grid: 1 none, 0 black. */
+        public float[] shade;
+
+        @Override
+        public String toString() {
+            return String.format(Locale.US, "seen in %d frames over %.2f s, %.0f px/s, as dark as %.0f%%", frames.length, lastS - firstS,
+                    Math.hypot(vx, vy), depth * 100);
+        }
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -940,6 +970,13 @@ public final class MoonStack {
                 R = avg;
             }
         }
+        // a station crossing: found against the reference, its frames kept out of the merge
+        Crossing cross = null;
+        if (opt.transit) {
+            pr.update("Looking for the station", 0.69f);
+            cross = crossing(lums, warps, frames, R, w, h, disk, pr);
+            log.append(cross != null ? "; a station crossing " + cross : "; no station crossing found");
+        }
         // the sharpest that lined up, and not clouded
         Integer[] order = byQuality(q);
         int want = Math.max(opt.minKeep, (int) Math.round(opt.keep * n));
@@ -959,6 +996,7 @@ public final class MoonStack {
                 cloudy++;
                 continue;
             }
+            if (cross != null && i >= cross.spanFrom && i <= cross.spanTo) continue;
             kept[i] = true;
             useF.add(frames.get(i));
             useB.add(bals.get(i));
@@ -1008,6 +1046,28 @@ public final class MoonStack {
         float scale = top > 1e-6f ? 1 / top : 1;
         mul(rgb, scale);
         mul(rgb1, scale);
+        if (cross != null) {
+            // the silhouettes on the photo (before the sharpening, which sharpens them too), from the reference crop's grid
+            double c = Math.cos(gr.psi), sn = Math.sin(gr.psi);
+            for (int j = 0; j < gr.H; j++) {
+                for (int i = 0; i < gr.W; i++) {
+                    double ox = (i - gr.oc) / gr.S, oy = (j - gr.oc) / gr.S;
+                    double x = gr.rcx + c * ox - sn * oy, y = gr.rcy + sn * ox + c * oy;
+                    if (x < 0 || y < 0 || x > w - 1 || y > h - 1) continue;
+                    float f = sample(cross.shade, w, h, x, y);
+                    if (f >= 0.999f) continue;
+                    int k = j * gr.W + i;
+                    for (int ch = 0; ch < 3; ch++) rgb[ch][k] *= f;
+                }
+            }
+            res.crossing = cross;
+            res.crossingAt = new double[cross.at.length][];
+            for (int i = 0; i < cross.at.length; i++) {
+                double[] o = new double[2];
+                gr.out(cross.at[i][0], cross.at[i][1], o);
+                res.crossingAt[i] = o;
+            }
+        }
         Y = lum(rgb);
         float[] Y1 = lum(rgb1);
         res.edgeSingle = edgeSigma(Y1, gr.W, gr.H, gr.oc, gr.oc, res.radius);
@@ -1037,6 +1097,241 @@ public final class MoonStack {
         res.log = log.toString();
         pr.update("Done", 1f);
         return res;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // a space station crossing the Moon
+
+    /** A silhouette darkens the Moon by at least this share (after a light blur) to be a candidate. */
+    static final double CROSS_THRESHOLD = 0.12;
+    /** Candidates on the track: within this of it (reference px). */
+    static final double CROSS_TOL = 1.5;
+
+    /** The frame warped onto the reference over a box (the reference elsewhere), blurred by {@code sigma}. */
+    static float[] warped(float[] F, Warp wp, float[] R, int w, int h, int[] box, double sigma) {
+        float[] out = R.clone();
+        double[] o = new double[2];
+        for (int y = box[1]; y <= box[3]; y++) {
+            for (int x = box[0]; x <= box[2]; x++) {
+                wp.fwd(x, y, o);
+                out[y * w + x] = (float) (wp.gain * sample(F, w, h, o[0], o[1]) + wp.off);
+            }
+        }
+        return sigma > 0 ? blur(out, w, h, sigma) : out;
+    }
+
+    /**
+     * A space station's crossing (3.0, the Transit Hunter): in each frame lined up on the reference, the spots darker
+     * than the reference by {@link #CROSS_THRESHOLD} of its brightness over the lit Moon; then the straight track at a
+     * steady speed through the most of them, one a frame (a station flies straight across the Moon in a second or two;
+     * a blurred frame's dimmer crater rims stay put, and the shimmer's spots don't line up). Null if there is none.
+     */
+    static Crossing crossing(List<float[]> lums, List<Warp> warps, List<Frame> frames, float[] R, int w, int h, Disk disk, Progress pr) {
+        int n = lums.size();
+        float top = percentile(R, 0.995);
+        float[] RS = blur(R, w, h, 0.7);
+        int[] box = {Math.max(1, (int) (disk.cx - disk.r)), Math.max(1, (int) (disk.cy - disk.r)),
+                Math.min(w - 2, (int) Math.ceil(disk.cx + disk.r)), Math.min(h - 2, (int) Math.ceil(disk.cy + disk.r))};
+        // where a silhouette shows: the lit Moon, off its very edge
+        boolean[] lit = new boolean[w * h];
+        double rr = (disk.r - 2) * (disk.r - 2);
+        for (int y = box[1]; y <= box[3]; y++) {
+            for (int x = box[0]; x <= box[2]; x++) {
+                int k = y * w + x;
+                double dx = x - disk.cx, dy = y - disk.cy;
+                lit[k] = dx * dx + dy * dy < rr && RS[k] > 0.15f * top;
+            }
+        }
+        long t0 = frames.get(0).tNs;
+        // candidates: {frame, seconds, x, y, darkening}, up to four a frame
+        List<double[]> cand = new ArrayList<double[]>();
+        for (int i = 0; i < n; i++) {
+            if (pr.cancelled()) throw new CancelledException();
+            Warp wp = warps.get(i);
+            if (!wp.ok) continue;
+            float[] FS = warped(lums.get(i), wp, R, w, h, box, 0.7);
+            List<double[]> mine = new ArrayList<double[]>();
+            for (int y = box[1] + 1; y < box[3]; y++) {
+                for (int x = box[0] + 1; x < box[2]; x++) {
+                    int k = y * w + x;
+                    if (!lit[k]) continue;
+                    float d = (RS[k] - FS[k]) / Math.max(RS[k], 0.1f * top);
+                    if (d < CROSS_THRESHOLD) continue;
+                    boolean peak = true;
+                    for (int dy = -1; dy <= 1 && peak; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (dx == 0 && dy == 0) continue;
+                            int kk = k + dy * w + dx;
+                            if ((RS[kk] - FS[kk]) / Math.max(RS[kk], 0.1f * top) > d) {
+                                peak = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!peak) continue;
+                    // compact, as a station is: not a cloud's edge or a dimmed patch (darker all round)
+                    double ring = 0;
+                    int rn = 0;
+                    for (int q = 0; q < 12; q++) {
+                        int xx = (int) Math.round(x + 5 * Math.cos(q * Math.PI / 6)), yy = (int) Math.round(y + 5 * Math.sin(q * Math.PI / 6));
+                        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+                        int kk = yy * w + xx;
+                        ring += (RS[kk] - FS[kk]) / Math.max(RS[kk], 0.1f * top);
+                        rn++;
+                    }
+                    if (rn > 0 && ring / rn > 0.4 * d) continue;
+                    // the parabola's top between the pixels
+                    double l = (RS[k - 1] - FS[k - 1]) / Math.max(RS[k - 1], 0.1f * top), r = (RS[k + 1] - FS[k + 1]) / Math.max(RS[k + 1], 0.1f * top);
+                    double u = (RS[k - w] - FS[k - w]) / Math.max(RS[k - w], 0.1f * top), dn = (RS[k + w] - FS[k + w]) / Math.max(RS[k + w], 0.1f * top);
+                    double sx = l - 2 * d + r, sy = u - 2 * d + dn;
+                    double fx = sx < -1e-6 ? Math.max(-0.5, Math.min(0.5, 0.5 * (l - r) / sx)) : 0;
+                    double fy = sy < -1e-6 ? Math.max(-0.5, Math.min(0.5, 0.5 * (u - dn) / sy)) : 0;
+                    mine.add(new double[]{i, (frames.get(i).tNs - t0) * 1e-9, x + fx, y + fy, d});
+                }
+            }
+            // the four darkest, three pixels apart
+            java.util.Collections.sort(mine, new java.util.Comparator<double[]>() {
+                @Override
+                public int compare(double[] a, double[] b) {
+                    return Double.compare(b[4], a[4]);
+                }
+            });
+            List<double[]> took = new ArrayList<double[]>();
+            for (double[] c : mine) {
+                boolean far = true;
+                for (double[] t : took) if (Math.hypot(c[2] - t[2], c[3] - t[3]) < 3) far = false;
+                if (far) took.add(c);
+                if (took.size() == 4) break;
+            }
+            cand.addAll(took);
+            pr.update("Looking for the station", 0.69f + 0.03f * (i + 1f) / n);
+        }
+        int m = cand.size();
+        if (m < 5) return null;
+        // the straight, steady track through the most frames: from pairs a few frames apart
+        Random rnd = new Random(17);
+        double[] best = null;
+        int bestCount = 0;
+        double[] bestD = new double[n];
+        for (int it = 0; it < 6000; it++) {
+            double[] a = cand.get(rnd.nextInt(m)), b = cand.get(rnd.nextInt(m));
+            int gap = (int) Math.abs(a[0] - b[0]);
+            if (gap < 2 || gap > 24) continue;
+            double dt = b[1] - a[1];
+            if (Math.abs(dt) < 1e-4) continue;
+            double vx = (b[2] - a[2]) / dt, vy = (b[3] - a[3]) / dt, sp = Math.hypot(vx, vy);
+            // a station seen from the ground goes 1 to 4 of the Moon's radii a second; slower than half of one, a still
+            // spot (a blurred frame's dimmer crater rim) could pass for a few frames
+            if (sp < 0.6 * disk.r || sp > 8 * disk.r) continue;
+            double[] tr = {a[2] - vx * a[1], a[3] - vy * a[1], vx, vy};
+            int cnt = inliers(cand, tr, n, bestD, CROSS_TOL);
+            if (cnt > bestCount) {
+                bestCount = cnt;
+                best = tr;
+            }
+        }
+        if (best == null || bestCount < 5) return null;
+        // least squares on the track's own, twice
+        for (int pass = 0; pass < 2; pass++) {
+            double st = 0, stt = 0, sx = 0, sxt = 0, sy = 0, syt = 0;
+            int k = 0;
+            for (double[] c : onTrack(cand, best, n, CROSS_TOL)) {
+                st += c[1];
+                stt += c[1] * c[1];
+                sx += c[2];
+                sxt += c[2] * c[1];
+                sy += c[3];
+                syt += c[3] * c[1];
+                k++;
+            }
+            double den = k * stt - st * st;
+            if (k < 5 || Math.abs(den) < 1e-12) return null;
+            double vx = (k * sxt - st * sx) / den, vy = (k * syt - st * sy) / den;
+            best = new double[]{(sx - vx * st) / k, (sy - vy * st) / k, vx, vy};
+        }
+        List<double[]> on = onTrack(cand, best, n, CROSS_TOL);
+        if (on.size() < 5) return null;
+        // it must show in most frames between its first and last where its place is on the lit Moon
+        int f0 = (int) on.get(0)[0], f1 = (int) on.get(on.size() - 1)[0], expected = 0;
+        for (int i = f0; i <= f1; i++) {
+            if (!warps.get(i).ok) continue;
+            double tt = (frames.get(i).tNs - t0) * 1e-9;
+            int x = (int) Math.round(best[0] + best[2] * tt), y = (int) Math.round(best[1] + best[3] * tt);
+            if (x >= 0 && y >= 0 && x < w && y < h && lit[y * w + x]) expected++;
+        }
+        if (on.size() < 0.6 * expected) return null;
+        Crossing c = new Crossing();
+        c.x0 = best[0];
+        c.y0 = best[1];
+        c.vx = best[2];
+        c.vy = best[3];
+        c.frames = new int[on.size()];
+        c.at = new double[on.size()][];
+        c.firstS = on.get(0)[1];
+        c.lastS = on.get(on.size() - 1)[1];
+        c.spanFrom = Math.max(0, f0 - 2);
+        c.spanTo = Math.min(n - 1, f1 + 2);
+        // the shade: each frame's own silhouette, round the track's place in it
+        c.shade = new float[w * h];
+        Arrays.fill(c.shade, 1f);
+        double deepest = 0;
+        for (int q = 0; q < on.size(); q++) {
+            int i = (int) on.get(q)[0];
+            double tt = on.get(q)[1];
+            double px = c.x0 + c.vx * tt, py = c.y0 + c.vy * tt;
+            c.frames[q] = i;
+            c.at[q] = new double[]{px, py};
+            // the frame's own sharpness here, against the reference (not blurred: the photo gets the crisp silhouette)
+            float[] FS = warped(lums.get(i), warps.get(i), R, w, h, box, 0);
+            int rad = 4;
+            for (int y = (int) Math.floor(py - rad); y <= Math.ceil(py + rad); y++) {
+                for (int x = (int) Math.floor(px - rad); x <= Math.ceil(px + rad); x++) {
+                    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                    int k = y * w + x;
+                    double dd = Math.hypot(x - px, y - py);
+                    if (dd > rad) continue;
+                    double f = Math.max(0, Math.min(1, FS[k] / Math.max(R[k], 1e-6f)));
+                    // only clear darkening, faded in from the noise and out towards the window's edge
+                    double dark = 1 - f, keep = Math.max(0, Math.min(1, (dark - 0.04) / 0.08)) * Math.max(0, Math.min(1, (rad - dd) / 1.5));
+                    double g = 1 - dark * keep;
+                    if (g < c.shade[k]) c.shade[k] = (float) g;
+                    if (lit[k]) deepest = Math.max(deepest, dark * keep);
+                }
+            }
+        }
+        c.depth = deepest;
+        return c;
+    }
+
+    /** How many frames have a candidate within {@code tol} of the track {x0, y0, vx, vy} (one a frame). */
+    static int inliers(List<double[]> cand, double[] tr, int n, double[] bestD, double tol) {
+        Arrays.fill(bestD, Double.POSITIVE_INFINITY);
+        for (double[] c : cand) {
+            double d = Math.hypot(c[2] - (tr[0] + tr[2] * c[1]), c[3] - (tr[1] + tr[3] * c[1]));
+            int f = (int) c[0];
+            if (d < bestD[f]) bestD[f] = d;
+        }
+        int cnt = 0;
+        for (double d : bestD) if (d < tol) cnt++;
+        return cnt;
+    }
+
+    /** The candidates on the track, the nearest one a frame, in frame order. */
+    static List<double[]> onTrack(List<double[]> cand, double[] tr, int n, double tol) {
+        double[][] pick = new double[n][];
+        double[] bd = new double[n];
+        Arrays.fill(bd, Double.POSITIVE_INFINITY);
+        for (double[] c : cand) {
+            double d = Math.hypot(c[2] - (tr[0] + tr[2] * c[1]), c[3] - (tr[1] + tr[3] * c[1]));
+            int f = (int) c[0];
+            if (d < tol && d < bd[f]) {
+                bd[f] = d;
+                pick[f] = c;
+            }
+        }
+        List<double[]> out = new ArrayList<double[]>();
+        for (double[] p : pick) if (p != null) out.add(p);
+        return out;
     }
 
     static Integer[] byQuality(final double[] q) {

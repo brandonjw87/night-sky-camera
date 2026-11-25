@@ -18,6 +18,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- the approximate place, for the Sun, the Moon, the compass and the frame length; it never leaves the phone -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- the Moonshot's Transit Hunter (3.0): a space station's crossing of the Moon is seen only from a strip a few km
+         wide, so it asks for the precise place (Brandon can still choose approximate) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- the Pixel Watch (2.5): straight to the watch over Bluetooth when it's near -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- remote viewer: a small web server on the local network, and an optional hotspot for it; Android 17 asks
@@ -61,6 +64,13 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- the Moonshot (3.0): the Moon from the 5x telephoto, lucky-imaged, every landing labelled, the ISS caught crossing it -->
+        <activity
+            android:name=".MoonActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
 
         <!-- the "Night sky" Quick Settings tile: opens the app, over the lock screen if the phone is locked -->
         <service
