@@ -287,7 +287,7 @@ public class Moon {
         frames(900, new Until() {
             @Override
             public boolean done() {
-                return field(a, "savedLabelled") != null;
+                return field(a, "savedMap") != null;
             }
         });
         MoonStack.Result r = (MoonStack.Result) field(a, "result");
@@ -305,7 +305,7 @@ public class Moon {
         check("nothing crossed it", r.crossing == null, r.crossing == null ? "" : r.crossing.toString());
         TextView title = firstText((ViewGroup) field(a, "resultBox"));
         check("the screen: \"Your Moon\"", title != null && title.getText().toString().equals("Your Moon"), title == null ? "" : title.getText().toString());
-        savedTwice(1);
+        savedThrice(1);
         screen("3_result");
         whole("3_result_page");
         save(bitmapOf(base), "3_photo_plain");
@@ -327,9 +327,47 @@ public class Moon {
         check("\"Every one\": more places labelled", all > labels.size(), all + " against " + labels.size());
         if (mineral != null) mineral.performClick();
         save((Bitmap) field(a, "shown"), "3_photo_every_mineral");
+        // the Moon map (3.1): the seas, craters and mountains named on the Moon itself
+        Button moonMap = button((ViewGroup) field(a, "resultBox"), "Moon map");
+        check("a Moon map button", moonMap != null, "");
+        if (moonMap != null) {
+            moonMap.performClick();
+            @SuppressWarnings("unchecked")
+            List<MoonLook.MapLabel> names = (List<MoonLook.MapLabel>) field(a, "mapLabels");
+            int seas = 0, craters = 0, apollo = 0;
+            MoonLook.MapLabel crater = null;
+            for (MoonLook.MapLabel l : names) {
+                if (l.site != null) apollo++;
+                else if (l.feature.kind == com.brandon.nightsky.processing.MoonFeatures.Kind.SEA) seas++;
+                else if (l.feature.kind == com.brandon.nightsky.processing.MoonFeatures.Kind.CRATER) {
+                    craters++;
+                    if (crater == null || l.feature.rank < crater.feature.rank) crater = l;
+                }
+            }
+            check("the Moon map: seas, craters and the Apollo landings named", seas >= 5 && craters >= 10 && apollo == 6,
+                    seas + " seas, " + craters + " craters, " + apollo + " landings of " + names.size() + " names");
+            String hint = ((TextView) field(a, "storyText")).getText().toString();
+            check("the card: how to get a story, and tonight's best", hint.contains("Tap a sea, a crater or a mountain range"), hint);
+            save((Bitmap) field(a, "shown"), "3_photo_moon_map");
+            if (crater != null) {
+                call(a, "tapped", new Class<?>[]{float.class, float.class}, (float) ((crater.bx0 + crater.bx1) / 2), (float) ((crater.by0 + crater.by1) / 2));
+                String story = ((TextView) field(a, "storyText")).getText().toString();
+                check("a crater's name tapped: its story", story.startsWith(crater.feature.name + ", a crater") && story.contains("Tonight the Sun is"),
+                        story.substring(0, Math.min(90, story.length())));
+            }
+            Button sh = button((ViewGroup) field(a, "resultBox"), "Share");
+            if (sh != null) {
+                sh.performClick();
+                Intent sent = sent(Shadows.shadowOf(a).getNextStartedActivity());
+                check("Share with the Moon map sends the map", sent != null && field(a, "savedMap") != null
+                        && field(a, "savedMap").equals(sent.getParcelableExtra(Intent.EXTRA_STREAM)), String.valueOf(sent));
+            }
+        }
         Button famous = button((ViewGroup) field(a, "resultBox"), "Landings");
         if (famous != null) famous.performClick();
         if (mineral != null) mineral.performClick();
+        String back = ((TextView) field(a, "storyText")).getText().toString();
+        check("back to the landings: the card says so", back.contains("Tap a landing site"), back);
         st = watchStatus();
         w = WatchProbe.moonWords(st, System.currentTimeMillis());
         check("the watch hears the photo is ready", w.contains("Your Moon is ready"), w);
@@ -435,7 +473,7 @@ public class Moon {
         frames(900, new Until() {
             @Override
             public boolean done() {
-                return field(a, "savedLabelled") != null && FakeMediaStore.rows.size() >= 4;
+                return field(a, "savedLabelled") != null && FakeMediaStore.rows.size() >= 6;
             }
         });
         r = (MoonStack.Result) field(a, "result");
@@ -454,7 +492,7 @@ public class Moon {
                 title == null ? "" : title.getText().toString());
         String story = ((TextView) field(a, "storyText")).getText().toString();
         check("its story", story.contains("International Space Station") && story.contains("610 km"), story.substring(0, Math.min(80, story.length())));
-        savedTwice(2);
+        savedThrice(2);
         screen("5_transit_result");
         whole("5_transit_result_page");
         st = watchStatus();
@@ -669,23 +707,32 @@ public class Moon {
         check("the lit side where the sky has it", ang < 15, String.format(Locale.US, "%.1f° off", ang));
     }
 
-    /** The photos saved so far: two a shot, plain and labelled, decodable, named. */
-    void savedTwice(int shots) throws Exception {
-        Uri plain = (Uri) field(a, "savedPlain"), labelled = (Uri) field(a, "savedLabelled");
-        File fp = plain != null ? FakeMediaStore.file(plain) : null, fl = labelled != null ? FakeMediaStore.file(labelled) : null;
-        check("saved twice more", FakeMediaStore.rows.size() == 2 * shots && fp != null && fl != null && fp.length() > 20_000 && fl.length() > 20_000,
-                FakeMediaStore.rows.size() + " saved");
-        if (fp == null || fl == null) return;
-        String np = FakeMediaStore.name(plain), nl = FakeMediaStore.name(labelled);
-        check("named for the moment it was shot", np != null && np.startsWith("Moonshot_") && nl != null && nl.endsWith("_landings.jpg"), np + ", " + nl);
-        Bitmap bp = BitmapFactory.decodeFile(fp.getPath()), bl = BitmapFactory.decodeFile(fl.getPath());
-        check("whole JPEGs", bp != null && bl != null && bp.getWidth() == MoonLook.SIDE && bl.getHeight() == MoonLook.SIDE,
-                bp == null ? "no plain" : bp.getWidth() + " x " + bp.getHeight());
-        if (bp == null || bl == null) return;
-        int diff = 0;
-        for (int y = 0; y < bp.getHeight(); y += 2) for (int x = 0; x < bp.getWidth(); x += 2) if (Math.abs((bp.getPixel(x, y) & 255) - (bl.getPixel(x, y) & 255)) > 40) diff++;
+    /** The photos saved so far: three a shot (plain, labelled, and the Moon map since 3.1), decodable, named. */
+    void savedThrice(int shots) throws Exception {
+        Uri plain = (Uri) field(a, "savedPlain"), labelled = (Uri) field(a, "savedLabelled"), map = (Uri) field(a, "savedMap");
+        File fp = plain != null ? FakeMediaStore.file(plain) : null, fl = labelled != null ? FakeMediaStore.file(labelled) : null,
+                fm = map != null ? FakeMediaStore.file(map) : null;
+        check("saved three times more", FakeMediaStore.rows.size() == 3 * shots && fp != null && fl != null && fm != null && fp.length() > 20_000
+                && fl.length() > 20_000 && fm.length() > 20_000, FakeMediaStore.rows.size() + " saved");
+        if (fp == null || fl == null || fm == null) return;
+        String np = FakeMediaStore.name(plain), nl = FakeMediaStore.name(labelled), nm = FakeMediaStore.name(map);
+        check("named for the moment it was shot", np != null && np.startsWith("Moonshot_") && nl != null && nl.endsWith("_landings.jpg")
+                && nm != null && nm.endsWith("_map.jpg"), np + ", " + nl + ", " + nm);
+        Bitmap bp = BitmapFactory.decodeFile(fp.getPath()), bl = BitmapFactory.decodeFile(fl.getPath()), bm = BitmapFactory.decodeFile(fm.getPath());
+        check("whole JPEGs", bp != null && bl != null && bm != null && bp.getWidth() == MoonLook.SIDE && bl.getHeight() == MoonLook.SIDE
+                && bm.getWidth() == MoonLook.SIDE, bp == null ? "no plain" : bp.getWidth() + " x " + bp.getHeight());
+        if (bp == null || bl == null || bm == null) return;
+        int diff = 0, diffMap = 0;
+        for (int y = 0; y < bp.getHeight(); y += 2) {
+            for (int x = 0; x < bp.getWidth(); x += 2) {
+                if (Math.abs((bp.getPixel(x, y) & 255) - (bl.getPixel(x, y) & 255)) > 40) diff++;
+                if (Math.abs((bp.getPixel(x, y) & 255) - (bm.getPixel(x, y) & 255)) > 40) diffMap++;
+            }
+        }
         check("the labelled one has its labels", diff > bp.getWidth() * bp.getHeight() / 4 / 400, diff + " pixels differ");
+        check("the Moon map has its names", diffMap > bp.getWidth() * bp.getHeight() / 4 / 400, diffMap + " pixels differ");
         save(bl, "saved_" + shots + "_labelled");
+        save(bm, "saved_" + shots + "_map");
     }
 
     // ------------------------------------------------------------------------------------------------

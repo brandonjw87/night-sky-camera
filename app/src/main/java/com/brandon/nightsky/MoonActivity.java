@@ -79,11 +79,15 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     private MoonLook.Picture base, before;
     private int[] baseMineral;
     private List<MoonLook.Label> labels = new ArrayList<MoonLook.Label>();
+    /** The Moon map's names (3.1): the seas, craters, mountains and Apollo landings on the Moon itself. */
+    private List<MoonLook.MapLabel> mapLabels = new ArrayList<MoonLook.MapLabel>();
     private float labelSize = 30;
     private int labelLevel = MoonLook.LABELS_FAMOUS;
     private boolean showBefore, mineral;
+    /** The label level the photo on the screen was drawn with. */
+    private int shownLevel = -1;
     private Bitmap shown;
-    private Uri savedPlain, savedLabelled;
+    private Uri savedPlain, savedLabelled, savedMap;
     /** The burst is a crossing's: the stations' silhouettes are found and laid on the photo. */
     private boolean transitShot;
     /** What crossed the Moon in the photo: "ISS", "Tiangong", or a mystery; and its story. */
@@ -584,10 +588,12 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         row1.addView(bAfter, weight());
         resultBox.addView(row1, gap(8));
         LinearLayout row2 = new LinearLayout(this);
-        final Button lNone = chip("No labels", false), lFamous = chip("Landings", true), lAll = chip("Every one", false);
+        final Button lNone = chip("No labels", false), lFamous = chip("Landings", true), lAll = chip("Every one", false),
+                lMap = chip("Moon map", false);
         row2.addView(lNone, weight());
         row2.addView(lFamous, weight());
         row2.addView(lAll, weight());
+        row2.addView(lMap, weight());
         resultBox.addView(row2, gap(6));
         final Button min = chip("Mineral colours", false);
         resultBox.addView(min, gap(6));
@@ -598,21 +604,29 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 else if (v == lNone) labelLevel = MoonLook.LABELS_NONE;
                 else if (v == lFamous) labelLevel = MoonLook.LABELS_FAMOUS;
                 else if (v == lAll) labelLevel = MoonLook.LABELS_ALL;
+                else if (v == lMap) labelLevel = MoonLook.LABELS_MAP;
                 else if (v == min) mineral = !mineral;
                 chipStyle(bBefore, showBefore);
                 chipStyle(bAfter, !showBefore);
                 chipStyle(lNone, labelLevel == MoonLook.LABELS_NONE);
                 chipStyle(lFamous, labelLevel == MoonLook.LABELS_FAMOUS);
                 chipStyle(lAll, labelLevel == MoonLook.LABELS_ALL);
+                chipStyle(lMap, labelLevel == MoonLook.LABELS_MAP);
                 chipStyle(min, mineral);
+                int was = shownLevel;
                 redraw();
+                if (labelLevel != was) storyText.setText(hint());
             }
         };
-        for (Button x : new Button[]{bBefore, bAfter, lNone, lFamous, lAll, min}) x.setOnClickListener(pick);
-        storyText = text(r.crossing != null ? crossingStory + "\n\nTap a landing site for its story." : "Tap a landing site for its story.", 14, WHITE, false);
+        for (Button x : new Button[]{bBefore, bAfter, lNone, lFamous, lAll, lMap, min}) x.setOnClickListener(pick);
+        storyText = text("", 14, WHITE, false);
         LinearLayout story = card();
         story.addView(storyText);
         resultBox.addView(story, gap(10));
+        chipStyle(lNone, labelLevel == MoonLook.LABELS_NONE);
+        chipStyle(lFamous, labelLevel == MoonLook.LABELS_FAMOUS);
+        chipStyle(lAll, labelLevel == MoonLook.LABELS_ALL);
+        chipStyle(lMap, labelLevel == MoonLook.LABELS_MAP);
         LinearLayout row3 = new LinearLayout(this);
         Button share = button("Share", true), again = button("Shoot again", false);
         row3.addView(share, weight());
@@ -621,7 +635,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         share.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Uri u = labelLevel == MoonLook.LABELS_NONE ? savedPlain : savedLabelled;
+                Uri u = labelLevel == MoonLook.LABELS_NONE ? savedPlain : labelLevel == MoonLook.LABELS_MAP ? savedMap : savedLabelled;
                 if (u == null) u = savedPlain;
                 if (u == null) return;
                 Intent s = new Intent(Intent.ACTION_SEND).setType("image/jpeg").putExtra(Intent.EXTRA_STREAM, u)
@@ -637,8 +651,20 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             }
         });
         redraw();
+        storyText.setText(hint());
         save(b);
         if (live != null) onLive(live);
+    }
+
+    /** What the card under the photo says before anything is tapped: the crossing's story, how to get a place's story. */
+    private String hint() {
+        String lead = result != null && result.crossing != null ? crossingStory + "\n\n" : "";
+        if (labelLevel == MoonLook.LABELS_MAP) {
+            String best = view != null ? MoonLook.bestTonight(mapLabels, view) : "";
+            return lead + "Tap a sea, a crater or a mountain range for its story." + (best.isEmpty() ? "" : "\n\n" + best);
+        }
+        if (labelLevel == MoonLook.LABELS_NONE) return lead + "Choose Landings or Moon map to see what's where.";
+        return lead + "Tap a landing site for its story.";
     }
 
     /** What crossed: the station that was due then (from the Transit Hunter's list), else a mystery flyer. */
@@ -683,14 +709,20 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         bm.setPixels(px, 0, p.w, 0, 0, p.w, p.h);
         CanvasPainter cp = new CanvasPainter(bm);
         labels = new ArrayList<MoonLook.Label>();
-        if (labelLevel != MoonLook.LABELS_NONE) {
+        mapLabels = new ArrayList<MoonLook.MapLabel>();
+        if (labelLevel == MoonLook.LABELS_MAP) {
+            mapLabels = MoonLook.mapLayout(p, view, cp, 30);
+            MoonLook.paintMap(cp, p, mapLabels, 30);
+            if (!showBefore) MoonLook.track(cp, p, result, crossingLabel, 30);
+        } else if (labelLevel != MoonLook.LABELS_NONE) {
             labels = MoonLook.layout(p, view, labelLevel, cp, 30);
             labelSize = MoonLook.fit(cp, p, labels, 30);
             labels = MoonLook.layout(p, view, labelLevel, cp, labelSize);
             MoonLook.paint(cp, p, labels, labelSize);
             if (!showBefore) MoonLook.track(cp, p, result, crossingLabel, labelSize);
         }
-        MoonLook.captions(cp, p, showBefore ? "ONE FRAME" : "MOONSHOT", caption(), 30);
+        shownLevel = labelLevel;
+        MoonLook.captions(cp, p, showBefore ? "ONE FRAME" : labelLevel == MoonLook.LABELS_MAP ? "MOON MAP" : "MOONSHOT", caption(), 30);
         Bitmap old = shown;
         shown = bm;
         photo.show(bm, true);
@@ -705,22 +737,23 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     }
 
     private void tapped(float x, float y) {
-        if (labels.isEmpty() || shown == null) return;
+        if (shown == null) return;
+        if (labelLevel == MoonLook.LABELS_MAP) {
+            MoonLook.MapLabel m = MoonLook.mapAt(mapLabels, x, y, 50);
+            if (m != null) storyText.setText(MoonLook.mapStory(m));
+            return;
+        }
+        if (labels.isEmpty()) return;
         CanvasPainter cp = new CanvasPainter(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888));
         MoonLook.Label l = MoonLook.at(labels, x, y, 60, cp, showBefore ? before : base, labelSize);
         if (l == null) return;
-        MoonSites.Site s = l.site;
-        StringBuilder sb = new StringBuilder();
-        sb.append(s.name).append(" · ").append(s.date).append(" · ").append(s.who).append("\n").append(s.place).append("\n\n");
-        if (!s.crew.isEmpty()) sb.append(s.crew).append(".\n\n");
-        sb.append(s.story);
-        sb.append(String.format(Locale.US, "\n\nTonight the Sun is %s there%s.", l.sunUp ? String.format(Locale.US, "%.0f° up", l.sunAlt)
-                : "down: it's night", l.sunUp && l.sunAlt < 12 ? ", low enough for long shadows" : ""));
-        storyText.setText(sb.toString());
+        storyText.setText(MoonLook.siteStory(l.site, l.sunAlt));
     }
 
-    /** Saves the photo as it is and labelled (famous landings), in Pictures/NightSky. */
+    /** Saves the photo three ways in Pictures/NightSky: as it is, labelled (famous landings), and as a Moon map. */
     private void save(final MoonCamera.Burst b) {
+        // the last shot's photos aren't this one's: Share waits for these
+        savedPlain = savedLabelled = savedMap = null;
         final MoonLook.Picture p = base;
         final MoonGeo.View v = view;
         final String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(b.startMs));
@@ -747,16 +780,26 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                     MoonLook.track(lp, p, rr, label, fs);
                     MoonLook.captions(lp, p, "MOONSHOT", cap, 30);
                     final Uri u2 = MediaSaver.saveJpeg(MoonActivity.this, lab, "Moonshot_" + stamp + "_landings", exif(b, p));
-                    plain.recycle();
                     lab.recycle();
+                    // the Moon map (3.1): the seas, craters and mountains named on it
+                    Bitmap map = Bitmap.createBitmap(p.w, p.h, Bitmap.Config.ARGB_8888);
+                    map.setPixels(p.argb, 0, p.w, 0, 0, p.w, p.h);
+                    CanvasPainter mp = new CanvasPainter(map);
+                    MoonLook.paintMap(mp, p, MoonLook.mapLayout(p, v, mp, 30), 30);
+                    MoonLook.track(mp, p, rr, label, 30);
+                    MoonLook.captions(mp, p, "MOON MAP", cap, 30);
+                    final Uri u3 = MediaSaver.saveJpeg(MoonActivity.this, map, "Moonshot_" + stamp + "_map", exif(b, p));
+                    map.recycle();
+                    plain.recycle();
                     main.post(new Runnable() {
                         @Override
                         public void run() {
                             savedPlain = u1;
                             savedLabelled = u2;
+                            savedMap = u3;
                             if (u1 != null) {
                                 prefs.setLastResultUri(u1.toString());
-                                if (!isFinishing()) toast("Saved in Pictures/NightSky, with and without the labels");
+                                if (!isFinishing()) toast("Saved in Pictures/NightSky: plain, with the landings, and as a Moon map");
                             }
                         }
                     });
