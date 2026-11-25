@@ -3,7 +3,7 @@
   <groupId>x</groupId><artifactId>robo</artifactId><version>1</version>
   <dependencies>
     <dependency>
-      <groupId>org.robolectric</groupId><artifactId>robolectric</artifactId><version>4.17</version>
+      <groupId>org.robolectric</groupId><artifactId>robolectric</artifactId><version>4.18.1</version>
       <exclusions>
         <exclusion><groupId>androidx.test</groupId><artifactId>monitor</artifactId></exclusion>
         <exclusion><groupId>androidx.test.espresso</groupId><artifactId>espresso-idling-resource</artifactId></exclusion>

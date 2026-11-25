@@ -19,12 +19,12 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 TEST=${1:?usage: robo/run.sh Night|Monkey|Shots|Launches|EditFlow|Intro|Stops [only]}
 ONLY=${2:-}
-ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo}
-ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-36.jar}
+ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo17}
+ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-37.jar}
 ANDROID_RES_JAR=${ANDROID_RES_JAR:-/opt/android-jars/android-34.jar}
 OUT=${OUT:-$ROOT/build/robo}
 B=$ROOT/build/robo-classes
-SDK_VERSION=16-robolectric-13921718
+SDK_VERSION=${SDK_VERSION:-17-robolectric-16653203}
 export JAVA_TOOL_OPTIONS=
 [ -f "$ROBO_HOME/androidx-test-stubs.jar" ] || { echo "run robo/setup.sh first"; exit 1; }
 rm -rf "$B"

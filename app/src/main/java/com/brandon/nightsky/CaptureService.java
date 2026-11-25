@@ -347,6 +347,11 @@ public final class CaptureService extends Service implements SessionController.H
     }
 
     private void startRemote() {
+        if (!LocalNet.allowed(this)) {
+            // Android 17: without the local network permission nobody could reach the viewer's address
+            android.util.Log.i("NightSky", "viewer: not started, no local network permission");
+            return;
+        }
         RemoteHost r = remote;
         if (r == null || !r.running()) {
             r = new RemoteHost(this, controller);

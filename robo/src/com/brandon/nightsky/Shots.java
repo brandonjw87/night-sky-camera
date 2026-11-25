@@ -37,7 +37,7 @@ import java.util.Properties;
 /** Draws the app's screens to PNG files (shots.out) from sessions copied in (shots.sessions). */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36, qualifiers = "w412dp-h915dp-port-xhdpi")
+@Config(sdk = 37, qualifiers = "w412dp-h915dp-port-xhdpi")
 public class Shots {
     static File out;
 

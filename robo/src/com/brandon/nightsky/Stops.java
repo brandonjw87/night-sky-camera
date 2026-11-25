@@ -33,7 +33,7 @@ import java.util.List;
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36, qualifiers = "w412dp-h915dp-port-xhdpi")
+@Config(sdk = 37, qualifiers = "w412dp-h915dp-port-xhdpi")
 public class Stops {
     static final Charset UTF8 = Charset.forName("UTF-8");
     static int failed;

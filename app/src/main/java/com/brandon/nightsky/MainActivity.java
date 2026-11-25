@@ -138,7 +138,7 @@ public final class MainActivity extends Activity {
     private SessionController.Phase shownPhase;
     private long shownVersion = -1;
     private int shownPreview = -1;
-    private boolean pendingStart, askedNotifications;
+    private boolean pendingStart, askedNotifications, askedLocalNet;
     /** Why the app last stopped (2.1; null if nothing to show), looked up once per screen. */
     private StopRecorder.Stop stopShown;
     private boolean stopChecked;
@@ -162,7 +162,8 @@ public final class MainActivity extends Activity {
     /** Drops the sessions read for a page Brandon has left. */
     private int libraryToken;
     /** Asking for a settings file to load, for the location on the sites page, and for the camera to calibrate or check. */
-    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9, REQ_CHECK_CAMERA = 10, REQ_WATCH_BT = 11;
+    private static final int REQ_IMPORT = 7, REQ_SITES_LOCATION = 8, REQ_FOCUS_CAMERA = 9, REQ_CHECK_CAMERA = 10, REQ_WATCH_BT = 11,
+            REQ_LOCAL_NET = 12;
     /** The daylight focus calibration's camera while its page shows (null otherwise); the camera sessions use. */
     private FocusCalibrator calibrator;
     /** The camera check while it runs on its page (null otherwise). */
@@ -171,6 +172,8 @@ public final class MainActivity extends Activity {
     /** The home screen's scroll view, and its presets card (filled again when a setting changes). */
     private ScrollView homeScroll;
     private LinearLayout presetBox;
+    /** The Viewer option on the home screen (unticked if Android 17's local network permission is refused). */
+    private CheckBox viewerCheck;
     /** What the home screen said about the saved site whose preset it put in place ("" if nothing). */
     private String sitePicked = "";
     private int page = PAGE_HOME;
@@ -868,11 +871,17 @@ public final class MainActivity extends Activity {
                 handChanged();
             }
         });
-        CheckBox viewer = check("Viewer: watch and stop it from a laptop or another phone on the same Wi-Fi", prefs.remoteViewer());
+        final CheckBox viewer = check("Viewer: watch and stop it from a laptop or another phone on the same Wi-Fi", prefs.remoteViewer());
+        viewerCheck = viewer;
         viewer.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(CompoundButton b, boolean on) {
                 prefs.setRemoteViewer(on);
+                // Android 17: the local network is a permission of its own (granted with Bluetooth's)
+                if (on && !LocalNet.allowed(MainActivity.this)) {
+                    askedLocalNet = true;
+                    requestPermissions(new String[]{LocalNet.PERMISSION}, REQ_LOCAL_NET);
+                }
             }
         });
         CheckBox pre = check("Check the sky first: smudged lens, trees, clouds, the Moon (about 15 seconds)", prefs.preflight());
@@ -1719,6 +1728,13 @@ public final class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2);
             return;
         }
+        if (prefs.remoteViewer() && !LocalNet.allowed(this) && !askedLocalNet && !(l != null && l.reading)) {
+            // Android 17: the viewer needs the local network permission (asked once; without it, the session runs unwatched)
+            askedLocalNet = true;
+            pendingStart = true;
+            requestPermissions(new String[]{LocalNet.PERMISSION}, REQ_LOCAL_NET);
+            return;
+        }
         pendingLaunchSettings = null;
         boolean reading = l != null && l.reading;
         // the service starts from the saved settings; a shortcut changes some for this session only
@@ -1777,6 +1793,15 @@ public final class MainActivity extends Activity {
             }
             return;
         }
+        if (code == REQ_LOCAL_NET && !pendingStart) {
+            if (!LocalNet.allowed(this)) {
+                prefs.setRemoteViewer(false);
+                if (viewerCheck != null) viewerCheck.setChecked(false);
+                toastish(LocalNet.REFUSED);
+            }
+            return;
+        }
+        if (code == REQ_LOCAL_NET && !LocalNet.allowed(this)) toastish(LocalNet.REFUSED);
         if (code == REQ_SITES_LOCATION) {
             if (!Locator.allowed(this)) toastish("Location is off for the app: allow it in Settings > Apps > Night Sky > Permissions");
             if (page == PAGE_SITES && screenOf(shownPhase) <= 0) showSites();

@@ -5,7 +5,7 @@
 #   tools/build_apk.sh [out.apk]
 #
 # Environment:
-#   ANDROID_JAR     platform jar to compile against   (default /opt/android-jars/android-36.jar)
+#   ANDROID_JAR     platform jar to compile against   (default /opt/android-jars/android-37.jar)
 #   ANDROID_RES_JAR platform jar aapt2 can read        (default /opt/android-jars/android-34.jar)
 #   KEYSTORE        signing keystore (created if missing; keep it to install updates over old versions)
 #   KS_PASS         keystore password                  (default android)
@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 OUT=${1:-$ROOT/build/NightSky.apk}
-ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-36.jar}
+ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-37.jar}
 ANDROID_RES_JAR=${ANDROID_RES_JAR:-/opt/android-jars/android-34.jar}
 KEYSTORE=${KEYSTORE:-$ROOT/build/nightsky.keystore}
 KS_PASS=${KS_PASS:-android}

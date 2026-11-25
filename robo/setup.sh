@@ -14,11 +14,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE=$(pwd)
-ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo}
+ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo17}
 CENTRAL=https://repo1.maven.org/maven2
 # Google's copy of Maven Central: repo1 has refused the 213 MB jar with 429 (too many requests)
 MIRROR=https://maven-central.storage-download.googleapis.com/maven2
-SDK_VERSION=16-robolectric-13921718
+SDK_VERSION=${SDK_VERSION:-17-robolectric-16653203}
 mkdir -p "$ROBO_HOME/deps" "$ROBO_HOME/sdk"
 # the JVM's "Picked up JAVA_TOOL_OPTIONS" notice left out (the options themselves can hold the proxy's settings)
 quiet() {

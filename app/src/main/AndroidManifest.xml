@@ -4,7 +4,8 @@
     android:versionCode="18"
     android:versionName="2.6">
 
-    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="36" />
+    <!-- 3.0, the Moonshot: Android 17 or newer -->
+    <uses-sdk android:minSdkVersion="37" android:targetSdkVersion="37" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
@@ -19,7 +20,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- the Pixel Watch (2.5): straight to the watch over Bluetooth when it's near -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- remote viewer: a small web server on the local network, and an optional hotspot for it -->
+    <!-- remote viewer: a small web server on the local network, and an optional hotspot for it; Android 17 asks
+         before an app talks on the local network (the Nearby devices permission, already granted with Bluetooth) -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />

@@ -34,7 +34,7 @@ import java.util.TreeSet;
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36)
+@Config(sdk = 37)
 public class EditFlow {
     static int failures;
     static final List<SessionController.Status> seen = new ArrayList<SessionController.Status>();
