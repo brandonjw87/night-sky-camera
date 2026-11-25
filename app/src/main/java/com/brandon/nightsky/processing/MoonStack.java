@@ -575,14 +575,55 @@ public final class MoonStack {
     }
 
     /** Drizzles frames' RAW samples onto the grid: {r, g, b} (balanced camera colour), each from both kernels blended. */
+    /**
+     * The Moon's own colour in the balanced mosaic: each channel's mean over the lit disk as a share of green's (from
+     * one frame), so that every sample can stand for the brightness.
+     */
+    static double[] moonColour(float[] bal, float[] L, Frame f, SensorSpec spec, Disk d) {
+        float top = percentile(L, 0.995);
+        double[] sum = new double[3];
+        int[] n = new int[3];
+        for (int j = 0; j < f.h; j++) {
+            int py = ((j + f.y0) & 1) * 2;
+            for (int i = 0; i < f.w; i++) {
+                int k = j * f.w + i;
+                double dx = i - d.cx, dy = j - d.cy;
+                if (L[k] < 0.3f * top || dx * dx + dy * dy > 0.9 * d.r * d.r) continue;
+                int c = spec.cfa[py + ((i + f.x0) & 1)];
+                sum[c] += bal[k];
+                n[c]++;
+            }
+        }
+        double g = n[1] > 0 ? sum[1] / n[1] : 1;
+        double[] mc = new double[3];
+        for (int c = 0; c < 3; c++) {
+            double m = n[c] > 0 && g > 0 ? sum[c] / n[c] / g : 1;
+            mc[c] = m > 0.2 && m < 5 ? m : 1;
+        }
+        return mc;
+    }
+
     static float[][] drizzle(List<float[]> bals, List<boolean[]> sats, List<Frame> frames, List<Warp> warps, SensorSpec spec, Grid gr,
-                             double fineK, double coarseK) {
+                             double fineK, double coarseK, double[] mc) {
         int W = gr.W, H = gr.H, np = W * H;
         final double s1 = fineK * gr.S, s2 = coarseK * gr.S;
         final double k1 = -1 / (2 * s1 * s1), k2 = -1 / (2 * s2 * s2);
-        double[][] a1 = new double[3][np], w1 = new double[3][np], a2 = new double[3][np], w2 = new double[3][np];
+        // four layers: red, green, blue, and every sample whatever its colour (the frames are white-balanced, so the grey
+        // Moon's samples all agree: the brightness gets every sample's detail; the colours come from their own, smoothed)
+        double[][] a1 = new double[4][np], w1 = new double[4][np], a2 = new double[4][np], w2 = new double[4][np];
         double[] ref = new double[2], o = new double[2];
         int R = (int) Math.ceil(2.5 * s2);
+        // the kernels by squared distance, tabulated (exp is the slow part)
+        final int TAB = 4096;
+        final double d2max = (R + 1.0) * (R + 1.0), tabStep = d2max / (TAB - 1);
+        final double cut1 = 4.5 * s1 * s1;
+        float[] e1 = new float[TAB], e2 = new float[TAB];
+        for (int t = 0; t < TAB; t++) {
+            double d2 = t * tabStep;
+            e1[t] = d2 < cut1 ? (float) Math.exp(d2 * k1) : 0f;
+            e2[t] = (float) Math.exp(d2 * k2);
+        }
+        double inv = 1 / tabStep;
         for (int fi = 0; fi < frames.size(); fi++) {
             Frame f = frames.get(fi);
             float[] bal = bals.get(fi);
@@ -598,34 +639,65 @@ public final class MoonStack {
                     gr.out(ref[0], ref[1], o);
                     int ox = (int) Math.round(o[0]), oy = (int) Math.round(o[1]);
                     if (ox < -R || oy < -R || ox >= W + R || oy >= H + R) continue;
-                    double v = bal[k];
+                    double v = bal[k], vl = v / mc[ch];
                     double[] A1 = a1[ch], W1 = w1[ch], A2 = a2[ch], W2 = w2[ch];
+                    double[] L1 = a1[3], M1 = w1[3], L2 = a2[3], M2 = w2[3];
                     for (int y = Math.max(0, oy - R); y <= Math.min(H - 1, oy + R); y++) {
                         double dy = y - o[1], dy2 = dy * dy;
                         for (int x = Math.max(0, ox - R); x <= Math.min(W - 1, ox + R); x++) {
                             double dx = x - o[0], d2 = dx * dx + dy2;
+                            int ti = (int) (d2 * inv + 0.5);
+                            if (ti >= TAB) continue;
                             int q = y * W + x;
-                            if (d2 < 4.5 * s1 * s1) {
-                                double e = Math.exp(d2 * k1);
+                            float e = e1[ti];
+                            if (e > 0) {
                                 A1[q] += e * v;
                                 W1[q] += e;
+                                L1[q] += e * vl;
+                                M1[q] += e;
                             }
-                            double e2 = Math.exp(d2 * k2);
-                            A2[q] += e2 * v;
-                            W2[q] += e2;
+                            float ee = e2[ti];
+                            A2[q] += ee * v;
+                            W2[q] += ee;
+                            L2[q] += ee * vl;
+                            M2[q] += ee;
                         }
                     }
                 }
             }
         }
-        float[][] out = new float[3][np];
-        for (int c = 0; c < 3; c++) {
+        float[][] layer = new float[4][np];
+        for (int c = 0; c < 4; c++) {
             for (int q = 0; q < np; q++) {
                 double fine = w1[c][q] > 1e-9 ? a1[c][q] / w1[c][q] : 0, coarse = w2[c][q] > 1e-9 ? a2[c][q] / w2[c][q] : 0;
                 // trust the fine kernel where it has a few samples' worth of weight
                 double t = w1[c][q] / (w1[c][q] + 0.6);
-                out[c][q] = (float) (t * fine + (1 - t) * coarse);
+                layer[c][q] = (float) (t * fine + (1 - t) * coarse);
             }
+        }
+        // the colours: each channel's share of the brightness, smoothed alike (so no channel's own sharpness or noise
+        // shows as coloured fringes), times the brightness from every sample
+        float[] Ls = blur(layer[3], W, H, 1.5 * gr.S / 2);
+        float top = percentile(Ls, 0.99);
+        float[][] out = new float[3][];
+        for (int c = 0; c < 3; c++) {
+            float[] cs = blur(layer[c], W, H, 1.5 * gr.S / 2);
+            float[] oc = new float[np];
+            for (int q = 0; q < np; q++) {
+                float l = Ls[q];
+                float ratio = l > 1e-4f ? cs[q] / l : 1f;
+                if (ratio < 0) ratio = 0;
+                if (ratio > 4) ratio = 4;
+                // the sky and the Moon's night side: too dark to have a colour (its noise would show as coloured dots)
+                float fade = top > 0 ? (l / top - 0.01f) / 0.04f : 1f;
+                if (fade < 1) {
+                    float own = c == 0 ? (float) mc[0] : c == 1 ? 1f : (float) mc[2];
+                    fade = Math.max(0, fade);
+                    ratio = own + (ratio - own) * fade;
+                }
+                oc[q] = layer[3][q] * ratio;
+            }
+            out[c] = oc;
         }
         return out;
     }
@@ -873,7 +945,8 @@ public final class MoonStack {
         gr.W = gr.H = 2 * half + 1;
         gr.oc = half;
         pr.update("Stacking the sharpest", 0.72f);
-        float[][] cam = drizzle(useB, useS, useF, useW, spec, gr, opt.fineKernel, opt.coarseKernel);
+        double[] mc = moonColour(bals.get(ref), lums.get(ref), frames.get(ref), spec, disk);
+        float[][] cam = drizzle(useB, useS, useF, useW, spec, gr, opt.fineKernel, opt.coarseKernel, mc);
         float[][] cam1 = ordinary(bals.get(ref), frames.get(ref), warps.get(ref), spec, gr);
         Result res = new Result();
         res.w = gr.W;

@@ -43,6 +43,14 @@ public final class MoonSim {
      * @param os          samples per sensor pixel across
      */
     public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os) {
+        this(unixMs, latDeg, lonDeg, arcsecPerPx, upPa, os, null);
+    }
+
+    /** Beacons: lamps on the Moon {lat, lon, radius (degrees), brightness}, to see where places come out in the pictures. */
+    final double[][] beacons;
+
+    public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os, double[][] beacons) {
+        this.beacons = beacons;
         view = MoonGeo.view(unixMs, latDeg, lonDeg);
         this.upPa = upPa;
         this.os = os;
@@ -296,6 +304,14 @@ public final class MoonSim {
                 double lum = mu0 > 0 ? alb * 2 * mu0 / (mu0 + mu) * phaseFactor : 0;
                 // the Earth's glow on the night side (and under the day too, unseen there)
                 lum += earthshine * alb;
+                if (beacons != null) {
+                    for (double[] bc : beacons) {
+                        double cl = Math.cos(bc[0] * D);
+                        double dot = px * cl * Math.cos(bc[1] * D) + py * cl * Math.sin(bc[1] * D) + pz * Math.sin(bc[0] * D);
+                        double d = Math.acos(Math.max(-1, Math.min(1, dot))) / D;
+                        if (d < 3 * bc[2]) lum += bc[3] * Math.exp(-(d / bc[2]) * (d / bc[2]));
+                    }
+                }
                 double blue = m[1] * m[0];
                 int k = j * T + i;
                 out[0][k] = (float) (lum * (1.0 - 0.04 * blue) * 1.0);

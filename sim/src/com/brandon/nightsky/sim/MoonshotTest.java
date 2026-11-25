@@ -2,6 +2,8 @@ package com.brandon.nightsky.sim;
 
 import com.brandon.nightsky.processing.ColorMath;
 import com.brandon.nightsky.processing.MoonGeo;
+import com.brandon.nightsky.processing.MoonLook;
+import com.brandon.nightsky.processing.MoonSites;
 import com.brandon.nightsky.processing.MoonStack;
 import com.brandon.nightsky.processing.Progress;
 import com.brandon.nightsky.processing.SensorSpec;
@@ -338,6 +340,93 @@ public final class MoonshotTest {
             double f1 = detail(lum(fr.r1, fr.g1, fr.b1), ft, fr), fdd = detail(lum(fr.r, fr.g, fr.b), ft, fr);
             check("the sharpened stack truer than one frame", fdd > f1 + 0.03, String.format(Locale.US, "%.3f against %.3f", fdd, f1));
             png(new File(out, "full.png"), fr.w, ft, lum(fr.r1, fr.g1, fr.b1), lum(fr.r, fr.g, fr.b));
+        }
+
+        System.out.println("== the landing sites where they really are: lamps at Apollo 11, 15 and 16, found in the stacked picture");
+        {
+            String[] keys = {"apollo11", "apollo15", "apollo16"};
+            double[][] lamps = new double[keys.length][];
+            for (int i = 0; i < keys.length; i++) {
+                MoonSites.Site st0 = MoonSites.get(keys[i]);
+                lamps[i] = new double[]{st0.lat, st0.lon, 1.0, 8};
+            }
+            // a turned phone: its up 40 degrees from the sky's
+            MoonSim ls = new MoonSim(t, LAT, LON, SCALE, v0.q - 40, 6, lamps);
+            Burst lb = shoot(ls, 60, 160, 17, 0);
+            MoonStack.Options lo = new MoonStack.Options();
+            lo.expectedRadius = ls.rPx;
+            lo.outUpPa = v0.q;
+            lo.brightLimbPa = v0.chi;
+            lo.deconvolve = false;
+            MoonStack.Result lr = MoonStack.stack(lb.frames, spec, lo, Progress.NONE);
+            float[] Y = lum(lr.r, lr.g, lr.b);
+            double worst = 0;
+            StringBuilder sb = new StringBuilder();
+            for (String k : keys) {
+                MoonSites.Site st0 = MoonSites.get(k);
+                double[] at = ls.view.inPicture(st0.lat, st0.lon, lr.cx, lr.cy, lr.radius, lr.upPa);
+                // the lamp's light around where the labels put it
+                double sx = 0, sy = 0, sw = 0;
+                for (int j = (int) at[1] - 9; j <= (int) at[1] + 9; j++)
+                    for (int i = (int) at[0] - 9; i <= (int) at[0] + 9; i++) {
+                        if (i < 0 || j < 0 || i >= lr.w || j >= lr.h) continue;
+                        double v = Y[j * lr.w + i] - 1.2;
+                        if (v <= 0) continue;
+                        sx += v * i;
+                        sy += v * j;
+                        sw += v;
+                    }
+                double err = sw > 0 ? Math.hypot(sx / sw - at[0], sy / sw - at[1]) : 99;
+                worst = Math.max(worst, err);
+                sb.append(String.format(Locale.US, "%s %.2f px  ", st0.name, err));
+            }
+            // where the bright spots are
+            for (int j = 1; j < lr.h - 1; j++)
+                for (int i = 1; i < lr.w - 1; i++) {
+                    float v = Y[j * lr.w + i];
+                    if (v > 1.3 && v >= Y[j * lr.w + i - 1] && v >= Y[j * lr.w + i + 1] && v >= Y[(j - 1) * lr.w + i] && v >= Y[(j + 1) * lr.w + i])
+                        System.out.println(String.format(Locale.US, "    a bright spot at %d,%d (%.2f)", i, j, v));
+                }
+            for (String k : keys) {
+                MoonSites.Site st0 = MoonSites.get(k);
+                double[] at = ls.view.inPicture(st0.lat, st0.lon, lr.cx, lr.cy, lr.radius, lr.upPa);
+                System.out.println(String.format(Locale.US, "    %s predicted at %.1f,%.1f (z %.2f), the Sun %.1f deg up there", st0.name, at[0], at[1], at[2],
+                        ls.view.sunAltAt(st0.lat, st0.lon)));
+            }
+            check("each lamp where its label points (within 1.5 px of the stacked picture's 2x pixels)", worst < 1.5, sb.toString().trim());
+            // the finished photo, labelled
+            MoonLook.Picture pic = MoonLook.enlarge(lr.r, lr.g, lr.b, lr.w, lr.h, lr.cx, lr.cy, lr.radius, lr.upPa);
+            List<MoonLook.Label> labels;
+            AwtPainter ap = new AwtPainter(pic.argb, pic.w, pic.h);
+            labels = MoonLook.layout(pic, ls.view, MoonLook.LABELS_FAMOUS, ap, 30);
+            float fs = MoonLook.fit(ap, pic, labels, 30);
+            labels = MoonLook.layout(pic, ls.view, MoonLook.LABELS_FAMOUS, ap, fs);
+            MoonLook.paint(ap, pic, labels, fs);
+            MoonLook.captions(ap, pic, "MOONSHOT", MoonLook.caption(ls.view, lr, "1 Dec 2026, 22:00", "39.0 N, 77.0 W"), 30);
+            int[] px = ap.pixels();
+            BufferedImage im = new BufferedImage(pic.w, pic.h, BufferedImage.TYPE_INT_RGB);
+            im.setRGB(0, 0, pic.w, pic.h, px, 0, pic.w);
+            ImageIO.write(im, "png", new File(out, "labelled.png"));
+            int apollo = 0;
+            boolean apart = true;
+            for (MoonLook.Label l : labels) {
+                if (l.site.apollo()) apollo++;
+                for (MoonLook.Label m : labels) if (m != l && m.left == l.left && Math.abs(m.ty - l.ty) < fs * 1.3) apart = false;
+            }
+            check("all six Apollo landings labelled", apollo == 6, labels.size() + " labels");
+            check("no two names on top of each other", apart, "");
+            // the mineral colours keep each pixel's brightness
+            float[][] mc = MoonLook.mineral(lr.r, lr.g, lr.b, lr.w, lr.h, 4);
+            double dy = 0;
+            for (int k = 0; k < Y.length; k++) {
+                double y2 = 0.2126 * mc[0][k] + 0.7152 * mc[1][k] + 0.0722 * mc[2][k];
+                if (Y[k] > 0.1) dy = Math.max(dy, Math.abs(y2 - Y[k]) / Y[k]);
+            }
+            check("the mineral colours keep the brightness", dy < 0.03, String.format(Locale.US, "worst %.4f", dy));
+            int[] mp = MoonLook.argb(mc[0], mc[1], mc[2]);
+            BufferedImage mi = new BufferedImage(lr.w, lr.h, BufferedImage.TYPE_INT_RGB);
+            mi.setRGB(0, 0, lr.w, lr.h, mp, 0, lr.w);
+            ImageIO.write(mi, "png", new File(out, "mineral.png"));
         }
 
         System.out.println("== no Moon: a burst of empty sky");
