@@ -352,6 +352,9 @@ public final class MoonLook {
         double tx = (ax + bx) / 2 + nx * (off + size * 1.3) - tw / 2, ty = (ay + by) / 2 + ny * (off + size * 1.3) + fs * 0.35;
         tx = Math.max(size * 0.5, Math.min(pic.w - tw - size * 0.5, tx));
         ty = Math.max(size * 3.2, Math.min(pic.h - size * 3, ty));
+        // on a dark plate: gold on the bright Moon doesn't read by itself
+        float pad = fs * 0.45f;
+        p.gradient((float) tx - pad, (float) ty - fs * 1.05f, (float) (tx + tw) + pad, (float) ty + fs * 0.42f, 0xB0000000, 0xB0000000);
         p.text(s, (float) tx, (float) ty, fs, true, gold);
     }
 
