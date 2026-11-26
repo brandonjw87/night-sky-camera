@@ -1,5 +1,59 @@
 # Night Sky Camera: what's new
 
+## Version 3.1: the Moon map and the Earth's glow
+
+> "The new Moon with the old Moon in her arms." The ballad of Sir Patrick Spens, an old Scottish sailors' song
+
+3.1 gives the Moonshot's photo two more things to show. **The Moon map** names the Moon's seas, craters and
+mountains right where they are on your photo, and tells the story of any of them you tap. And on a crescent, **the
+Earth's glow** brings out the dark part of the Moon: not black at all, but lit by sunlight bouncing off the Earth.
+Your photo shows the whole Moon, the thin bright crescent holding the rest of it in its arms.
+
+### What's new
+
+- **The Moon map.** A new chip on the Moonshot's photo: **Moon map**.
+  - 134 places: 36 seas, bays, lakes and marshes, 16 mountain ranges, valleys and cliffs, and 82 craters, every one
+    big enough for the 5x telephoto to show, at the positions and sizes the astronomers' union (IAU) gives them.
+  - Each name goes where the place is tonight (the Moon rocks a little from night to night, and the names follow),
+    only on the lit side facing us, and never on top of another name, a crater's ring or a landing site: the famous
+    ones first. Craters get a dashed ring, squashed the way the Moon's curve squashes them near its edge.
+  - **Tonight's best** are picked out: the craters along the line between day and night, where their walls throw
+    long shadows and they stand out best.
+  - **Tap a name** for its story: what it is, how big, who it's named after, and what happened there.
+  - Saved as a third photo (its name ends in `_map`), and **Share** sends it.
+- **The Earth's glow.** When the Moon is a crescent (less than 45% lit), the Moonshot offers **Earth's glow too: on
+  (4 more seconds)**. Keep holding after the first click: once the 150 pictures are taken, the phone takes 120 more,
+  up to 400 times brighter (a longer exposure and a much higher ISO), until the second click.
+  - In those the crescent burns white, but the dark part shows: the Earth's glow, a few thousandths as bright as the
+    sunlit crescent. They're lined up on the Moon's dark edge, and the light of the burnt crescent that spills
+    round it, the lens's glare and the twilight sky's glow are measured and taken off. Then the glow goes into the
+    stacked photo's dark side, which the first pictures were far too dim to show.
+  - The seas show on the dark side too, and the Moon map names the places you can see there by the Earth's light
+    alone (Aristarchus, the brightest spot on the Moon, Copernicus, Kepler, Tycho, Proclus and Grimaldi), telling
+    you it's night there right now.
+  - The story of the glow: how bright it is on your photo, how full the Earth looks from the Moon tonight, and how
+    Leonardo da Vinci worked it out around 1510, a hundred years before the telescope.
+  - **Earth's glow** on the photo switches it off and on, to compare. It's saved four times: with the glow, with the
+    landings, as a Moon map, and without the glow. The watch says **Your Moon, with the Earth's glow, is ready**.
+  - Best: a thin crescent low in the evening or morning twilight, two to five days from new Moon, with the phone
+    held as steady as you can (or against a wall). The glow is brightest when the Earth is cloudiest, so it's a
+    little different every night: scientists measure it to see how much sunlight the whole Earth throws back.
+
+### Under the hood
+
+- The glow's frames are developed in 2x2 blocks with their hot pixels mended, lined up by the burnt crescent, then
+  matched to the stack by the Moon's dark edge. At the phone's brightest setting the frames' white level is inside
+  the sharpened stack's own noise, so the stack's stray specks are never taken for light, and the stack's centre is
+  found again from its bright edge with the radius the dark edge gives (on a thin crescent the stack's own guess
+  can be a pixel off). The dark side is brightened on the Moon's disk alone, in the glow's own colour, so the
+  sunlit edge stays as crisp, and the sky round it as black, as in the plain photo.
+- `EarthshineTest` shoots a simulated crescent with a real earthshine twice, 66 and 400 times brighter, and checks
+  the glow's brightness, its seas, its colour, no seam at the terminator, the sunlit crescent untouched, the sky
+  black, the glare gone, no rim round the crescent, and three ways the merge must say no. `MoonMapTest` checks the map's table, lamps put on
+  the simulated Moon at four places, and the layout's rules at four phases.
+- The robot's Moonshot run now also shoots a crescent with the Earth's glow on, from the toggle to the four saved
+  photos and the watch's words, and checks the Moon map's names, its night-side names and their stories.
+
 ## Version 3.0: the Moonshot
 
 > "We choose to go to the Moon in this decade and do the other things, not because they are easy, but because they

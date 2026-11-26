@@ -16,11 +16,13 @@ the map to the Sun that the Voyagers carry, redrawn for your night (**Earth's Ad
 planet round another star (**Postcard from Another World**); and the watch's **Sky Pointer** names whatever you point
 your arm at. Since 3.0, **the Moonshot**: the Moon from the 5x telephoto, hand-held, 150 RAW pictures stacked into
 one sharp photo with every landing site labelled where it is tonight, and the **Transit Hunter**, which catches the
-International Space Station crossing the Moon by itself, with the countdown on your watch.
+International Space Station crossing the Moon by itself, with the countdown on your watch. Since 3.1 the Moonshot's
+photo names the Moon's seas, craters and mountains where they are tonight (**Moon map**), and on a crescent it brings
+out the dark part, lit by sunlight bouncing off the Earth (**the Earth's glow**).
 
 It needs **Android 17** or newer and is made for the Pixel 10 and newer.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.0.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.1.
 
 ## What it does
 
@@ -158,7 +160,7 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.0.
 
 ## Install it on your phone
 
-Night Sky 3.0 needs Android 17 or newer (**Settings > About phone > Android version**). You only need the file
+Night Sky needs Android 17 or newer since 3.0 (**Settings > About phone > Android version**). You only need the file
 `NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
 [`dist/NightSky.apk`](dist/NightSky.apk). Updates install over the old version and keep your settings.
 
@@ -214,8 +216,19 @@ Tap **Shoot the Moon** at the top of the main screen.
    takes 150 RAW pictures. The sharpest half are lined up and stacked, which takes a few seconds more.
 4. **Your Moon:** the photo with the sky's up at the top, and the landing sites labelled (Apollo in gold). **Tap a
    label** for its story. **One frame** shows a single picture to compare; **Every one** labels all 36 places;
-   **Mineral colours** turns the Moon's real colours way up. It's saved twice in Pictures/NightSky, with and without
-   the labels; **Share** sends it.
+   **Mineral colours** turns the Moon's real colours way up. It's saved in Pictures/NightSky with and without the
+   labels, and as a Moon map; **Share** sends the one on screen.
+5. **Moon map** (3.1) names the seas, craters and mountains on the lit side where they are tonight (134 of them, the
+   famous first, never on top of each other), with the craters along the line between day and night picked out:
+   their shadows make them tonight's best. **Tap a name** for its story.
+
+**The Earth's glow** (3.1): when the Moon is a crescent, the button under the shutter says **Earth's glow too: on (4
+more seconds)**. Keep holding after the first click: after the 150 pictures the phone takes 120 more, up to 400 times
+brighter, until the second click. The crescent burns white in those, but the dark part shows, lit by sunlight
+bouncing off the Earth; the app puts it into the photo's dark side. **Earth's glow** on the photo switches it off and
+on, the Moon map names what you can see there by the Earth's light alone, and the photo is saved once more without
+the glow. A thin crescent in the twilight, two to five days from new Moon, held as steady as you can, shows it best.
+Tap **Earth's glow too** before shooting to skip it.
 
 **The Transit Hunter** card below lists the times the International Space Station or Tiangong cross the Moon within
 60 km of you in the next ten days: when, how far and which way to go, and how wide the strip is where it's seen.
@@ -744,8 +757,10 @@ app/src/main/java/com/brandon/nightsky/
     SongPlayer, SongVideo  the song through the speaker (AudioTrack); the song as a video with its sound
     RemoteHost          the remote viewer and Mission Control: what the web pages show and the commands they send
     WatchLink           the Pixel Watch's link on the phone (2.5): pairing, the status and live picture out, its commands in
-    MoonActivity        the Moonshot (3.0): the telephoto's picture, the photo and its labels, the Transit Hunter's card
-    MoonCamera          the Moonshot's camera: the telephoto's RAW frames, finding the Moon, metering, the focus sweep, bursts
+    MoonActivity        the Moonshot (3.0): the telephoto's picture, the photo and its labels, the Transit Hunter's card;
+                        the Moon map and the Earth's glow (3.1)
+    MoonCamera          the Moonshot's camera: the telephoto's RAW frames, finding the Moon, metering, the focus sweep, bursts,
+                        and the Earth's glow's brighter frames after the burst (3.1)
     Transits            the Transit Hunter's list, worked out from the satellite orbits for this place
     link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
                         the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
@@ -812,6 +827,8 @@ app/src/main/java/com/brandon/nightsky/
         MoonFinder, MoonMeter  the Moon found in a RAW frame and followed; its exposure from the phase, then measured
         MoonStack       the Moonshot's stack: the sharpest frames lined up, stacked, sharpened; crossings found in them
         MoonLook, MoonSites  the photo enlarged and finished, its labels and captions; the landing sites and their stories
+        MoonFeatures    the Moon map's places (3.1): seas, craters, mountains, their IAU positions and sizes, their stories
+        Earthshine      the Earth's glow (3.1): the brighter frames' night side lined up, cleaned and merged into the stack
         TransitFinder   the Transit Hunter: where the Space Station's shadow-path on the Moon crosses the ground
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
@@ -895,6 +912,11 @@ lamps on the simulated Moon to check that every label lands where its place is),
 against an independent calculation: the strip's middle, its edges, how long a crossing lasts) and `TransitShotTest`
 (an output folder: the ISS put in front of a simulated Moon, found again in the frames where it was, nothing found
 without it). `MoonSim` is the simulated Moon they share.
+The 3.1 tests: `MoonMapTest` (the Moon map's table, lamps on the simulated Moon at four places, the layout's rules at
+four phases, taps) and `EarthshineTest` (an output folder: a simulated crescent with a real earthshine shot 66 and 400
+times brighter after the burst, the glow merged and checked against the truth: its brightness, seas and colour, no
+seam, the sunlit crescent untouched, the sky black, the glare gone, no rim round the crescent; and three ways the
+merge must say no).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -912,5 +934,6 @@ points the watch's Sky Pointer at a star and steers it to the Moon, through a si
 `robo/run.sh Moon` (3.0) runs the Moonshot on a simulated 5x telephoto (whole 12-megapixel RAW frames of `MoonSim`'s
 Moon in a shaking hand, a lens to focus, a sensor brighter than the meter's guess): it finds, meters and focuses,
 shoots from the watch's Shoot, stacks and saves, then catches a staged ISS crossing from the watch's Catch,
-checking the watch's Moon screen and buzzes on the way, and draws every screen to a picture.
+checking the watch's Moon screen and buzzes on the way, and draws every screen to a picture. Since 3.1 it also
+checks the Moon map and shoots a crescent with the Earth's glow, from the switch to the four saved photos.
 [robo/README.md](robo/README.md) lists every scenario.
