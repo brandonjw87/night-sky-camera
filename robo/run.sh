@@ -8,7 +8,7 @@
 #   robo/run.sh EditFlow             edits a kept session (SESSIONS: the one folder of sessions sim/G3Test writes)
 #   robo/run.sh Intro                the opening film: when it plays, how it ends, and that it never stands in the way
 #   robo/run.sh Stops                the stop recorder (2.1): crashes written down, Android's records of the app ending, its card
-#   robo/run.sh Moon                 the Moonshot (3.0) on a simulated telephoto: finding, metering, focusing, a burst stacked and
+#   robo/run.sh Moon [west]          the Moonshot (3.0) on a simulated telephoto: finding, metering, focusing, a burst stacked and
 #                                    saved, the watch's Shoot and Catch, the ISS crossing the Moon caught by itself
 #   robo/run.sh Jupiter              Jupiter's four moons (3.2) on a simulated telephoto: finding, metering, focusing, the two
 #                                    bursts stacked, the moons named and saved, Galileo's notebook, the stories, the watch's Shoot

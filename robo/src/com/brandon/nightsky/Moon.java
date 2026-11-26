@@ -131,8 +131,13 @@ public class Moon {
         place = new Locator.Place();
         place.latDeg = 39.0;
         double bestLon = 0, bestAlt = -90;
+        // the Moon rising in the east (or "robo/run.sh Moon west": setting in the west), so a run's sky doesn't flip
+        // between the two with the clock
+        boolean west = "west".equals(System.getProperty("shots.only", ""));
         for (double lon = -180; lon < 180; lon += 1) {
-            double alt = MoonGeo.view(now, 39.0, lon).alt;
+            MoonGeo.View v = MoonGeo.view(now, 39.0, lon);
+            double alt = v.alt;
+            if ((v.az > 180) != west) continue;
             if (Math.abs(alt - 50) < Math.abs(bestAlt - 50)) {
                 bestAlt = alt;
                 bestLon = lon;
@@ -687,23 +692,58 @@ public class Moon {
                 String.format(Locale.US, "%.0f against %.0f of 255 over %d px", nightG / Math.max(1, nn), nightS / Math.max(1, nn), nn));
         check("the sky round it still black", sky95 < 20, String.format(Locale.US, "95%%: %.0f of 255", sky95));
         // past the Moon's true edge no rim round the sunlit crescent: nothing brighter than the stack's photo, no purple
-        // (3.1's first robot runs: a purple line and a grey band there, the stack's last light lifted with the night)
-        double rimMost = 0;
+        // (3.1's first robot runs: a purple line and a grey band there, the stack's last light lifted with the night).
+        // Judged against the brightest of the stack photo's pixel and its eight neighbours (a seventh of the stack's pixel
+        // either way): the sunlit limb's own light reaches past the true (dark) edge and falls steeply there, where the two
+        // photos' smallest differences came to 9 and 10 of 255 against the same pixel alone (3.3's runs with the Moon in
+        // the west; 4 within a pixel); a grey band or a rim lies on the flat dark sky past the limb, where a pixel's give
+        // changes little
+        double rimMost = -255, mostPast = 0, mostCos = 0, samePx = 0;
         int rimColoured = 0;
         double rk = r.radius / gp.r;
-        for (int y = 0; y < gp.h; y++) {
-            for (int x = 0; x < gp.w; x++) {
+        // the sunlit side: from the disk's centre towards the crescent's light in the stack's photo
+        double lx = 0, ly = 0;
+        for (int y = 0; y < gp.h; y += 2) {
+            for (int x = 0; x < gp.w; x += 2) {
+                double l = luma(sp.argb[y * gp.w + x]);
+                if (l > 128) {
+                    lx += (x - gp.cx) * l;
+                    ly += (y - gp.cy) * l;
+                }
+            }
+        }
+        double ln = Math.max(1e-9, Math.hypot(lx, ly));
+        lx /= ln;
+        ly /= ln;
+        double[] limbMost = {-255, -255};
+        for (int y = 1; y < gp.h - 1; y++) {
+            for (int x = 1; x < gp.w - 1; x++) {
                 double sx = r.cx + (x - gp.cx) * rk, sy = r.cy + (y - gp.cy) * rk;
                 double past = Math.hypot(sx - es.moonCx, sy - es.moonCy) - es.moonR;
                 if (past < 1.5 || past > 16) continue;
                 int c = gp.argb[y * gp.w + x];
-                rimMost = Math.max(rimMost, luma(c) - luma(sp.argb[y * gp.w + x]));
+                double near = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) near = Math.max(near, luma(sp.argb[(y + dy) * gp.w + x + dx]));
+                }
+                double g = luma(c), lift = g - near;
+                samePx = Math.max(samePx, g - luma(sp.argb[y * gp.w + x]));
+                double cos = ((x - gp.cx) * lx + (y - gp.cy) * ly) / Math.max(1e-9, Math.hypot(x - gp.cx, y - gp.cy));
+                int limb = cos > 0 ? 0 : 1;
+                limbMost[limb] = Math.max(limbMost[limb], lift);
+                if (lift > rimMost) {
+                    rimMost = lift;
+                    mostPast = past;
+                    mostCos = cos;
+                }
                 int cr = (c >> 16) & 255, cg = (c >> 8) & 255, cb = c & 255;
                 if (Math.min(cr, cb) - cg > 12 || cg - Math.max(cr, cb) > 12) rimColoured++;
             }
         }
         check("no rim past the Moon's edge: nothing brighter than in the stack's photo, no purple", rimMost < 10 && rimColoured == 0,
-                String.format(Locale.US, "%.0f of 255 brighter at the most, %d px coloured", rimMost, rimColoured));
+                String.format(Locale.US, "%.0f of 255 brighter at the most (%.1f px past the edge, %.0f° from the sunlit side; the sunlit "
+                                + "limb %.0f, the night limb %.0f; against the same pixel alone %.0f), %d px coloured", rimMost, mostPast,
+                        Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, mostCos)))), limbMost[0], limbMost[1], samePx, rimColoured));
         ViewGroup box = (ViewGroup) field(a, "resultBox");
         TextView title = firstText(box);
         check("the screen: \"Your Moon, with the Earth's glow\"", title != null && title.getText().toString().equals("Your Moon, with the Earth's glow"),
