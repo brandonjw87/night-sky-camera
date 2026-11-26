@@ -877,6 +877,7 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
             case JupiterStack.OUTSIDE:
                 return name + ": outside the photo";
             default:
+                if (r.with[k] >= 0) return name + ": not picked out this time: it's right beside " + JupiterGeo.NAMES[r.with[k]] + ", lost in its light";
                 return name + ": not seen this time (too faint against the sky)";
         }
     }

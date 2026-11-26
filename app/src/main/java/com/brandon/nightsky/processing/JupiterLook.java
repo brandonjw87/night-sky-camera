@@ -412,7 +412,8 @@ public final class JupiterLook {
             l.x = q[0];
             l.y = q[1];
             if (!l.seen) {
-                l.note = st == JupiterStack.DARK ? "in Jupiter's shadow" : st == JupiterStack.GLARE ? "lost in Jupiter's glare" : "not seen";
+                l.note = st == JupiterStack.DARK ? "in Jupiter's shadow" : st == JupiterStack.GLARE ? "lost in Jupiter's glare"
+                        : r.with[k] >= 0 ? "lost in " + JupiterGeo.NAMES[r.with[k]] + "'s light" : "not seen";
                 dotted(p, (float) l.x, (float) l.y, (float) (blob * 0.8), Math.max(1.5f, size * 0.05f), 0xAA000000 | (COLOURS[k] & 0xFFFFFF));
             } else {
                 List<String> beside = new ArrayList<String>();

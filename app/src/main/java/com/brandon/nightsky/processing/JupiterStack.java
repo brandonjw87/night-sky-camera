@@ -28,6 +28,8 @@ public final class JupiterStack {
     public static final int FOUND = 0, HIDDEN = 1, CROSSING = 2, DARK = 3, GLARE = 4, MISSED = 5, OUTSIDE = 6, BLENDED = 7;
     /** Two moons closer than this (times the blur's sigma) are one light on the photo. */
     public static final double BLEND_SIGMAS = 2.4;
+    /** A moon not found within this many blurs of one found: on that one's skirt, lost in its light. */
+    public static final double SKIRT_SIGMAS = 3.6;
     /** Nearer Jupiter's middle than this (its radii) nothing is looked for: its own light. */
     public static final double GLARE_RJ = 2.2;
 
@@ -80,7 +82,10 @@ public final class JupiterStack {
         public final double[][] predicted = new double[4][];
         /** For a moon not found: how far over the noise it would have shown (from the moons found; NaN: unknown). */
         public final double[] expectSnr = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
-        /** For a moon {@link #BLENDED}: the moon found whose light it's in (else -1). */
+        /**
+         * For a moon {@link #BLENDED}: the moon found whose light it's in; for one {@link #MISSED}: a moon found right
+         * beside it (closer than {@link #SKIRT_SIGMAS} blurs), whose light it may be lost in; else -1.
+         */
         public final int[] with = {-1, -1, -1, -1};
         public int used, total, moonsUsed, moonsTotal;
         public double moonsGain;
@@ -1675,6 +1680,18 @@ public final class JupiterStack {
             if (near >= 0) {
                 res.status[k] = BLENDED;
                 res.with[k] = near;
+                continue;
+            }
+            // not that close, but on a found one's skirt and still not picked out: lost in that one's light
+            if (res.status[k] != MISSED) continue;
+            nd = SKIRT_SIGMAS * sig;
+            for (int j = 0; j < 4; j++) {
+                if (j == k || res.status[j] != FOUND || res.moon[j] == null) continue;
+                double dd = Math.hypot(res.predicted[k][0] - res.moon[j].x, res.predicted[k][1] - res.moon[j].y);
+                if (dd < nd) {
+                    nd = dd;
+                    res.with[k] = j;
+                }
             }
         }
         // each light's place in Jupiter's radii by the fit
@@ -1701,40 +1718,68 @@ public final class JupiterStack {
     /**
      * The brightest of the search's smoothed picture within 2.5 px of {@code p}, if a peak there (no higher within
      * a pixel), well over its noise ({@link #GUIDED_SIGMAS}, more close to Jupiter, where the glow's leftovers
-     * aren't all noise) and not on a light already found; fitted as the others.
+     * aren't all noise) and not on a light already found; fitted as the others. The lights already found near it are
+     * taken off the smoothed picture first: a moon on a brighter one's skirt (Io three of Jupiter's radii from
+     * Ganymede, closer than the smoothing can split) is a shoulder there, not a peak, until that one's light is off.
      */
     static Light guided(Result res, Options o, double[] p) {
         int W = res.w;
         float[] F = res.filt;
         double rJ = res.rJ;
+        double sig = res.psf > 0 ? res.psf : o.psfSigma * S;
+        // a light in the smoothed picture: its own blur and the smoothing's
+        double sF2 = 2 * sig * sig;
+        List<double[]> near = new ArrayList<double[]>();
+        for (Light l : res.lights) {
+            double d = Math.hypot(l.x - p[0], l.y - p[1]);
+            // (one on the place itself is that light, below; far ones don't reach)
+            if (d < 1.5 * sig + 2.5 || d > 4 * Math.sqrt(sF2) + 4) continue;
+            near.add(new double[]{l.x, l.y, smoothedAt(F, W, l.x, l.y)});
+        }
         int ic = (int) Math.round(p[0]), jc = (int) Math.round(p[1]);
+        final int h = 4, side = 2 * h + 1;
+        double[] G = new double[side * side];
+        for (int dj = -h; dj <= h; dj++) {
+            for (int di = -h; di <= h; di++) {
+                int x = ic + di, y = jc + dj;
+                double v = x < 0 || y < 0 || x >= W || y >= W ? 0 : F[y * W + x];
+                for (double[] q : near) v -= q[2] * Math.exp(-((x - q[0]) * (x - q[0]) + (y - q[1]) * (y - q[1])) / (2 * sF2));
+                G[(dj + h) * side + di + h] = v;
+            }
+        }
         double best = -Double.MAX_VALUE;
-        int bi = -1, bj = -1;
+        int bi = 0, bj = 0;
         for (int dj = -3; dj <= 3; dj++) {
             for (int di = -3; di <= 3; di++) {
                 int x = ic + di, y = jc + dj;
                 if (x < 2 || y < 2 || x >= W - 2 || y >= W - 2) continue;
                 if (Math.hypot(x - p[0], y - p[1]) > 2.5) continue;
-                if (F[y * W + x] > best) {
-                    best = F[y * W + x];
-                    bi = x;
-                    bj = y;
+                double v = G[(dj + h) * side + di + h];
+                if (v > best) {
+                    best = v;
+                    bi = di;
+                    bj = dj;
                 }
             }
         }
-        if (bi < 0) return null;
-        for (int dj = -1; dj <= 1; dj++) for (int di = -1; di <= 1; di++) if (F[(bj + dj) * W + bi + di] > best) return null;
-        double r = Math.hypot(bi - res.cx, bj - res.cy);
+        if (best == -Double.MAX_VALUE) return null;
+        for (int dj = -1; dj <= 1; dj++) for (int di = -1; di <= 1; di++) if (G[(bj + dj + h) * side + bi + di + h] > best) return null;
+        // its place to a part of a pixel, from the peak's curve
+        double gl = G[(bj + h) * side + bi - 1 + h], gr = G[(bj + h) * side + bi + 1 + h];
+        double gu = G[(bj - 1 + h) * side + bi + h], gd = G[(bj + 1 + h) * side + bi + h];
+        double cxx = gl - 2 * best + gr, cyy = gu - 2 * best + gd;
+        double[] pk = {ic + bi + (cxx < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (gl - gr) / cxx)) : 0),
+                jc + bj + (cyy < 0 ? Math.max(-0.5, Math.min(0.5, 0.5 * (gu - gd) / cyy)) : 0)};
+        int px = ic + bi, py = jc + bj;
+        double r = Math.hypot(px - res.cx, py - res.cy);
         if (r < GLARE_RJ * rJ) return null;
         double nf = res.ringNoise[Math.min(res.ringNoise.length - 1, (int) (r / 3))];
         double need = (r < 4 * rJ ? 1.3 : 1) * GUIDED_SIGMAS * nf;
         if (best < need) return null;
-        double sig = res.psf > 0 ? res.psf : o.psfSigma * S;
-        for (Light l : res.lights) if (Math.hypot(l.x - bi, l.y - bj) < 1.5 * sig) return null;
+        for (Light l : res.lights) if (Math.hypot(l.x - px, l.y - py) < 1.5 * sig) return null;
         double[] er = radii(res);
         double[] amps = new double[res.lights.size()];
         for (int q = 0; q < amps.length; q++) amps[q] = res.lights.get(q).flux / (2 * Math.PI * sig * sig);
-        double[] pk = peakAt(F, W, bi, bj);
         double[] f = fitOne(res.resid, W, er, GLARE_RJ * rJ - 1.5, pk[0], pk[1], sig, res.lights, amps, -1, res.noiseRings, 3);
         if (f != null && Math.hypot(f[1] - pk[0], f[2] - pk[1]) > 1.0) f = null;
         Light l = new Light();
@@ -1743,6 +1788,15 @@ public final class JupiterStack {
         l.flux = f != null ? f[0] * 2 * Math.PI * sig * sig : 0;
         l.snr = best / Math.max(1e-12, nf);
         return l;
+    }
+
+    /** The smoothed picture at a light's place (between pixels, from the four round it). */
+    static double smoothedAt(float[] F, int W, double x, double y) {
+        int i = (int) Math.floor(x), j = (int) Math.floor(y);
+        if (i < 0 || j < 0 || i >= W - 1 || j >= W - 1) return 0;
+        double fx = x - i, fy = y - j;
+        int k = j * W + i;
+        return (1 - fy) * ((1 - fx) * F[k] + fx * F[k + 1]) + fy * ((1 - fx) * F[k + W] + fx * F[k + W + 1]);
     }
 
     /** Where moon m lands in the result for a turn t (degrees, counterclockwise as seen) and scale s. */

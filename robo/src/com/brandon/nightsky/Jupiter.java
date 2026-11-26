@@ -295,6 +295,13 @@ public class Jupiter {
         }
         check("the moons clear of Jupiter's glare found and named where they are", named >= showing - 1 && wrong == 0,
                 named + " of " + showing + " found" + (wrong > 0 ? ", " + wrong + " in the wrong place" : ""));
+        // (one may be too faint this time, but never one the moons found say would have shown clearly: Io beside
+        // Ganymede was once called "not seen" while it showed on the photo)
+        String clear = "";
+        for (int k = 0; k < 4; k++) {
+            if (r.status[k] == JupiterStack.MISSED && r.expectSnr[k] > 10) clear += String.format(Locale.US, " %s (%.0f times the noise)", vr.moons[k].name, r.expectSnr[k]);
+        }
+        check("no moon that would have shown clearly called not seen", clear.isEmpty(), clear.trim());
         for (int k = 0; k < 4; k++) {
             JupiterGeo.Moon m = vr.moons[k];
             boolean ok = m.hidden() ? r.status[k] == JupiterStack.HIDDEN : m.transit() ? r.status[k] == JupiterStack.CROSSING

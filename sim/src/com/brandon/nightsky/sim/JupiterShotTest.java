@@ -22,10 +22,10 @@ import java.util.Random;
  * holding the phone, a street light, a bright star and hot pixels in the frame. Jupiter found (not the lamp, the star
  * or a hot pixel), followed, its exposure settled from a first guess far off, the lens's focus scored; then its burst
  * and the moons' brighter one stacked and every moon that shows found where it is and named, two stars behind
- * Jupiter not taken for moons and no hot pixel taken for anything. Four nights: all four out (December 30, 2026),
- * Ganymede in Jupiter's shadow (December 6), Io close to Jupiter (December 23) and Io and Europa in one dot (December
- * 22: one named, the other said to be in its light); and one with the phone's tilt unknown (the picture's turn found
- * from the moons alone).
+ * Jupiter not taken for moons and no hot pixel taken for anything. Five nights: all four out (December 30, 2026),
+ * Ganymede in Jupiter's shadow (December 6), Io close to Jupiter (December 23), Io and Europa in one dot (December
+ * 22: one named, the other said to be in its light) and Io on Ganymede's skirt with a shakier hand (November 26); and
+ * one with the phone's tilt unknown (the picture's turn found from the moons alone).
  * <p>
  * Usage: JupiterShotTest [out dir for pictures]
  */
@@ -35,6 +35,8 @@ public final class JupiterShotTest {
     public static final long ALL4 = 1798614000000L, DARK = 1796547600000L, IONEAR = 1798012800000L;
     /** 22 December 2026, 05:00 UTC: Io and Europa half Jupiter's radius apart, six out to the east (one dot). */
     public static final long BLEND = 1797915600000L;
+    /** 26 November 2026, 13:32 UTC: Io 5.8 of Jupiter's radii out to the west, three short of Ganymede (the robot's night). */
+    public static final long SKIRT = 1795699920000L;
 
     static void check(String what, boolean ok, String detail) {
         System.out.println("  " + (ok ? "PASS" : "FAIL") + ": " + what + (detail.isEmpty() ? "" : " (" + detail + ")"));
@@ -327,6 +329,22 @@ public final class JupiterShotTest {
         check("Io and Europa: one dot, named for one, the other said to be in it", pair,
                 JupiterStack.statusWord(io) + ", " + JupiterStack.statusWord(eu));
         moonsChecks(r5, s5, 4);
+
+        System.out.println("== November 26: Io on Ganymede's skirt, a shakier hand");
+        // three of Jupiter's radii apart: too far apart to be one dot, too close for the smoothed picture to split with
+        // the blur of a shakier hand (as the robot's), so Io is a shoulder on Ganymede's light until that's taken off
+        FIXED_BLUR = 0.8;
+        JupiterSim s6 = night(SKIRT, 25, null);
+        Shot g = shoot(s6, 100, true, 1);
+        FIXED_BLUR = -1;
+        JupiterStack.Result r6 = stackOf(s6, g, true);
+        report(r6, s6, g);
+        boolean ioThere = r6.status[0] == JupiterStack.FOUND && r6.moon[0] != null
+                && Math.hypot(r6.moon[0].jx - s6.view.moons[0].x, r6.moon[0].jy - s6.view.moons[0].y) < 0.5;
+        check("Io beside Ganymede: found where it is", ioThere, JupiterStack.statusWord(r6.status[0])
+                + (r6.moon[0] == null ? "" : String.format(Locale.US, ", %.2f radii off", Math.hypot(r6.moon[0].jx - s6.view.moons[0].x,
+                r6.moon[0].jy - s6.view.moons[0].y))));
+        moonsChecks(r6, s6, 4);
         System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }

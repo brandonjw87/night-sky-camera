@@ -959,8 +959,9 @@ merge must say no).
 The 3.2 tests: `JupiterGeoTest` (the moons against the 2.4 card's, Galileo's seven nights against his drawings, the
 shadows, eclipses and hidings in order, rising, setting and the best time), `JupiterShotTest` (an output folder:
 simulated hand-held nights with a street light, a bright star and hot pixels in the frame: Jupiter found, metered and
-focused, both bursts stacked, every moon that shows found where it is and named, on five nights: all four out, one
-in Jupiter's shadow, one close in, two in one dot, the tilt unknown) and `JupiterLookTest` (an output folder: the
+focused, both bursts stacked, every moon that shows found where it is and named, on six nights: all four out, one
+in Jupiter's shadow, one close in, two in one dot, one on another's skirt with a shakier hand, the tilt unknown) and
+`JupiterLookTest` (an output folder: the
 photo's sky black and moons clear, every moon named or its absence said, the line-up, and the notebook page with
 Galileo's nights as he drew them). `JupiterSim` is the simulated Jupiter they share.
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with

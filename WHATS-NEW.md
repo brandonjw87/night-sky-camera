@@ -51,15 +51,17 @@ sums, in pencil.
   the Moon.
 - `JupiterStack` lines both bursts up on Jupiter, measures and takes off its glow, looks for the moons along the line
   the sums give, fits the picture's turn and scale to the lights it finds, names each, and looks again, fainter,
-  where a moon must be (measuring the noise there without the moons, so one close to Jupiter can't hide itself). A
-  moon too close to another to split is named in that one's light.
+  where a moon must be (measuring the noise there without the moons, so one close to Jupiter can't hide itself, and
+  taking a moon's light off first when another sits on its skirt). A moon too close to another to split is named in
+  that one's light.
 - `JupiterLook` draws the photo in two layers (Jupiter's glow, and everything else eased in over the sky's noise and
   gently tightened, so the moons are soft round dots), the names, tonight's line-up and the notebook page, in the
   app with Android's Canvas and in the tests with Java's own drawing.
 - Tests: `JupiterGeoTest`, `JupiterShotTest` (simulated hand-held nights: all four out, one in Jupiter's shadow, one
-  close in, two in one dot, the tilt unknown) and `JupiterLookTest` (the photo, the line-up and the notebook page),
-  and a new robot run, `robo/run.sh Jupiter`: a whole Jupiter night on a simulated Pixel telephoto, from finding to
-  the three saved photos, the notebook kept and the watch's Shoot (41 checks).
+  close in, two in one dot, one on another's skirt with a shakier hand, the tilt unknown) and `JupiterLookTest` (the
+  photo, the line-up and the notebook page), and a new robot run, `robo/run.sh Jupiter`: a whole Jupiter night on a
+  simulated Pixel telephoto, from finding to the three saved photos, the notebook kept and the watch's Shoot (42
+  checks).
 
 ## Version 3.1: the Moon map and the Earth's glow
 
