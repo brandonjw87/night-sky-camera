@@ -1116,6 +1116,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
      */
     static String watchState(com.brandon.nightsky.remote.Json j) {
         MoonActivity a = current;
+        // Jupiter's screen open instead (3.2): the watch's shutter is its
+        if (a == null && JupiterActivity.current != null) return JupiterActivity.watchState(j);
         j.put("open", a != null);
         if (a == null) return "closed";
         MoonCamera.Live l = a.live;
@@ -1139,6 +1141,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     /** A command from the watch ("shoot", "catch"), run on the screen's thread: what to tell the watch. */
     static String fromWatch(final String what) {
         final MoonActivity a = current;
+        if (a == null && JupiterActivity.current != null) return JupiterActivity.fromWatch(what);
         if (a == null) return "Open the Moonshot on the phone first";
         final String[] out = {"The phone didn't answer"};
         final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);

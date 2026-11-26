@@ -72,6 +72,13 @@
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
 
+        <!-- Jupiter's moons (3.2): Jupiter and its four moons from the telephoto, named, in Galileo's notebook -->
+        <activity
+            android:name=".JupiterActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
+
         <!-- the "Night sky" Quick Settings tile: opens the app, over the lock screen if the phone is locked -->
         <service
             android:name=".NightTileService"

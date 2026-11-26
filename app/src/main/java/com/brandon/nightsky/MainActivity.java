@@ -588,6 +588,19 @@ public final class MainActivity extends Activity {
         return what + "\nNow: " + now + ".";
     }
 
+    /** The Jupiter card's line (3.2): what it does, and where Jupiter is now. */
+    private String jupiterLine() {
+        String what = "Jupiter and its four big moons from the 5x telephoto, each one named, in Galileo's notebook beside his nights of 1610.";
+        Locator.Place pl = Locator.best(this, prefs);
+        if (pl == null) return what;
+        long now = System.currentTimeMillis();
+        com.brandon.nightsky.processing.JupiterGeo.View v = com.brandon.nightsky.processing.JupiterGeo.view(now, pl.latDeg, pl.lonDeg);
+        if (v.alt > 0) return what + "\nNow: " + com.brandon.nightsky.processing.JupiterGeo.where(v) + ".";
+        long rise = com.brandon.nightsky.processing.JupiterGeo.next(now, pl.latDeg, pl.lonDeg, true);
+        return what + "\nNow: below the horizon" + (rise > 0 ? ", rising at " + com.brandon.nightsky.processing.JupiterGeo.clock(rise,
+                java.util.TimeZone.getDefault()) : "") + ".";
+    }
+
     private void showHomePage() {
         page = PAGE_HOME;
         clearRefs();
@@ -615,6 +628,20 @@ public final class MainActivity extends Activity {
         });
         moon.addView(shoot, gap(10));
         col.addView(moon, gap(16));
+
+        // Jupiter's moons (3.2): Galileo's four, from the telephoto, named, in his notebook beside his own nights
+        LinearLayout jup = card();
+        jup.addView(text("Jupiter's moons", 20, RED, true));
+        jup.addView(text(jupiterLine(), 14, RED_DIM, false), gap(2));
+        Button shootJ = button("Shoot Jupiter's moons", true);
+        shootJ.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, JupiterActivity.class));
+            }
+        });
+        jup.addView(shootJ, gap(10));
+        col.addView(jup, gap(12));
 
         // tonight: the armed plan, a plan to re-arm, last night's summary, or the sky and a way to plan it
         nightBox = new LinearLayout(this);

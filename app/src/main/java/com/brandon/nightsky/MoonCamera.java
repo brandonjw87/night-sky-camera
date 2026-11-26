@@ -690,8 +690,10 @@ final class MoonCamera {
                 levels.clear();
                 break;
             case METERING:
-                if (asked && jupiter) meterJupiter(false);
-                else if (asked) {
+                if (asked && jupiter) {
+                    // (after the focus, only frames with the lens there: one still moving reads Jupiter low)
+                    if (focusScores.isEmpty() || lensThere(res) || SystemClock.elapsedRealtimeNanos() - focusAskedNs > 600_000_000L) meterJupiter(false);
+                } else if (asked) {
                     if (MoonMeter.settled(spot.level, spot.clipped)) {
                         if (focusLens != null && sweep == null && focusScores.isEmpty()) startFocus();
                         else stage = Stage.READY;
@@ -874,10 +876,15 @@ final class MoonCamera {
         apply();
     }
 
+    /** Whether this frame's lens was at the focus asked for, and still (its capture result says so). */
+    private boolean lensThere(long[] res) {
+        return focusLens != null && res != null && res[2] != -1 && Math.abs(Float.intBitsToFloat((int) res[2]) - focus) < 0.004 + 0.05 * focusLens.fine
+                && (res[3] == -1 || res[3] == CaptureResult.LENS_STATE_STATIONARY);
+    }
+
     /** A frame while focusing: once the lens is at the setting, a few frames scored, then the next setting. */
     private void focusFrame(ShortBuffer raw, int rowStride, int w, int h, int[] c, int side, long[] res) {
-        boolean there = res != null && res[2] != -1 && Math.abs(Float.intBitsToFloat((int) res[2]) - focus) < 0.004 + 0.05 * focusLens.fine
-                && (res[3] == -1 || res[3] == CaptureResult.LENS_STATE_STATIONARY);
+        boolean there = lensThere(res);
         boolean waited = SystemClock.elapsedRealtimeNanos() - focusAskedNs > 600_000_000L;
         if (!there && !waited) return;
         short[] crop = MoonFinder.crop(raw, rowStride, w, h, c[0], c[1], side, side);
@@ -897,7 +904,11 @@ final class MoonCamera {
             else focus = 0f;
             sweep = null;
             focusScores.add(-1.0); // focused once: not again unless asked
-            stage = Stage.READY;
+            // Jupiter is a dot: in focus its brightest pixel is up to twice what it was blurred, so it's metered
+            // again once the lens is there (then ready)
+            stage = jupiter ? Stage.METERING : Stage.READY;
+            levels.clear();
+            focusAskedNs = SystemClock.elapsedRealtimeNanos();
             apply();
             return;
         }

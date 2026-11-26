@@ -20,8 +20,14 @@ public final class JupiterStack {
 
     /** Result pixels per sensor pixel. */
     public static final int S = 2;
-    /** A moon in the photo: found; behind Jupiter; crossing in front of it; in its shadow; too near it to see; looked for and not seen; outside the photo. */
-    public static final int FOUND = 0, HIDDEN = 1, CROSSING = 2, DARK = 3, GLARE = 4, MISSED = 5, OUTSIDE = 6;
+    /**
+     * A moon in the photo: found; behind Jupiter; crossing in front of it; in its shadow; too near it to see; looked
+     * for and not seen; outside the photo; right beside another moon found, its light in that one's (closer than the
+     * lens's blur can split: {@link #BLEND_SIGMAS}).
+     */
+    public static final int FOUND = 0, HIDDEN = 1, CROSSING = 2, DARK = 3, GLARE = 4, MISSED = 5, OUTSIDE = 6, BLENDED = 7;
+    /** Two moons closer than this (times the blur's sigma) are one light on the photo. */
+    public static final double BLEND_SIGMAS = 2.4;
     /** Nearer Jupiter's middle than this (its radii) nothing is looked for: its own light. */
     public static final double GLARE_RJ = 2.2;
 
@@ -74,6 +80,8 @@ public final class JupiterStack {
         public final double[][] predicted = new double[4][];
         /** For a moon not found: how far over the noise it would have shown (from the moons found; NaN: unknown). */
         public final double[] expectSnr = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
+        /** For a moon {@link #BLENDED}: the moon found whose light it's in (else -1). */
+        public final int[] with = {-1, -1, -1, -1};
         public int used, total, moonsUsed, moonsTotal;
         public double moonsGain;
         /** The tilt said which way was up (else the turn was found from the moons alone). */
@@ -240,6 +248,8 @@ public final class JupiterStack {
                 return "lost in Jupiter's glare";
             case OUTSIDE:
                 return "outside the photo";
+            case BLENDED:
+                return "beside another moon, too close to tell apart";
             default:
                 return "not seen";
         }
@@ -1451,12 +1461,32 @@ public final class JupiterStack {
 
     /** The noise (spread of the median's distance) of an image in rings {@code width} px wide out from the middle. */
     static double[] ringNoise(float[] img, double[] er, int W, int rings, double width) {
+        return ringNoise(img, er, W, rings, width, null, 0);
+    }
+
+    /** The same, leaving out the pixels within {@code skipR} of the places in {@code skip}. */
+    static double[] ringNoise(float[] img, double[] er, int W, int rings, double width, List<double[]> skip, double skipR) {
+        boolean[] out0 = null;
+        if (skip != null && !skip.isEmpty()) {
+            out0 = new boolean[img.length];
+            int rr = (int) Math.ceil(skipR);
+            for (double[] p : skip) {
+                if (p == null) continue;
+                int ci = (int) Math.round(p[0]), cj = (int) Math.round(p[1]);
+                for (int j = Math.max(0, cj - rr); j <= Math.min(W - 1, cj + rr); j++) {
+                    for (int i = Math.max(0, ci - rr); i <= Math.min(W - 1, ci + rr); i++) {
+                        if (Math.hypot(i - p[0], j - p[1]) <= skipR) out0[j * W + i] = true;
+                    }
+                }
+            }
+        }
         int[] cnt = new int[rings];
-        for (int k = 0; k < img.length; k++) cnt[Math.min(rings - 1, (int) (er[k] / width))]++;
+        for (int k = 0; k < img.length; k++) if (out0 == null || !out0[k]) cnt[Math.min(rings - 1, (int) (er[k] / width))]++;
         float[][] v = new float[rings][];
         for (int b = 0; b < rings; b++) v[b] = new float[cnt[b]];
         Arrays.fill(cnt, 0);
         for (int k = 0; k < img.length; k++) {
+            if (out0 != null && out0[k]) continue;
             int b = Math.min(rings - 1, (int) (er[k] / width));
             v[b][cnt[b]++] = img[k];
         }
@@ -1487,6 +1517,7 @@ public final class JupiterStack {
         JupiterGeo.Moon[] ms = o.view.moons;
         double rJ = res.rJ;
         List<Integer> want = new ArrayList<Integer>();
+        Arrays.fill(res.with, -1);
         for (int k = 0; k < 4; k++) {
             JupiterGeo.Moon m = ms[k];
             if (m.hidden()) res.status[k] = HIDDEN;
@@ -1582,6 +1613,15 @@ public final class JupiterStack {
         res.turn = bestT;
         res.scale = bestS;
         for (int k = 0; k < 4; k++) res.predicted[k] = at(res, ms[k], bestT, bestS);
+        // the noise ring by ring again, without the lights found or where the sums put the moons: close to Jupiter a
+        // ring is small, and a moon in it not yet found would raise its noise enough to hide itself
+        if (res.filt != null) {
+            List<double[]> skip = new ArrayList<double[]>();
+            for (Light l : res.lights) skip.add(new double[]{l.x, l.y});
+            for (int k = 0; k < 4; k++) skip.add(res.predicted[k]);
+            double sig0 = res.psf > 0 ? res.psf : o.psfSigma * S;
+            res.ringNoise = ringNoise(res.filt, radii(res), res.w, res.ringNoise.length, 3, skip, 2.5 * sig0);
+        }
         // a moon not found where the sums put it (and the fit put the picture): looked for there again, fainter
         // (where a moon must be, a light half as far over the noise is enough: anywhere, it would be chance)
         if (res.filt != null && res.ringNoise != null) {
@@ -1615,6 +1655,26 @@ public final class JupiterStack {
                 boolean glare = Double.isNaN(expect) ? ms[k].dist() < NEAR_RJ : expect < 6.5;
                 if (glare && ms[k].dist() < 6) res.status[k] = GLARE;
                 res.expectSnr[k] = expect;
+            }
+        }
+        // a moon not found right beside one that was (closer than the blur can split): its light is in that one's,
+        // the two one dot on the photo
+        double sig = res.psf > 0 ? res.psf : o.psfSigma * S;
+        for (int k : want) {
+            if (res.status[k] != MISSED && res.status[k] != GLARE) continue;
+            int near = -1;
+            double nd = BLEND_SIGMAS * sig;
+            for (int j = 0; j < 4; j++) {
+                if (j == k || res.status[j] != FOUND || res.moon[j] == null || res.predicted[j] == null) continue;
+                double dd = Math.hypot(res.predicted[k][0] - res.predicted[j][0], res.predicted[k][1] - res.predicted[j][1]);
+                if (dd < nd) {
+                    nd = dd;
+                    near = j;
+                }
+            }
+            if (near >= 0) {
+                res.status[k] = BLENDED;
+                res.with[k] = near;
             }
         }
         // each light's place in Jupiter's radii by the fit

@@ -12,7 +12,8 @@ import java.util.TimeZone;
 
 /**
  * Galileo's notebook's pictures (3.2) from simulated nights: the photo (every moon found named by its light, the
- * others where the sums put them with why; the moons bright on a black sky, Jupiter's glare dimmed), tonight's
+ * others where the sums put them with why, two moons in one dot named together; the moons clear on a black sky,
+ * Jupiter's glare dimmed), tonight's
  * line-up, and the notebook page (Galileo's nights, yours, the nights to come). Writes them as PNG to the folder
  * given.
  * <p>
@@ -31,9 +32,9 @@ public final class JupiterLookTest {
         if (out != null) out.mkdirs();
         TimeZone z = TimeZone.getTimeZone("America/New_York");
 
-        long[] nights = {JupiterShotTest.ALL4, JupiterShotTest.DARK, JupiterShotTest.IONEAR};
-        double[] turns = {25, -40, 70};
-        String[] names = {"all4", "dark", "ionear"};
+        long[] nights = {JupiterShotTest.ALL4, JupiterShotTest.DARK, JupiterShotTest.IONEAR, JupiterShotTest.BLEND};
+        double[] turns = {25, -40, 70, -15};
+        String[] names = {"all4", "dark", "ionear", "blend"};
         JupiterStack.Result first = null;
         JupiterSim firstSim = null;
         for (int n = 0; n < nights.length; n++) {
@@ -80,7 +81,8 @@ public final class JupiterLookTest {
                         if (i >= 0 && j >= 0 && i < pic.w && j < pic.h) best = Math.max(best, luma(pic.argb[j * pic.w + i]));
                     }
                 }
-                check("  " + JupiterGeo.NAMES[k] + " shows bright on the photo", best > 110, String.format(Locale.US, "%.0f of 255 (snr %.0f)", best, r.moon[k].snr));
+                // (the faintest, Callisto at sixth magnitude, a soft grey: clear on the black)
+                check("  " + JupiterGeo.NAMES[k] + " shows clearly on the photo", best > 90, String.format(Locale.US, "%.0f of 255 (snr %.0f)", best, r.moon[k].snr));
                 for (JupiterLook.Label l : pic.labels) if (l.moon == k) labelled++;
             }
             check("every moon found is named", labelled == r.found(), labelled + " of " + r.found());

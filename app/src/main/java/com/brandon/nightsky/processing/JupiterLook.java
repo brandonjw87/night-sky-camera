@@ -58,10 +58,33 @@ public final class JupiterLook {
      * The stack's photo, wide: Jupiter in the middle, every moon that's on it inside. Its light in two layers, each with
      * its own tones, laid one over the other: Jupiter's own glow (all of its light the search took off: smooth, a
      * thousand times brighter than a moon) with its brightness squeezed so it stays a ball; and everything else (the
-     * moons, any star), lightly smoothed, from just over the sky's noise up, its brightest moon near white. A moon
-     * close to Jupiter shows over its glow instead of drowning in it.
+     * moons, any star), lightly smoothed, eased in from just over the sky's noise (soft round moons, no edge), its
+     * brightest moon near white. A moon close to Jupiter shows over its glow instead of drowning in it.
      */
     public static Picture photo(JupiterStack.Result r) {
+        return photo(r, new Tone());
+    }
+
+    /** The photo's tones. */
+    public static final class Tone {
+        /** The rest's smoothing (stack px), how much it's tightened, where its black starts (times the sky's noise there). */
+        public double smooth = SMOOTH, sharpen = 1, blackSigmas = BLACK_SIGMAS;
+        /**
+         * Its curve: eased in over this toe, asinh with this knee (both times the noise), then this power; its
+         * brightest moon this white. (Soft round moons: no edge where their light starts, the faint ones still
+         * clear.)
+         */
+        public double toeSigmas = 4, kneeSigmas = 6, power = 0.7, moonWhite = MOON_WHITE;
+        /** Jupiter's glow: white at this share of its brightest, this power below, black under the floor (share). */
+        public double glowWhite = GLOW_WHITE, glowPower = 0.6, glowFloor = GLOW_FLOOR;
+        /**
+         * The tones as shown on the screen (true), or as light, encoded to sRGB (which lifts the dim ones: the moons'
+         * faint edges as bright as their middles, Jupiter's glow a ball).
+         */
+        public boolean shown = true;
+    }
+
+    public static Picture photo(JupiterStack.Result r, Tone t) {
         int Wr = r.w;
         double reach = 10;
         for (int k = 0; k < 4; k++) {
@@ -90,7 +113,12 @@ public final class JupiterLook {
             gMax = Math.max(gMax, G[i]);
             R[i] = (float) res;
         }
-        R = smooth(R, Wr, SMOOTH);
+        if (t.smooth > 0) R = smooth(R, Wr, t.smooth);
+        if (t.sharpen > 0) {
+            // tightened: less of the same blurred by the lens's own blur (each moon's middle up, its wide edge down)
+            float[] b = smooth(R, Wr, r.psf > 0 ? r.psf : 2.2);
+            for (int i = 0; i < R.length; i++) R[i] += (float) (t.sharpen * (R[i] - b[i]));
+        }
         double noise = skyNoise(R, Wr, r);
         double moonTop = 0;
         for (int k = 0; k < 4; k++) {
@@ -99,21 +127,23 @@ public final class JupiterLook {
             int ix = (int) Math.round(l.x), iy = (int) Math.round(l.y);
             if (ix >= 0 && iy >= 0 && ix < Wr && iy < Wr) moonTop = Math.max(moonTop, R[iy * Wr + ix]);
         }
-        double black = BLACK_SIGMAS * noise, knee = 2 * noise;
-        // near Jupiter what's left of its glow isn't all noise: the black raised as the search's own noise rises there
-        double far = 0;
-        double[] rn = r.ringNoise;
-        if (rn != null) {
-            List<Double> fs = new ArrayList<Double>();
-            for (int i = 0; i < rn.length; i++) if (i * 3 > 8 * r.rJ && rn[i] > 0) fs.add(rn[i]);
-            if (!fs.isEmpty()) {
-                java.util.Collections.sort(fs);
-                far = fs.get(fs.size() / 2);
-            }
-        }
+        double black = t.blackSigmas * noise, knee = t.kneeSigmas * noise, toe = t.toeSigmas * noise;
+        // near Jupiter what's left of its glow isn't all noise: the black raised as the noise rises there, ring by ring
+        // (the lights left out, a moon's own light isn't noise), never less nearer in, and smoothly between the rings'
+        // middles (a step would cut a moon in two)
+        double[] rise = rise(R, Wr, r);
         if (moonTop <= black + knee) moonTop = black + 12 * noise;
-        double rTop = asinh((moonTop - black) / knee) / MOON_WHITE;
-        double gWhite = GLOW_WHITE * Math.max(1e-9, gMax), gFloor = GLOW_FLOOR * gMax;
+        double rTop = asinh(toe(moonTop - black, toe) / knee);
+        // the moons (and lights well clear of Jupiter), whose light is real: each as the lens draws a point (its
+        // brightest from this layer, its blur the lens's and the smoothing's), for keeping its edges whole
+        List<double[]> keepers = new ArrayList<double[]>();
+        double lightR = Math.hypot(r.psf > 0 ? r.psf : 2.2, t.smooth);
+        for (JupiterStack.Light l : r.lights) {
+            if (l.moon < 0 && Math.hypot(l.x - r.cx, l.y - r.cy) <= 4 * r.rJ) continue;
+            int ix = (int) Math.round(l.x), iy = (int) Math.round(l.y);
+            if (ix >= 0 && iy >= 0 && ix < Wr && iy < Wr) keepers.add(new double[]{l.x, l.y, Math.max(0, R[iy * Wr + ix])});
+        }
+        double gWhite = t.glowWhite * Math.max(1e-9, gMax), gFloor = t.glowFloor * gMax;
         // where the frames covered the stack well (its edges, which only some frames reached, are noisier)
         double coverMed = 0;
         float[] cover = null;
@@ -139,11 +169,12 @@ public final class JupiterLook {
             }
         }
         jy = 0.2126 * jc[0] + 0.7152 * jc[1] + 0.0722 * jc[2];
-        // (half its own, half a warm white: a phone's colours of a dot this small are only a hint)
-        double[] warm = {1.03, 0.98, 0.9};
-        for (int c = 0; c < 3; c++) jc[c] = Math.max(0.85, Math.min(1.15, 0.5 * (jy > 0 ? jc[c] / jy : 1) + 0.5 * warm[c]));
-        float[][] C = {smooth(r.r, Wr, 1.6), smooth(r.g, Wr, 1.6), smooth(r.b, Wr, 1.6)};
-        float[] Ys = smooth(Y, Wr, 1.6);
+        // (a third its own, the rest a warm cream: a phone's colours of a dot this small are only a hint)
+        double[] warm = {1.03, 0.98, 0.88};
+        for (int c = 0; c < 3; c++) jc[c] = 0.3 * Math.max(0.9, Math.min(1.1, jy > 0 ? jc[c] / jy : 1)) + 0.7 * warm[c];
+        // the moons' colours from a wider smoothing (a hint of each one's own, not the stack's colour noise)
+        float[][] C = {smooth(r.r, Wr, 2.4), smooth(r.g, Wr, 2.4), smooth(r.b, Wr, 2.4)};
+        float[] Ys = smooth(Y, Wr, 2.4);
         int[] out = new int[W * H];
         for (int j = 0; j < H; j++) {
             for (int i = 0; i < W; i++) {
@@ -153,11 +184,13 @@ public final class JupiterLook {
                     continue;
                 }
                 double g = Math.max(0, MoonLook.clampNear(G, Wr, Wr, x, y, MoonStack.cubic(G, Wr, Wr, x, y)));
-                double tg = Math.min(1, Math.sqrt(Math.max(0, g - gFloor) / gWhite));
+                double tg = Math.min(1, Math.pow(Math.max(0, g - gFloor) / gWhite, t.glowPower));
                 double v = MoonLook.clampNear(R, Wr, Wr, x, y, MoonStack.cubic(R, Wr, Wr, x, y));
                 double d = Math.hypot(x - r.cx, y - r.cy) / r.rJ;
-                double raise = (far > 0 ? Math.max(1, JupiterStack.ringAt(rn, d * r.rJ) / far) : 1) * (1 + 0.6 * Math.max(0, Math.min(1, (4 - d) / 1.5)));
-                double tr = Math.min(1, asinh(Math.max(0, v - black * raise) / knee) / rTop);
+                double raise = between(rise, d * r.rJ / 3 - 0.5) * (1 + 0.6 * Math.max(0, Math.min(1, (4 - d) / 1.5)));
+                // (not where a moon found has light of its own over the raised black: a raised black would cut it in half)
+                if (raise > 1) raise = 1 + (raise - 1) * (1 - Math.min(1, 1.5 * lightAt(keepers, x, y, lightR) / (black * raise)));
+                double tr = Math.min(1, t.moonWhite * Math.pow(asinh(toe(v - black * raise, toe) / knee) / rTop, t.power));
                 // nothing of the rest inside Jupiter's glare, or where few frames reached
                 tr *= Math.max(0, Math.min(1, (d - JupiterStack.GLARE_RJ + 0.3) / 0.9));
                 int ix = (int) Math.round(x), iy = (int) Math.round(y), q = iy * Wr + ix;
@@ -167,22 +200,103 @@ public final class JupiterLook {
                 double[] rgb = new double[3];
                 for (int c = 0; c < 3; c++) {
                     double ch = ys > 0 ? (C[c][q] - r.sky) / ys : 1;
-                    ch = 1 + sure * 0.4 * (Math.max(0.6, Math.min(1.5, ch)) - 1);
+                    ch = 1 + sure * 0.3 * (Math.max(0.6, Math.min(1.5, ch)) - 1);
                     double a = tg * jc[c], b = tr * ch;
                     // the layers laid one over the other as light is (screen)
                     rgb[c] = 1 - (1 - Math.min(1, a)) * (1 - Math.min(1, b));
                 }
-                out[j * W + i] = 0xFF000000 | (MoonLook.srgb8(rgb[0]) << 16) | (MoonLook.srgb8(rgb[1]) << 8) | MoonLook.srgb8(rgb[2]);
+                out[j * W + i] = t.shown ? 0xFF000000 | (shown8(rgb[0]) << 16) | (shown8(rgb[1]) << 8) | shown8(rgb[2])
+                        : 0xFF000000 | (MoonLook.srgb8(rgb[0]) << 16) | (MoonLook.srgb8(rgb[1]) << 8) | MoonLook.srgb8(rgb[2]);
             }
         }
         pic.argb = out;
         return pic;
     }
 
+    /** The most light any of {@code lights} (x, y, brightest) puts here, each a Gaussian of sigma {@code s}. */
+    static double lightAt(List<double[]> lights, double x, double y, double s) {
+        double best = 0;
+        for (double[] l : lights) {
+            double d2 = (x - l[0]) * (x - l[0]) + (y - l[1]) * (y - l[1]);
+            if (d2 < 25 * s * s) best = Math.max(best, l[2] * Math.exp(-d2 / (2 * s * s)));
+        }
+        return best;
+    }
+
+    /** Over the black, eased in: u squared over u plus the toe at first (no edge where a moon's light starts), u less the toe beyond. */
+    static double toe(double u, double toe) {
+        if (u <= 0) return 0;
+        return toe <= 0 ? u : u * u / (u + toe);
+    }
+
+    /**
+     * How much the black rises towards Jupiter, ring by ring (3 px) from its middle: each ring's noise (the lights
+     * found left out) over the noise beyond eight of its radii, at least 1, and never less than the ring outside it.
+     */
+    static double[] rise(float[] R, int w, JupiterStack.Result r) {
+        int rings = (int) (w / 2.0 / 3) + 1;
+        double keep = Math.max(6, 4 * (r.psf > 0 ? r.psf : 2.2));
+        List<List<Float>> v = new ArrayList<List<Float>>();
+        for (int i = 0; i < rings; i++) v.add(new ArrayList<Float>());
+        for (int j = 0; j < w; j++) {
+            for (int i = 0; i < w; i++) {
+                double d = Math.hypot(i - r.cx, j - r.cy);
+                int b = (int) (d / 3);
+                if (b >= rings) continue;
+                boolean near = false;
+                for (JupiterStack.Light l : r.lights) if (Math.hypot(i - l.x, j - l.y) < keep) near = true;
+                if (!near) v.get(b).add(R[j * w + i]);
+            }
+        }
+        double[] n = new double[rings];
+        for (int b = 0; b < rings; b++) n[b] = mad(v.get(b));
+        List<Double> fs = new ArrayList<Double>();
+        for (int b = 0; b < rings; b++) if (b * 3 > 8 * r.rJ && !Double.isNaN(n[b])) fs.add(n[b]);
+        double[] rise = new double[rings];
+        java.util.Arrays.fill(rise, 1);
+        if (fs.isEmpty()) return rise;
+        java.util.Collections.sort(fs);
+        double far = fs.get(fs.size() / 2);
+        for (int b = rings - 1; b >= 0; b--) {
+            double x = Double.isNaN(n[b]) || far <= 0 ? 1 : Math.max(1, n[b] / far);
+            // beyond eight radii the sky's own (a ring's spread there is only chance)
+            if (b * 3 > 8 * r.rJ) x = 1;
+            rise[b] = b == rings - 1 ? x : Math.max(x, rise[b + 1]);
+        }
+        return rise;
+    }
+
+    /** The robust spread of some values (NaN for fewer than 12). */
+    static double mad(List<Float> l) {
+        int n = l.size();
+        if (n < 12) return Double.NaN;
+        float[] a = new float[n];
+        for (int i = 0; i < n; i++) a[i] = l.get(i);
+        java.util.Arrays.sort(a);
+        float med = a[n / 2];
+        for (int i = 0; i < n; i++) a[i] = Math.abs(a[i] - med);
+        java.util.Arrays.sort(a);
+        return 1.4826 * a[n / 2];
+    }
+
+    static int shown8(double v) {
+        return (int) Math.round(255 * Math.max(0, Math.min(1, v)));
+    }
+
+    /** a[] at a fractional index, straight between its neighbours (1 if empty; the ends held). */
+    static double between(double[] a, double f) {
+        if (a.length == 0) return 1;
+        if (f <= 0) return a[0];
+        if (f >= a.length - 1) return a[a.length - 1];
+        int i = (int) f;
+        double u = f - i;
+        return a[i] * (1 - u) + a[i + 1] * u;
+    }
+
     /** The rest's smoothing (stack px), where its black starts (times the sky's noise), and its brightest moon's tone. */
-    static final double SMOOTH = 1.0, BLACK_SIGMAS = 3.5, MOON_WHITE = 0.85;
-    /** Jupiter's glow's tones: white at this share of its brightest, the square root below, black under the floor. */
-    static final double GLOW_WHITE = 0.6, GLOW_FLOOR = 0.002;
+    static final double SMOOTH = 1.4, BLACK_SIGMAS = 3.5, MOON_WHITE = 0.9;
+    /** Jupiter's glow's tones: white at this share of its brightest, black under the floor. */
+    static final double GLOW_WHITE = 0.6, GLOW_FLOOR = 0.004;
 
     static double asinh(double x) {
         return Math.log(x + Math.sqrt(x * x + 1));
@@ -274,7 +388,7 @@ public final class JupiterLook {
             l.size = size;
             l.text = JupiterGeo.NAMES[k];
             l.seen = st == JupiterStack.FOUND;
-            if (st == JupiterStack.OUTSIDE) continue;
+            if (st == JupiterStack.OUTSIDE || st == JupiterStack.BLENDED) continue;
             if (st == JupiterStack.HIDDEN || st == JupiterStack.CROSSING) {
                 // by Jupiter: above it, then below
                 l.x = pic.cx;
@@ -300,6 +414,10 @@ public final class JupiterLook {
             if (!l.seen) {
                 l.note = st == JupiterStack.DARK ? "in Jupiter's shadow" : st == JupiterStack.GLARE ? "lost in Jupiter's glare" : "not seen";
                 dotted(p, (float) l.x, (float) l.y, (float) (blob * 0.8), Math.max(1.5f, size * 0.05f), 0xAA000000 | (COLOURS[k] & 0xFFFFFF));
+            } else {
+                List<String> beside = new ArrayList<String>();
+                for (int b = 0; b < 4; b++) if (r.status[b] == JupiterStack.BLENDED && r.with[b] == k) beside.add(JupiterGeo.NAMES[b]);
+                if (!beside.isEmpty()) l.note = "with " + (beside.size() == 1 ? beside.get(0) : beside.get(0) + " and " + beside.get(1)) + " right beside it";
             }
             float tw = p.width(l.text, size, true), nw = l.note.isEmpty() ? 0 : p.width(l.note, note, false);
             float bw = Math.max(tw, nw);
@@ -324,6 +442,24 @@ public final class JupiterLook {
             int col = l.seen ? COLOURS[k] : 0xCC000000 | (COLOURS[k] & 0xFFFFFF);
             p.text(l.text, (float) (tx + (bw - tw) / 2), (float) ty, size, true, col);
             if (!l.note.isEmpty()) p.text(l.note, (float) (tx + (bw - nw) / 2), (float) (ty + note * 1.15), note, false, DIM);
+            pic.labels.add(l);
+        }
+        // a moon in another's light: named on that one's label (not drawn again), found by a tap there
+        for (int k = 0; k < 4; k++) {
+            if (r.status[k] != JupiterStack.BLENDED) continue;
+            Label host = null;
+            for (Label h : pic.labels) if (h.moon == r.with[k]) host = h;
+            if (host == null) continue;
+            Label l = new Label();
+            l.moon = k;
+            l.size = host.size;
+            l.text = JupiterGeo.NAMES[k];
+            l.note = "right beside " + JupiterGeo.NAMES[r.with[k]];
+            l.seen = false;
+            l.x = host.x;
+            l.y = host.y;
+            l.tx = host.tx;
+            l.ty = host.ty;
             pic.labels.add(l);
         }
         // the stars behind (lights far from Jupiter that aren't moons)
@@ -514,9 +650,66 @@ public final class JupiterLook {
                 e.seen[k] = true;
                 e.x[k] = l.jx;
                 e.y[k] = l.jy;
+            } else if (r.status[k] == JupiterStack.BLENDED) {
+                // in another moon's light: seen, as one dot (where the sums put it)
+                e.seen[k] = true;
             }
         }
         return e;
+    }
+
+    /** Your nights kept: the most the page and the file keep (the newest). */
+    public static final int KEEP = 40;
+
+    /** Nights as JSON, for keeping. */
+    public static String toJson(List<Entry> nights) {
+        com.brandon.nightsky.remote.Json j = new com.brandon.nightsky.remote.Json();
+        j.obj().arr("nights");
+        int from = Math.max(0, nights.size() - KEEP);
+        for (int i = from; i < nights.size(); i++) {
+            Entry e = nights.get(i);
+            j.obj().put("t", e.t).put("where", e.where);
+            j.arr("x");
+            for (double v : e.x) j.val(v, 6);
+            j.end().arr("y");
+            for (double v : e.y) j.val(v, 6);
+            j.end();
+            StringBuilder seen = new StringBuilder(), showing = new StringBuilder();
+            for (int k = 0; k < 4; k++) {
+                seen.append(e.seen[k] ? '1' : '0');
+                showing.append(e.showing[k] ? '1' : '0');
+            }
+            j.put("seen", seen.toString()).put("showing", showing.toString()).end();
+        }
+        j.end().end();
+        return j.toString();
+    }
+
+    /** Nights from {@link #toJson} (an empty list for anything it can't read). */
+    public static List<Entry> fromJson(String text) {
+        List<Entry> out = new ArrayList<Entry>();
+        try {
+            com.brandon.nightsky.remote.JsonTree.Obj o = com.brandon.nightsky.remote.JsonTree.object(text);
+            if (o == null) return out;
+            for (com.brandon.nightsky.remote.JsonTree.Obj n : o.objs("nights")) {
+                Entry e = new Entry();
+                e.t = n.lng("t", 0);
+                e.where = n.str("where", "");
+                double[] x = n.nums("x"), y = n.nums("y");
+                String seen = n.str("seen", "0000"), showing = n.str("showing", "0000");
+                if (e.t <= 0 || x == null || y == null || x.length != 4 || y.length != 4 || seen.length() != 4 || showing.length() != 4) continue;
+                for (int k = 0; k < 4; k++) {
+                    e.x[k] = x[k];
+                    e.y[k] = y[k];
+                    e.seen[k] = seen.charAt(k) == '1';
+                    e.showing[k] = showing.charAt(k) == '1';
+                }
+                out.add(e);
+            }
+        } catch (RuntimeException e) {
+            // a damaged file: start a fresh page
+        }
+        return out;
     }
 
     /** Paper: warm, a little uneven, darker towards the edges. ARGB, w x h. */
@@ -666,7 +859,7 @@ public final class JupiterLook {
         List<Entry> out = new ArrayList<Entry>();
         // each night from local noon (by the longitude) to the next noon
         long day = 86_400_000L;
-        long noon = from - Math.floorMod(from + Math.round(lon / 15 * 3_600_000L) - day / 2, day);
+        long noon = noonBefore(from, lon);
         for (int n = 0; n < nights + 1 && out.size() < nights; n++) {
             long start = Math.max(from, noon + n * day);
             long end = noon + (n + 1) * day;
@@ -676,6 +869,22 @@ public final class JupiterLook {
             out.add(fromSums(JupiterGeo.view(t, lat, lon), t));
         }
         return out;
+    }
+
+    /** The local noon (by the longitude) a night starts at: the last one at or before t. */
+    static long noonBefore(long t, double lon) {
+        long day = 86_400_000L;
+        return t - Math.floorMod(t + Math.round(lon / 15 * 3_600_000L) - day / 2, day);
+    }
+
+    /** The start of the night after the one t is in (its local noon). */
+    public static long nextNight(long t, double lon) {
+        return noonBefore(t, lon) + 86_400_000L;
+    }
+
+    /** Whether two moments are in the same night (noon to noon, by the longitude). */
+    public static boolean sameNight(long a, long b, double lon) {
+        return noonBefore(a, lon) == noonBefore(b, lon);
     }
 
     /** "Tonight" words for a night's happenings, in a zone: each on a line ("" if nothing happens). */

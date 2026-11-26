@@ -22,9 +22,10 @@ import java.util.Random;
  * holding the phone, a street light, a bright star and hot pixels in the frame. Jupiter found (not the lamp, the star
  * or a hot pixel), followed, its exposure settled from a first guess far off, the lens's focus scored; then its burst
  * and the moons' brighter one stacked and every moon that shows found where it is and named, two stars behind
- * Jupiter not taken for moons and no hot pixel taken for anything. Three nights: all four out (December 30, 2026),
- * Ganymede in Jupiter's shadow (December 6) and Io close to Jupiter (December 23), and one with the phone's tilt
- * unknown (the picture's turn found from the moons alone).
+ * Jupiter not taken for moons and no hot pixel taken for anything. Four nights: all four out (December 30, 2026),
+ * Ganymede in Jupiter's shadow (December 6), Io close to Jupiter (December 23) and Io and Europa in one dot (December
+ * 22: one named, the other said to be in its light); and one with the phone's tilt unknown (the picture's turn found
+ * from the moons alone).
  * <p>
  * Usage: JupiterShotTest [out dir for pictures]
  */
@@ -32,6 +33,8 @@ public final class JupiterShotTest {
     static int failed;
     static final double LAT = 39, LON = -77, SCALE = 17;
     public static final long ALL4 = 1798614000000L, DARK = 1796547600000L, IONEAR = 1798012800000L;
+    /** 22 December 2026, 05:00 UTC: Io and Europa half Jupiter's radius apart, six out to the east (one dot). */
+    public static final long BLEND = 1797915600000L;
 
     static void check(String what, boolean ok, String detail) {
         System.out.println("  " + (ok ? "PASS" : "FAIL") + ": " + what + (detail.isEmpty() ? "" : " (" + detail + ")"));
@@ -311,6 +314,19 @@ public final class JupiterShotTest {
         int named = 0;
         for (int k = 0; k < 4; k++) if (r4.status[k] == JupiterStack.FOUND) named++;
         check("and all four named", named == 4, named + "");
+
+        System.out.println("== December 22: Io and Europa in one dot");
+        JupiterSim s5 = night(BLEND, -15, null);
+        Shot e = shoot(s5, 8, true, 1);
+        JupiterStack.Result r5 = stackOf(s5, e, true);
+        report(r5, s5, e);
+        // half a radius apart, under the blur's width: one light, named for one of them, the other said to be in it
+        int io = r5.status[0], eu = r5.status[1];
+        boolean pair = (io == JupiterStack.FOUND && eu == JupiterStack.BLENDED && r5.with[1] == 0)
+                || (eu == JupiterStack.FOUND && io == JupiterStack.BLENDED && r5.with[0] == 1);
+        check("Io and Europa: one dot, named for one, the other said to be in it", pair,
+                JupiterStack.statusWord(io) + ", " + JupiterStack.statusWord(eu));
+        moonsChecks(r5, s5, 4);
         System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) System.exit(1);
     }
@@ -355,6 +371,13 @@ public final class JupiterShotTest {
                 glare++;
                 continue;
             }
+            // right beside another (closer than the blur can split): in that one's light
+            if (r.status[k] == JupiterStack.BLENDED) {
+                JupiterGeo.Moon o = sim.view.moons[r.with[k]];
+                if (Math.hypot(m.x - o.x, m.y - o.y) * r.rJ < JupiterStack.BLEND_SIGMAS * (r.psf > 0 ? r.psf : 2.2) + 0.5) found++;
+                else names = false;
+                continue;
+            }
             if (r.status[k] != JupiterStack.FOUND) {
                 names = false;
                 continue;
@@ -364,6 +387,14 @@ public final class JupiterShotTest {
             // its place to a fifth of Jupiter's radius, or as well as its brightness allows (the blur's width
             // over its signal to noise, two and a half times)
             double allow = Math.max(0.2, 2.5 * 1.4 * r.psf / Math.max(1, l.snr) / r.rJ);
+            // close to Jupiter what's left of its glare leans on a faint moon's light (a third of a radius more)
+            if (m.dist() < 6) allow += 0.35;
+            // a dot with another moon in it: anywhere between the two
+            for (int b = 0; b < 4; b++) {
+                if (r.status[b] != JupiterStack.BLENDED || r.with[b] != k) continue;
+                JupiterGeo.Moon o = sim.view.moons[b];
+                allow = Math.max(allow, Math.hypot(m.x - o.x, m.y - o.y) + 0.2);
+            }
             worst = Math.max(worst, Math.hypot(l.jx - m.x, l.jy - m.y) / allow * 0.2);
             if (l.moon != k) names = false;
         }

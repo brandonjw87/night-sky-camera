@@ -18,11 +18,13 @@ your arm at. Since 3.0, **the Moonshot**: the Moon from the 5x telephoto, hand-h
 one sharp photo with every landing site labelled where it is tonight, and the **Transit Hunter**, which catches the
 International Space Station crossing the Moon by itself, with the countdown on your watch. Since 3.1 the Moonshot's
 photo names the Moon's seas, craters and mountains where they are tonight (**Moon map**), and on a crescent it brings
-out the dark part, lit by sunlight bouncing off the Earth (**the Earth's glow**).
+out the dark part, lit by sunlight bouncing off the Earth (**the Earth's glow**). Since 3.2, **Jupiter's moons**:
+Jupiter from the telephoto with its four big moons, each named where it is tonight, and **Galileo's notebook**, your
+nights drawn beside the ones Galileo drew in January 1610.
 
 It needs **Android 17** or newer and is made for the Pixel 10 and newer.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.1.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.2.
 
 ## What it does
 
@@ -242,6 +244,37 @@ Tap the button again to stop waiting.
   change a little with every update: look again the day before.
 - Something else crossing the Moon while you shoot (a plane, a bird) is found too, as a **Mystery flyer**.
 - Best Moon nights: a half Moon (the craters along the line between day and night throw long shadows), high up.
+
+## Jupiter's moons (3.2)
+
+Tap **Shoot Jupiter's moons** on the main screen (the card under the Moonshot's).
+
+1. **Tonight first.** The top says where Jupiter is (how high, which way, or when it rises) and whether now is a good
+   time. The strip under it shows the four moons where the sums put them right now, east on the left, and below that
+   what happens in the next 12 hours: a moon going behind Jupiter, crossing in front of it, or into its shadow.
+2. **Point the phone at Jupiter**, the brightest "star" that doesn't twinkle. It uses the 5x telephoto, finds Jupiter
+   anywhere in the picture, sets the exposure, focuses, and checks the exposure again once Jupiter is sharp. Wait for
+   **Ready: hold steady and shoot**. **Focus again** starts the focusing over.
+3. **Shoot Jupiter.** Hold the phone with both hands, elbows against your chest or a wall, for about eleven seconds:
+   90 RAW pictures for Jupiter (3 seconds), then 240 sixteen times brighter for its moons (8 seconds), until the
+   second click. The watch's **Shoot** on its Moon screen works too while this screen is open.
+4. **Your Jupiter, with ...**: the photo with north up and east on the left, as Galileo drew it, Jupiter's glare
+   dimmed so a moon close to it shows, and each moon named where it is. A moon that isn't there says why: behind
+   Jupiter, crossing in front of it (and until when), in its shadow, lost in its glare, or in the same dot as another
+   moon (two moons are often too close together for a phone to show apart). **Tap a moon** for where it is and its
+   story (on a dot with two moons, tap again for the other). **Names** and **No names** switch the labels. It's
+   saved in Pictures/NightSky three times: plain, with the names, and the notebook page; **Share** sends the one on
+   screen.
+5. **Galileo's notebook**: his seven nights of January 1610 as he drew them (Jupiter an O, the moons little stars,
+   **Ori.** east and **Occ.** west), with what he wrote; your nights under them (the newest kept on the page, the last
+   40 in the phone); and the next five nights from the sums, in pencil, each at the best time to look. **Share the
+   notebook page** sends it.
+6. **Stories**: Jupiter, each moon, Galileo in 1610, the speed of light from Io's eclipses, the 1:2:4 dance of Io,
+   Europa and Ganymede, and how to see the moons yourself with binoculars.
+
+Best: Jupiter high in a dark sky, the phone held as steady as you can (or against a wall or a car roof). Io moves
+enough to see in an hour; the moons change sides from night to night. This season Jupiter is at its closest and
+brightest on 11 February 2027, up all night.
 
 ## Night Sky on your Pixel Watch
 
@@ -760,7 +793,9 @@ app/src/main/java/com/brandon/nightsky/
     MoonActivity        the Moonshot (3.0): the telephoto's picture, the photo and its labels, the Transit Hunter's card;
                         the Moon map and the Earth's glow (3.1)
     MoonCamera          the Moonshot's camera: the telephoto's RAW frames, finding the Moon, metering, the focus sweep, bursts,
-                        and the Earth's glow's brighter frames after the burst (3.1)
+                        and the Earth's glow's brighter frames after the burst (3.1); Jupiter and its moons' two bursts (3.2)
+    JupiterActivity     Jupiter's moons (3.2): tonight, the telephoto's picture, the photo and its names, Galileo's
+                        notebook, the stories
     Transits            the Transit Hunter's list, worked out from the satellite orbits for this place
     link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
                         the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
@@ -830,6 +865,10 @@ app/src/main/java/com/brandon/nightsky/
         MoonFeatures    the Moon map's places (3.1): seas, craters, mountains, their IAU positions and sizes, their stories
         Earthshine      the Earth's glow (3.1): the brighter frames' night side lined up, cleaned and merged into the stack
         TransitFinder   the Transit Hunter: where the Space Station's shadow-path on the Moon crosses the ground
+        JupiterGeo      Jupiter tonight (3.2): where it is, its four moons (Meeus), their happenings, Galileo's nights
+        PointFinder, JupiterMeter  Jupiter found in a RAW frame and followed, its sharpness; its exposure and the moons'
+        JupiterStack    both bursts lined up on Jupiter, its glow taken off, the moons found and named (or why not)
+        JupiterLook     the photo, its names, tonight's line-up and Galileo's notebook page; JupiterStories the stories
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
 watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
@@ -917,6 +956,13 @@ four phases, taps) and `EarthshineTest` (an output folder: a simulated crescent 
 times brighter after the burst, the glow merged and checked against the truth: its brightness, seas and colour, no
 seam, the sunlit crescent untouched, the sky black, the glare gone, no rim round the crescent; and three ways the
 merge must say no).
+The 3.2 tests: `JupiterGeoTest` (the moons against the 2.4 card's, Galileo's seven nights against his drawings, the
+shadows, eclipses and hidings in order, rising, setting and the best time), `JupiterShotTest` (an output folder:
+simulated hand-held nights with a street light, a bright star and hot pixels in the frame: Jupiter found, metered and
+focused, both bursts stacked, every moon that shows found where it is and named, on five nights: all four out, one
+in Jupiter's shadow, one close in, two in one dot, the tilt unknown) and `JupiterLookTest` (an output folder: the
+photo's sky black and moons clear, every moon named or its absence said, the line-up, and the notebook page with
+Galileo's nights as he drew them). `JupiterSim` is the simulated Jupiter they share.
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -936,4 +982,7 @@ Moon in a shaking hand, a lens to focus, a sensor brighter than the meter's gues
 shoots from the watch's Shoot, stacks and saves, then catches a staged ISS crossing from the watch's Catch,
 checking the watch's Moon screen and buzzes on the way, and draws every screen to a picture. Since 3.1 it also
 checks the Moon map and shoots a crescent with the Earth's glow, from the switch to the four saved photos.
+`robo/run.sh Jupiter` (3.2) does the same for Jupiter's moons: tonight's screen, finding, metering and focusing on
+`JupiterSim`'s Jupiter, both bursts from the watch's Shoot, the moons named, three photos saved, the notebook kept
+and read back, and the stories.
 [robo/README.md](robo/README.md) lists every scenario.
