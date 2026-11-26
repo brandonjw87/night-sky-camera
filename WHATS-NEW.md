@@ -39,6 +39,8 @@ sums, in pencil.
   the moons yourself with binoculars.
 - Best nights: Jupiter high in a dark sky. It rises in the late evening now, a little earlier each night, and is at
   its closest and brightest on 11 February 2027, up all night.
+- **The photo comes to you.** When a Moonshot or a Jupiter photo is made, the screen scrolls up to it by itself
+  (it used to appear below the camera's picture, out of sight while you were still pointing at the sky).
 
 ### Under the hood
 

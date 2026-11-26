@@ -21,6 +21,7 @@ import android.view.Gravity;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -79,6 +80,8 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
     private ImageView closeUp, lineUp, notebook;
     private TextView status, details, tonight, lineUpWhen, events, storyText, storiesText, moonsText;
     private Button shutter, refocus;
+    /** The page's scroll (3.2: the new photo is scrolled up into view). */
+    private ScrollView scroll;
     private LinearLayout resultBox;
     private ProgressBar bar;
     private TextView barText;
@@ -134,6 +137,7 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
         col.setPadding(dp(16), dp(14), dp(16), dp(24));
         sv.addView(col);
         setContentView(sv);
+        scroll = sv;
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -754,6 +758,7 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
         shotMs = b.startMs;
         resultBox.removeAllViews();
         resultBox.setVisibility(View.VISIBLE);
+        bringIntoView(resultBox);
         List<String> found = new ArrayList<String>();
         for (int k = 0; k < 4; k++) if (r.status[k] == JupiterStack.FOUND || r.status[k] == JupiterStack.BLENDED) found.add(JupiterGeo.NAMES[k]);
         String what = found.isEmpty() ? "Your Jupiter" : "Your Jupiter, with " + and(found);
@@ -816,6 +821,7 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
             @Override
             public void onClick(View x) {
                 resultBox.setVisibility(View.GONE);
+                if (scroll != null) scroll.smoothScrollTo(0, 0);
                 if (live != null) onLive(live);
             }
         });
@@ -1078,6 +1084,20 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
 
     // ------------------------------------------------------------------------------------------------
     // the look
+
+    /**
+     * Scrolls {@code v} up into view once it's laid out (3.2): the photo is made below the camera's picture, out of
+     * sight on a phone that was just pointed at the sky.
+     */
+    private void bringIntoView(final View v) {
+        v.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                v.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                if (scroll != null && v.getVisibility() == View.VISIBLE) scroll.smoothScrollTo(0, Math.max(0, v.getTop() - dp(8)));
+            }
+        });
+    }
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
