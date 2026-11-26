@@ -2,8 +2,8 @@
 <!-- Night Sky on the watch (2.5): the phone's session on the wrist, over Bluetooth or the internet. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.brandon.nightsky.watch"
-    android:versionCode="20"
-    android:versionName="3.1">
+    android:versionCode="21"
+    android:versionName="3.2">
 
     <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="34" />
 

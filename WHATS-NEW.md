@@ -1,5 +1,64 @@
 # Night Sky Camera: what's new
 
+## Version 3.2: Jupiter's four moons
+
+> "...three little stars, small but very bright, were near the planet." Galileo Galilei, The Starry Messenger, 1610
+
+3.2 points the telephoto at Jupiter. **Jupiter's moons** shoots it hand-held and names each of the four big moons
+Galileo found in January 1610 (Io, Europa, Ganymede and Callisto) right where they are on your photo, or says why one
+isn't there tonight. And **Galileo's notebook** draws your nights the way he drew his: Jupiter an O, its moons little
+stars, east on the left, his seven nights of 1610 at the top, yours under them, and the next five nights from the
+sums, in pencil.
+
+### What's new
+
+- **Jupiter's moons.** A new card on the main screen, under the Moonshot's: **Shoot Jupiter's moons**.
+  - Tonight first: where Jupiter is (how high and which way, or when it rises), a strip with the four moons where
+    the sums put them right now, and what happens in the next 12 hours: a moon slipping behind Jupiter, crossing in
+    front of it, or going dark in its shadow.
+  - **Point the phone at Jupiter**, the brightest "star" that doesn't twinkle. It finds it anywhere in the
+    12-megapixel picture, sets the exposure, focuses on it, and checks the exposure again once it's sharp (a sharp
+    Jupiter is twice as bright as a blurred one).
+  - **Shoot Jupiter**: hold steady for about eleven seconds. 90 RAW pictures for Jupiter itself (3 seconds), then 240
+    sixteen times brighter for its moons (8 seconds): each moon is about a thousand times fainter than Jupiter. The
+    watch's **Shoot** works too.
+  - **Your Jupiter, with Io, Europa, Ganymede and Callisto**: the sharpest pictures stacked, north up and east on the
+    left as Galileo drew it, Jupiter's glare dimmed so a moon close to it still shows, each moon named in its own
+    colour. A moon that isn't there says why: behind Jupiter, crossing in front of it (and until when), in Jupiter's
+    shadow, lost in its glare, or **in the same dot as another moon**: about every third night two of them are too
+    close together for a phone to show apart, and the photo names them together. **Tap a moon** for where it is and
+    its story (on a dot with two moons, tap again for the other one).
+  - Saved three times in Pictures/NightSky: plain, with the names, and the notebook page. **Share** sends the photo.
+- **Galileo's notebook.** His nights of 7 to 15 January 1610 as he drew them in The Starry Messenger, the little stars
+  named as an astronomer worked out in 2025, with what he wrote each night; your nights under them (the last 40 kept);
+  and the nights to come, in pencil, each at its best time, with Jupiter high in a dark sky. **Share the notebook
+  page** sends it.
+- **Nine stories:** Jupiter itself (how far it is tonight, how old its light is), each moon (Io's 400 volcanoes,
+  Europa's hidden ocean, Ganymede bigger than the planet Mercury, Callisto's craters), Galileo in 1610, Ole Rømer
+  timing Io's eclipses to find the speed of light in 1676, the 1:2:4 dance of Io, Europa and Ganymede, and how to see
+  the moons yourself with binoculars.
+- Best nights: Jupiter high in a dark sky. It rises in the late evening now, a little earlier each night, and is at
+  its closest and brightest on 11 February 2027, up all night.
+
+### Under the hood
+
+- `JupiterGeo`: Jupiter and its four moons from here (J. Meeus's Astronomical Algorithms, chapter 44), their
+  happenings, the best time each night, and Galileo's nights, checked against his drawings.
+- `PointFinder` and `JupiterMeter` find Jupiter in a whole RAW frame (not a street light, a bright star or a hot
+  pixel), follow it, score its sharpness and set both bursts' exposures. `MoonCamera` does the rest, as it does for
+  the Moon.
+- `JupiterStack` lines both bursts up on Jupiter, measures and takes off its glow, looks for the moons along the line
+  the sums give, fits the picture's turn and scale to the lights it finds, names each, and looks again, fainter,
+  where a moon must be (measuring the noise there without the moons, so one close to Jupiter can't hide itself). A
+  moon too close to another to split is named in that one's light.
+- `JupiterLook` draws the photo in two layers (Jupiter's glow, and everything else eased in over the sky's noise and
+  gently tightened, so the moons are soft round dots), the names, tonight's line-up and the notebook page, in the
+  app with Android's Canvas and in the tests with Java's own drawing.
+- Tests: `JupiterGeoTest`, `JupiterShotTest` (simulated hand-held nights: all four out, one in Jupiter's shadow, one
+  close in, two in one dot, the tilt unknown) and `JupiterLookTest` (the photo, the line-up and the notebook page),
+  and a new robot run, `robo/run.sh Jupiter`: a whole Jupiter night on a simulated Pixel telephoto, from finding to
+  the three saved photos, the notebook kept and the watch's Shoot (41 checks).
+
 ## Version 3.1: the Moon map and the Earth's glow
 
 > "The new Moon with the old Moon in her arms." The ballad of Sir Patrick Spens, an old Scottish sailors' song

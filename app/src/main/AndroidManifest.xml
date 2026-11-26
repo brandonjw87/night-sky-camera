@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.brandon.nightsky"
-    android:versionCode="20"
-    android:versionName="3.1">
+    android:versionCode="21"
+    android:versionName="3.2">
 
     <!-- 3.0, the Moonshot: Android 17 or newer -->
     <uses-sdk android:minSdkVersion="37" android:targetSdkVersion="37" />
