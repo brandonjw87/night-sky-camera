@@ -35,6 +35,31 @@ public final class MoonLook {
         return 0.8 + 0.2 * (1 - Math.exp(-(x - 0.8) / 0.2));
     }
 
+    /**
+     * The Earth's glow's tones (3.1): the shoulder, plus a lift for the night side, the glow's own brightness
+     * ({@code level}) shown at about a third of the way up (sRGB) and the lift fading out up the sunlit tones, so the
+     * crescent keeps its look and its shadows, lit by the Earth too, come out of the black with the rest of the night.
+     * The lift starts past {@code black} (the sky's noise, three times; a soft knee), so the sky stays black.
+     */
+    static double glowTone(double y, double level, double black) {
+        double yy = Math.max(0, y);
+        if (black > 0) yy = yy < 2 * black ? yy * yy / (4 * black) : yy - black;
+        double lift = GLOW_LIFT * (1 - Math.exp(-yy * Math.log(2) / level));
+        return shoulder(y) + lift * Math.max(0, 1 - y / GLOW_FADE);
+    }
+
+    /** A value held between the nearest four pixels' least and most (at x, y; clamped at the edges). */
+    static float clampNear(float[] img, int w, int h, double x, double y, float v) {
+        int ix = Math.max(0, Math.min(w - 2, (int) Math.floor(x))), iy = Math.max(0, Math.min(h - 2, (int) Math.floor(y)));
+        int k = iy * w + ix;
+        float a = img[k], b = img[k + 1], c = img[k + w], d = img[k + w + 1];
+        float lo = Math.min(Math.min(a, b), Math.min(c, d)), hi = Math.max(Math.max(a, b), Math.max(c, d));
+        return v < lo ? lo : v > hi ? hi : v;
+    }
+
+    /** The glow's lift at its most (linear light), and the sunlit brightness it is gone by. */
+    static final double GLOW_LIFT = 0.14, GLOW_FADE = 0.3;
+
     static int srgb8(double v) {
         v = v <= 0 ? 0 : v >= 1 ? 1 : v;
         double e = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
@@ -87,12 +112,18 @@ public final class MoonLook {
 
     /** ARGB of linear light (1: the bright parts), through the shoulder and sRGB. */
     public static int[] argb(float[] r, float[] g, float[] b) {
+        return argb(r, g, b, 0, 0);
+    }
+
+    /** ARGB, with the Earth's glow's tones if its {@code level} is given (0: the plain ones), black from {@code black}. */
+    public static int[] argb(float[] r, float[] g, float[] b, double level, double black) {
         int n = r.length;
         int[] out = new int[n];
+        boolean glow = level > 0;
         for (int k = 0; k < n; k++) {
             // the shoulder on the brightness, the colour kept
             double y = 0.2126 * r[k] + 0.7152 * g[k] + 0.0722 * b[k];
-            double f = y > 1e-6 ? shoulder(y) / y : 1;
+            double f = glow ? (y > 1e-9 ? glowTone(y, level, black) / y : 0) : y > 1e-6 ? shoulder(y) / y : 1;
             out[k] = 0xFF000000 | (srgb8(r[k] * f) << 16) | (srgb8(g[k] * f) << 8) | srgb8(b[k] * f);
         }
         return out;
@@ -145,6 +176,12 @@ public final class MoonLook {
      * across in a {@link #SIDE} px square of black sky (cubic resampling), its tones finished.
      */
     public static Picture enlarge(float[] r, float[] g, float[] b, int w, int h, double cx, double cy, double radius, double upPa) {
+        return enlarge(r, g, b, w, h, cx, cy, radius, upPa, 0, 0);
+    }
+
+    /** Enlarged, with the Earth's glow's tones if its {@code level} is given (3.1), black from {@code black}. */
+    public static Picture enlarge(float[] r, float[] g, float[] b, int w, int h, double cx, double cy, double radius, double upPa,
+                                  double level, double black) {
         Picture p = new Picture();
         p.w = p.h = SIDE;
         p.r = MOON / 2.0;
@@ -158,10 +195,16 @@ public final class MoonLook {
             for (int i = 0; i < SIDE; i++) {
                 double x = cx + (i - p.cx) * k, y = cy + (j - p.cy) * k;
                 if (x < -2 || y < -2 || x > w + 1 || y > h + 1) continue;
-                for (int c = 0; c < 3; c++) big[c][j * SIDE + i] = Math.max(0, MoonStack.cubic(src[c], w, h, x, y));
+                for (int c = 0; c < 3; c++) {
+                    float v = MoonStack.cubic(src[c], w, h, x, y);
+                    // with the glow's lift the faint tones show: the cubic's ring round the bright edge (its dips
+                    // below the nearest four pixels, black specks once cut at 0) held to them
+                    if (level > 0) v = clampNear(src[c], w, h, x, y, v);
+                    big[c][j * SIDE + i] = Math.max(0, v);
+                }
             }
         }
-        p.argb = argb(big[0], big[1], big[2]);
+        p.argb = argb(big[0], big[1], big[2], level, black);
         return p;
     }
 

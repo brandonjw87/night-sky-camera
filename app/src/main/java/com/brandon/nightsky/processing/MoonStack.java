@@ -112,6 +112,14 @@ public final class MoonStack {
         public Crossing crossing;
         /** Where its silhouettes are on the result (px), frame by frame. */
         public double[][] crossingAt;
+        /**
+         * Where the result's pixels sit on the reference frame (3.1, for {@link Earthshine}): the grid's scale and turn
+         * (radians), the disk's centre in the reference crop, the crop's corner on the sensor, its up from the tilt
+         * (the frame's own, NaN if unknown), and the factor that put the bright parts at 1 (the result's value for the
+         * reference's share of the white level, in linear sRGB).
+         */
+        public double gridS = 2, gridPsi, gridRcx, gridRcy, refUpPa = Double.NaN, unit = 1;
+        public int refX0, refY0;
         public String log = "";
     }
 
@@ -848,6 +856,12 @@ public final class MoonStack {
         return sig.get(sig.size() / 2);
     }
 
+    /**
+     * The sharpening's floor (the bright parts 1): below it the stack isn't sharpened, and a speck of noise past it
+     * where all round is fainter is held to it (3.1: {@link Earthshine} doesn't take the stack's word for light below it).
+     */
+    static final float RL_FLOOR = 0.002f;
+
     /** Richardson-Lucy with a Gaussian blur, damped (each step's correction held to 0.7..1.4x). */
     static float[] richardsonLucy(float[] Y, int W, int H, double sigma, int iters, float floor) {
         float[] u = Y.clone();
@@ -1034,6 +1048,13 @@ public final class MoonStack {
         res.quality = q;
         res.kept = kept;
         res.disk = disk;
+        res.gridS = gr.S;
+        res.gridPsi = gr.psi;
+        res.gridRcx = gr.rcx;
+        res.gridRcy = gr.rcy;
+        res.refX0 = frames.get(ref).x0;
+        res.refY0 = frames.get(ref).y0;
+        res.refUpPa = frames.get(ref).upPa;
         res.motion = new double[n][];
         for (int i = 0; i < n; i++) {
             Warp wp = warps.get(i);
@@ -1046,6 +1067,7 @@ public final class MoonStack {
         float scale = top > 1e-6f ? 1 / top : 1;
         mul(rgb, scale);
         mul(rgb1, scale);
+        res.unit = scale;
         if (cross != null) {
             // the silhouettes on the photo (before the sharpening, which sharpens them too), from the reference crop's grid
             double c = Math.cos(gr.psi), sn = Math.sin(gr.psi);
@@ -1075,7 +1097,7 @@ public final class MoonStack {
         if (opt.deconvolve && !Double.isNaN(res.edgeStack)) {
             pr.update("Sharpening", 0.85f);
             double sig = Math.max(0.5, Math.min(3.0, opt.rlSigma * res.edgeStack));
-            float floor = 0.002f;
+            float floor = RL_FLOOR;
             float[] Ys = richardsonLucy(Y, gr.W, gr.H, sig, opt.rlIterations, floor);
             for (int c = 0; c < 3; c++) {
                 for (int k = 0; k < Y.length; k++) {

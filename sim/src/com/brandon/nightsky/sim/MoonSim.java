@@ -34,8 +34,13 @@ public final class MoonSim {
     public int black = 64, white = 1023;
     /** Electrons for a value of 1 (the bright highlands of a full Moon), and per raw count. */
     public double electrons = 1600, ePerDn = 2.4, readE = 1.6;
-    /** The Earth's glow on the night side, as a share of the day side's brightness. */
-    public double earthshine = 0.0015;
+    /**
+     * The Earth's glow on the night side, as a share of the full Moon's brightness (the real one is about 0.00005 near
+     * new Moon, a few thousandths of the crescent's; the default is brighter, for the robots), and its colour against
+     * the Sun's (null: the same).
+     */
+    public final double earthshine;
+    final double[] earthTint;
 
     /**
      * @param arcsecPerPx the sensor's pixel scale
@@ -50,6 +55,14 @@ public final class MoonSim {
     final double[][] beacons;
 
     public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os, double[][] beacons) {
+        this(unixMs, latDeg, lonDeg, arcsecPerPx, upPa, os, beacons, 0.0015, null);
+    }
+
+    /** With the Earth's glow as bright as {@code earthshine} (the full Moon's 1) and of the colour {@code earthTint}. */
+    public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os, double[][] beacons, double earthshine,
+                   double[] earthTint) {
+        this.earthshine = earthshine;
+        this.earthTint = earthTint;
         this.beacons = beacons;
         view = MoonGeo.view(unixMs, latDeg, lonDeg);
         this.upPa = upPa;
@@ -303,7 +316,8 @@ public final class MoonSim {
                 double mu = Math.max(0.02, nx * ez[0] + ny * ez[1] + nz * ez[2]);
                 double lum = mu0 > 0 ? alb * 2 * mu0 / (mu0 + mu) * phaseFactor : 0;
                 // the Earth's glow on the night side (and under the day too, unseen there)
-                lum += earthshine * alb;
+                double es = earthshine * alb;
+                lum += es;
                 if (beacons != null) {
                     for (double[] bc : beacons) {
                         double cl = Math.cos(bc[0] * D);
@@ -314,9 +328,12 @@ public final class MoonSim {
                 }
                 double blue = m[1] * m[0];
                 int k = j * T + i;
-                out[0][k] = (float) (lum * (1.0 - 0.04 * blue) * 1.0);
-                out[1][k] = (float) (lum * 0.975);
-                out[2][k] = (float) (lum * (0.93 + 0.06 * blue));
+                // the glow's own colour (the Earth's light is bluer than the Sun's)
+                double er = earthTint != null ? es * (earthTint[0] - 1) : 0, eg = earthTint != null ? es * (earthTint[1] - 1) : 0,
+                        eb = earthTint != null ? es * (earthTint[2] - 1) : 0;
+                out[0][k] = (float) ((lum + er) * (1.0 - 0.04 * blue) * 1.0);
+                out[1][k] = (float) ((lum + eg) * 0.975);
+                out[2][k] = (float) ((lum + eb) * (0.93 + 0.06 * blue));
             }
         }
         return out;
