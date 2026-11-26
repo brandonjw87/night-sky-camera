@@ -382,6 +382,13 @@ public final class JupiterShotTest {
         return new double[]{r.cx + p[0], r.cy + p[1]};
     }
 
+    /** ARGB pixels to a PNG. */
+    static void write(File f, int[] argb, int w, int h) throws Exception {
+        java.awt.image.BufferedImage im = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        im.setRGB(0, 0, w, h, argb, 0, w);
+        javax.imageio.ImageIO.write(im, "png", f);
+    }
+
     static void png(File f, JupiterStack.Result r) throws Exception {
         int W = r.w;
         java.awt.image.BufferedImage im = new java.awt.image.BufferedImage(W * 4, W * 4, java.awt.image.BufferedImage.TYPE_INT_RGB);

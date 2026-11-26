@@ -13,6 +13,7 @@ import com.brandon.nightsky.processing.Painter;
 final class CanvasPainter implements Painter {
     private static final Typeface PLAIN = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
     private static final Typeface BOLD = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
+    private static final Typeface HAND = Typeface.create(Typeface.SERIF, Typeface.ITALIC);
     private final Canvas c;
     private final Paint words = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -42,6 +43,22 @@ final class CanvasPainter implements Painter {
         float d = Math.max(1f, size / 18f);
         words.setShadowLayer(Math.max(1f, size / 8f), d, d, 0x96000000);
         c.drawText(s, x, y, words);
+    }
+
+    @Override
+    public void script(String s, float x, float y, float size, int argb) {
+        words.setTextSize(size);
+        words.setTypeface(HAND);
+        words.setColor(argb);
+        words.clearShadowLayer();
+        c.drawText(s, x, y, words);
+    }
+
+    @Override
+    public float scriptWidth(String s, float size) {
+        words.setTextSize(size);
+        words.setTypeface(HAND);
+        return words.measureText(s);
     }
 
     @Override

@@ -53,6 +53,18 @@ final class AwtPainter implements Painter {
     }
 
     @Override
+    public void script(String s, float x, float y, float size, int argb) {
+        g.setFont(new Font(Font.SERIF, Font.ITALIC, 12).deriveFont(size));
+        g.setColor(new Color(argb, true));
+        g.drawString(s, x, y);
+    }
+
+    @Override
+    public float scriptWidth(String s, float size) {
+        return (float) g.getFontMetrics(new Font(Font.SERIF, Font.ITALIC, 12).deriveFont(size)).getStringBounds(s, g).getWidth();
+    }
+
+    @Override
     public void gradient(float x0, float y0, float x1, float y1, int top, int bottom) {
         g.setPaint(new GradientPaint(x0, y0, new Color(top, true), x0, y1, new Color(bottom, true)));
         g.fill(new Rectangle2D.Float(x0, y0, x1 - x0, y1 - y0));

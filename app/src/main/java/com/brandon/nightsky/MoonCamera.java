@@ -31,11 +31,14 @@ import android.util.SizeF;
 import android.view.Surface;
 
 import com.brandon.nightsky.processing.FocusSweep;
+import com.brandon.nightsky.processing.JupiterGeo;
+import com.brandon.nightsky.processing.JupiterMeter;
 import com.brandon.nightsky.processing.MoonFinder;
 import com.brandon.nightsky.processing.MoonGeo;
 import com.brandon.nightsky.processing.MoonLook;
 import com.brandon.nightsky.processing.MoonMeter;
 import com.brandon.nightsky.processing.MoonStack;
+import com.brandon.nightsky.processing.PointFinder;
 import com.brandon.nightsky.processing.SensorSpec;
 
 import java.nio.ByteOrder;
@@ -60,6 +63,11 @@ import java.util.concurrent.Executor;
  * opened as a physical camera, else the main camera zoomed to 5x. Camera callbacks and every frame's work run on a
  * thread of their own; the listener hears on the main thread. The robots replace {@link #open} and {@link #close}
  * and feed {@link #frame} themselves.
+ * <p>
+ * Jupiter's moons (3.2) on the same lens: Jupiter found as the brightest small light ({@link PointFinder}), its
+ * exposure from the brightest of a few frames ({@link JupiterMeter}: a shaken frame reads low), focused on how
+ * gathered its light is, then two bursts: Jupiter's own ({@link #JUPITER_BURST} frames) and the moons', 16 times the
+ * light ({@link #MOONS} frames), taken as the Moon's glow frames are, in the {@link Stage#GLOW} stage.
  */
 final class MoonCamera {
     interface Listener {
@@ -137,9 +145,20 @@ final class MoonCamera {
     static final int GLOW_WAIT = 20;
     /** Focus frames scored at each setting once the lens is still there. */
     static final int FOCUS_FRAMES = 3;
+    /**
+     * Jupiter (3.2): its burst (three seconds), the moons' brighter one after it (eight seconds: they are a thousand
+     * times fainter), focus frames scored at each setting (the sharpest counts: the hand blurs some), and the frames the
+     * meter takes the brightest of.
+     */
+    static final int JUPITER_BURST = 90, MOONS = 240, POINT_FOCUS_FRAMES = 5, METER_FRAMES = 4;
+    /** How far Jupiter is followed from frame to frame (px), and its radius when unknown (px at 17 arcseconds). */
+    static final int POINT_REACH = 60;
+    static final double JUPITER_R = 1.15;
 
     private final Context ctx;
     private final Listener listener;
+    /** Jupiter's moons (3.2) rather than the Moon. */
+    final boolean jupiter;
     private final Handler main = new Handler(Looper.getMainLooper());
     HandlerThread thread;
     Handler h;
@@ -187,6 +206,10 @@ final class MoonCamera {
     double fps;
     /** The Moon tonight, here: for the first exposure, the expected size and the sky's up. */
     MoonGeo.View moon;
+    /** Jupiter tonight, here (3.2; null: unknown): its brightness and height for the first exposure, its size, the sky's up. */
+    JupiterGeo.View planet;
+    /** Jupiter's meter (3.2): {level, clipped} of the frames taken as asked since the exposure last changed. */
+    final List<double[]> levels = new ArrayList<double[]>();
 
     // the phone's tilt
     private SensorManager sensors;
@@ -206,8 +229,23 @@ final class MoonCamera {
     };
 
     MoonCamera(Context c, Listener l) {
+        this(c, l, false);
+    }
+
+    MoonCamera(Context c, Listener l, boolean jupiter) {
         ctx = c.getApplicationContext();
         listener = l;
+        this.jupiter = jupiter;
+    }
+
+    /** Jupiter as seen from here now (3.2; null: nowhere known), for the exposure's first guess, its size and the picture's up. */
+    void setJupiter(JupiterGeo.View v) {
+        planet = v;
+    }
+
+    /** Jupiter's equatorial radius (sensor px). */
+    double jupiterR() {
+        return Double.isNaN(rExp) || rExp <= 0 ? JUPITER_R : rExp;
     }
 
     /** The Moon as seen from here now (null: nowhere known), for the exposure's first guess and the picture's up. */
@@ -399,8 +437,13 @@ final class MoonCamera {
             focusLens.max = Math.min(focusLens.max, focusLens.calibrated ? 0.4 : 20 * focusLens.fine);
         }
         if (spec.pixelPitchUm > 0 && spec.focalLengthMm > 0) arcsecPerPx = 206264.8 * spec.pixelPitchUm * 1e-3 / spec.focalLengthMm;
-        if (moon != null && !Double.isNaN(arcsecPerPx)) rExp = moon.radius * 3600 / arcsecPerPx;
-        exposure = MoonMeter.start(moon != null ? moon.phase : 60, moon != null ? moon.alt : 45, spec.fNumber, limits);
+        if (jupiter) {
+            if (planet != null && !Double.isNaN(arcsecPerPx)) rExp = planet.radiusArcsec / arcsecPerPx;
+            exposure = JupiterMeter.start(planet != null ? planet.mag : -2.5, planet != null ? planet.alt : 45, spec.fNumber, arcsecPerPx, limits);
+        } else {
+            if (moon != null && !Double.isNaN(arcsecPerPx)) rExp = moon.radius * 3600 / arcsecPerPx;
+            exposure = MoonMeter.start(moon != null ? moon.phase : 60, moon != null ? moon.alt : 45, spec.fNumber, limits);
+        }
         focus = 0f;
     }
 
@@ -607,14 +650,21 @@ final class MoonCamera {
             fpsT0 = now;
             fpsN = 0;
         }
-        // where the Moon is: the whole frame while it is lost, else around where it was
-        MoonFinder.Spot s = spot != null && lost < 5
-                ? MoonFinder.find(raw, rowStride, w, h, spec, rExp, spot, (int) Math.max(60, 3 * (Double.isNaN(rExp) ? spot.r : rExp)))
-                : (frameNo % 3 == 0 || stage == Stage.SEARCHING && frameNo < 3 ? MoonFinder.find(raw, rowStride, w, h, spec, rExp, null, 0) : null);
+        // where the Moon (or Jupiter) is: the whole frame while it is lost, else around where it was
+        boolean look = frameNo % 3 == 0 || stage == Stage.SEARCHING && frameNo < 3;
+        MoonFinder.Spot s;
+        if (jupiter) {
+            s = spot != null && lost < 5 ? PointFinder.find(raw, rowStride, w, h, spec, spot, POINT_REACH)
+                    : look ? PointFinder.find(raw, rowStride, w, h, spec, null, 0) : null;
+        } else {
+            s = spot != null && lost < 5
+                    ? MoonFinder.find(raw, rowStride, w, h, spec, rExp, spot, (int) Math.max(60, 3 * (Double.isNaN(rExp) ? spot.r : rExp)))
+                    : look ? MoonFinder.find(raw, rowStride, w, h, spec, rExp, null, 0) : null;
+        }
         if (s != null && s.ok) {
             spot = s;
             lost = 0;
-            if (Double.isNaN(rExp) && s.r > 4) rExp = s.r;
+            if (!jupiter && Double.isNaN(rExp) && s.r > 4) rExp = s.r;
         } else if (s != null || spot == null) {
             lost++;
         }
@@ -622,23 +672,26 @@ final class MoonCamera {
         boolean asked = shotAsAsked(res);
         if (spot == null || lost >= 5) {
             if (stage != Stage.SHOOTING && stage != Stage.GLOW) stage = Stage.SEARCHING;
+            levels.clear();
             if ((stage == Stage.SHOOTING || stage == Stage.GLOW) && lost > 15) {
                 // the Moon left the picture: what was caught so far is the burst (and its glow)
                 endGlow();
                 finishBurst();
             }
-            live(now, null, 0, 0, w, h, "Point the phone at the Moon");
+            live(now, null, 0, 0, w, h, jupiter ? "Point the phone at Jupiter" : "Point the phone at the Moon");
             return;
         }
-        int side = MoonFinder.side(Double.isNaN(rExp) ? spot.r : rExp);
+        int side = jupiter ? PointFinder.side(jupiterR()) : MoonFinder.side(Double.isNaN(rExp) ? spot.r : rExp);
         int[] c = MoonFinder.corner(spot.x, spot.y, side, w, h);
         switch (stage) {
             case OPENING:
             case SEARCHING:
                 stage = Stage.METERING;
+                levels.clear();
                 break;
             case METERING:
-                if (asked) {
+                if (asked && jupiter) meterJupiter(false);
+                else if (asked) {
                     if (MoonMeter.settled(spot.level, spot.clipped)) {
                         if (focusLens != null && sweep == null && focusScores.isEmpty()) startFocus();
                         else stage = Stage.READY;
@@ -653,7 +706,8 @@ final class MoonCamera {
                 break;
             case READY:
                 // keep the exposure right as the Moon climbs or a haze passes
-                if (asked && !MoonMeter.settled(spot.level, spot.clipped) && (spot.clipped > 0.003 || Math.abs(spot.level / MoonMeter.TARGET - 1) > 0.25)) {
+                if (asked && jupiter) meterJupiter(true);
+                else if (asked && !MoonMeter.settled(spot.level, spot.clipped) && (spot.clipped > 0.003 || Math.abs(spot.level / MoonMeter.TARGET - 1) > 0.25)) {
                     exposure = MoonMeter.adjust(exposure, spot.level, spot.clipped, limits);
                     apply();
                 }
@@ -671,9 +725,38 @@ final class MoonCamera {
         }
         if (now - lastLiveMs >= 100) {
             short[] crop = MoonFinder.crop(raw, rowStride, w, h, c[0], c[1], side, side);
-            int[] cu = MoonLook.closeUp(crop, side, side, c[0], c[1], spec, Math.max(0.05, spot.level));
+            // Jupiter's moons' frames (3.2): stretched so the moons show (Jupiter burnt white)
+            double lv = jupiter && stage == Stage.GLOW ? MOONS_LIVE_LEVEL : Math.max(jupiter ? 0.02 : 0.05, spot.level);
+            int[] cu = MoonLook.closeUp(crop, side, side, c[0], c[1], spec, lv);
             live(now, cu, side / 2, side / 2, w, h, words());
         }
+    }
+
+    /** The close-up's white during the moons' burst (share of the range): a moon at a twentieth of it shows grey. */
+    static final double MOONS_LIVE_LEVEL = 0.03;
+
+    /**
+     * Jupiter's meter (3.2), a frame taken as asked: once {@link #METER_FRAMES} are in, their brightest (a shaken
+     * frame reads low) is right (then the focus, or ready), or the exposure is moved towards it; once ready, only if it
+     * has drifted (Jupiter climbing, a haze passing).
+     */
+    private void meterJupiter(boolean ready) {
+        levels.add(new double[]{spot.level, spot.clipped});
+        if (levels.size() < METER_FRAMES) return;
+        double lv = 0, cl = 0;
+        for (double[] x : levels) {
+            lv = Math.max(lv, x[0]);
+            cl = Math.max(cl, x[1]);
+        }
+        levels.clear();
+        if (ready ? !JupiterMeter.drifted(lv, cl) : JupiterMeter.settled(lv, cl)) {
+            if (ready) return;
+            if (focusLens != null && sweep == null && focusScores.isEmpty()) startFocus();
+            else stage = Stage.READY;
+            return;
+        }
+        exposure = JupiterMeter.adjust(exposure, lv, cl, limits);
+        apply();
     }
 
     /**
@@ -689,14 +772,14 @@ final class MoonCamera {
         return frameNo - appliedFrame > 6;
     }
 
-    /** The picture's up as a position angle, from the phone's tilt now (NaN looking straight up, or the Moon unknown). */
+    /** The picture's up as a position angle, from the phone's tilt now (NaN looking straight up, or the Moon or Jupiter unknown). */
     double upPa() {
-        if (moon == null) return Double.NaN;
+        if (jupiter ? planet == null : moon == null) return Double.NaN;
         double[] g;
         synchronized (gravity) {
             g = new double[]{gravity[0], gravity[1], gravity[2]};
         }
-        return MoonGeo.upAngle(moon.q, g, MoonGeo.sensorUp(spec.sensorOrientation));
+        return MoonGeo.upAngle(jupiter ? planet.q : moon.q, g, MoonGeo.sensorUp(spec.sensorOrientation));
     }
 
     /**
@@ -711,12 +794,16 @@ final class MoonCamera {
         return new MoonMeter.Exposure(ns, (int) Math.round(iso));
     }
 
-    /** At the burst's end: the glow's frames next, if wanted and worth it (false: the burst is done). */
+    /**
+     * At the burst's end: the glow's frames next (or Jupiter's moons', 3.2), if wanted and worth it (false: the burst
+     * is done).
+     */
     private boolean startGlow() {
         if (glowWant <= 0 || burst == null || exposure == null) return false;
-        MoonMeter.Exposure g = glowExposure(exposure, limits, Math.max(minFrameNs, 1_000_000_000L / FPS));
+        long frameNs = Math.max(minFrameNs, 1_000_000_000L / FPS);
+        MoonMeter.Exposure g = jupiter ? JupiterMeter.moons(exposure, limits, frameNs) : glowExposure(exposure, limits, frameNs);
         double gain = g.light() / exposure.light();
-        if (gain < GLOW_MIN) return false;
+        if (gain < (jupiter ? JupiterMeter.MOONS_MIN : GLOW_MIN)) return false;
         mainExposure = exposure;
         exposure = g;
         burst.glowGain = gain;
@@ -730,13 +817,13 @@ final class MoonCamera {
     /**
      * A frame while the glow's exposure is on: kept once it comes through (its capture result says so, or after
      * {@link #GLOW_WAIT} frames whatever it says), cropped wider than the burst's so the whole disk and the sky around
-     * it are in, whichever way the lit crescent's middle is.
+     * it are in, whichever way the lit crescent's middle is. Jupiter's moons' frames (3.2) are cropped as its burst's.
      */
     private void glowFrame(ShortBuffer raw, int rowStride, int w, int h, long tNs, long[] res, boolean asked) {
         glowWaited++;
         if (!asked && glowWaited < GLOW_WAIT) return;
         double r = Double.isNaN(rExp) ? spot.r : rExp;
-        int side = MoonFinder.side(r * 1.5);
+        int side = jupiter ? PointFinder.side(jupiterR()) : MoonFinder.side(r * 1.5);
         int[] c = MoonFinder.corner(spot.x, spot.y, side, w, h);
         short[] crop = MoonFinder.crop(raw, rowStride, w, h, c[0], c[1], side, side);
         MoonStack.Frame f = new MoonStack.Frame(crop, side, side, c[0], c[1], tNs);
@@ -774,7 +861,7 @@ final class MoonCamera {
     }
 
     private void startFocus() {
-        sweep = FocusSweep.full(focusLens, FocusSweep.Kind.DAYLIGHT, "the Moon");
+        sweep = FocusSweep.full(focusLens, FocusSweep.Kind.DAYLIGHT, jupiter ? "Jupiter" : "the Moon");
         focusScores.clear();
         stage = Stage.FOCUSING;
         double f = sweep.next();
@@ -794,11 +881,13 @@ final class MoonCamera {
         boolean waited = SystemClock.elapsedRealtimeNanos() - focusAskedNs > 600_000_000L;
         if (!there && !waited) return;
         short[] crop = MoonFinder.crop(raw, rowStride, w, h, c[0], c[1], side, side);
-        focusScores.add(MoonStack.sharpness(new MoonStack.Frame(crop, side, side, c[0], c[1], 0), spec));
-        if (focusScores.size() < FOCUS_FRAMES) return;
+        focusScores.add(jupiter ? PointFinder.sharpness(crop, side, side, c[0], c[1], spec)
+                : MoonStack.sharpness(new MoonStack.Frame(crop, side, side, c[0], c[1], 0), spec));
+        if (focusScores.size() < (jupiter ? POINT_FOCUS_FRAMES : FOCUS_FRAMES)) return;
         Double[] sc = focusScores.toArray(new Double[0]);
         Arrays.sort(sc);
-        double med = sc[sc.length / 2];
+        // the Moon's middle score; Jupiter's sharpest (a dot: the hand's shake only ever spreads it)
+        double med = jupiter ? sc[sc.length - 1] : sc[sc.length / 2];
         focusScores.clear();
         sweep.add(focus, med, 0, 0, med > 0);
         double next = sweep.next();
@@ -818,6 +907,22 @@ final class MoonCamera {
     }
 
     private String words() {
+        if (jupiter) {
+            switch (stage) {
+                case METERING:
+                    return "Found Jupiter: setting the exposure";
+                case FOCUSING:
+                    return "Focusing on Jupiter (hold steady)";
+                case READY:
+                    return "Ready: hold steady and shoot";
+                case SHOOTING:
+                    return "Shooting Jupiter: hold steady";
+                case GLOW:
+                    return "Now its moons: keep holding steady";
+                default:
+                    return "Looking for Jupiter";
+            }
+        }
         switch (stage) {
             case METERING:
                 return "Found the Moon: setting the exposure";

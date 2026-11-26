@@ -496,6 +496,11 @@ public final class JupiterGeo {
     public static final int[] GALILEO_DAY = {7, 8, 10, 11, 12, 13, 15};
     public static final double[] GALILEO_UT = {16.73, 16.77, 16.80, 16.83, 18.85, 16.88, 18.92};
     public static final String[] GALILEO_DREW = {"* * O *", "O * * *", "* * O", "* * O", "* * O *", "* O * * *", "O * * * *"};
+    /**
+     * Which moons his little stars were, east to west, as Longhin names them (0 Io, 1 Europa, 2 Ganymede, 3 Callisto):
+     * the others were there too, too close to Jupiter or to each other for his telescope.
+     */
+    public static final int[][] GALILEO_SAW = {{3, 0, 2}, {0, 1, 2}, {3, 1}, {2, 3}, {2, 3, 1}, {1, 2, 0, 3}, {0, 1, 2, 3}};
     /** What he wrote, in short. */
     public static final String[] GALILEO_SAID = {
             "Three little stars in a straight line beside Jupiter, two to the east and one to the west. He took them for faraway stars.",

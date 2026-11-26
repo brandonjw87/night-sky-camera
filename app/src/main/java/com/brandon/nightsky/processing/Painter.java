@@ -23,4 +23,17 @@ public interface Painter {
 
     /** A straight line, {@code stroke} px wide, round ends. */
     void line(float x0, float y0, float x1, float y1, float stroke, int argb);
+
+    /**
+     * {@code s} as if written by hand (Galileo's notebook, 3.2): an italic serif with no shadow, its baseline's left end
+     * at (x, y). Plain words where a painter has no such letters.
+     */
+    default void script(String s, float x, float y, float size, int argb) {
+        text(s, x, y, size, false, argb);
+    }
+
+    /** How wide {@link #script} writes {@code s}. */
+    default float scriptWidth(String s, float size) {
+        return width(s, size, false);
+    }
 }
