@@ -1,6 +1,7 @@
 package com.brandon.nightsky.processing;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -59,6 +60,11 @@ public final class MoonLook {
 
     /** The glow's lift at its most (linear light), and the sunlit brightness it is gone by. */
     static final double GLOW_LIFT = 0.14, GLOW_FADE = 0.3;
+    /**
+     * The lift fades out across the Moon's edge over this much either way (the stack's grid px, half a sensor px
+     * each), and a pixel's own colour may stray this far from the night side's in it (as r, g, b over the brightness).
+     */
+    static final double GLOW_EDGE = 1, GLOW_HUE = 0.06;
 
     static int srgb8(double v) {
         v = v <= 0 ? 0 : v >= 1 ? 1 : v;
@@ -112,21 +118,64 @@ public final class MoonLook {
 
     /** ARGB of linear light (1: the bright parts), through the shoulder and sRGB. */
     public static int[] argb(float[] r, float[] g, float[] b) {
-        return argb(r, g, b, 0, 0);
-    }
-
-    /** ARGB, with the Earth's glow's tones if its {@code level} is given (0: the plain ones), black from {@code black}. */
-    public static int[] argb(float[] r, float[] g, float[] b, double level, double black) {
         int n = r.length;
         int[] out = new int[n];
-        boolean glow = level > 0;
         for (int k = 0; k < n; k++) {
             // the shoulder on the brightness, the colour kept
             double y = 0.2126 * r[k] + 0.7152 * g[k] + 0.0722 * b[k];
-            double f = glow ? (y > 1e-9 ? glowTone(y, level, black) / y : 0) : y > 1e-6 ? shoulder(y) / y : 1;
+            double f = y > 1e-6 ? shoulder(y) / y : 1;
             out[k] = 0xFF000000 | (srgb8(r[k] * f) << 16) | (srgb8(g[k] * f) << 8) | srgb8(b[k] * f);
         }
         return out;
+    }
+
+    /**
+     * ARGB with the Earth's glow's tones (3.1): each pixel's own light through the shoulder, its colour kept, and the
+     * glow's lift ({@link #glowTone}'s more) as much as {@code on} says (the Moon's disk: 1), in the night side's
+     * colour ({@code night}, as r, g, b over the brightness) with the pixel's own straying from it held to
+     * {@link #GLOW_HUE}: lifted a few hundred times, the faintest tones' own colour is mostly the stack's colour
+     * fringes (its red and blue blurrier than its green) and noise, a purple or a green the Moon hasn't got.
+     */
+    static int[] glowArgb(float[] r, float[] g, float[] b, float[] on, double level, double black, double[] night) {
+        int n = r.length;
+        int[] out = new int[n];
+        for (int k = 0; k < n; k++) {
+            double y = 0.2126 * r[k] + 0.7152 * g[k] + 0.0722 * b[k];
+            if (!(y > 1e-9)) {
+                out[k] = 0xFF000000;
+                continue;
+            }
+            double base = shoulder(y), f = base / y, lift = (glowTone(y, level, black) - base) * on[k];
+            double qr = hue(r[k] / y, night[0]), qg = hue(g[k] / y, night[1]), qb = hue(b[k] / y, night[2]);
+            // the lift's colour as bright as the lift
+            lift /= 0.2126 * qr + 0.7152 * qg + 0.0722 * qb;
+            out[k] = 0xFF000000 | (srgb8(r[k] * f + lift * qr) << 16) | (srgb8(g[k] * f + lift * qg) << 8) | srgb8(b[k] * f + lift * qb);
+        }
+        return out;
+    }
+
+    static double hue(double q, double night) {
+        return night + Math.max(-GLOW_HUE, Math.min(GLOW_HUE, q - night));
+    }
+
+    /**
+     * The night side's colour (r, g, b over the brightness): its pixels near the glow's {@code level}, well inside
+     * the Moon's disk (its centre and radius; NaN: anywhere); grey if there are too few.
+     */
+    static double[] nightColour(float[] r, float[] g, float[] b, int w, double level, double dx, double dy, double dr) {
+        double sr = 0, sg = 0, sb = 0, sy = 0;
+        int m = 0;
+        for (int k = 0; k < r.length; k++) {
+            if (!Double.isNaN(dr) && Math.hypot(k % w - dx, k / w - dy) > 0.9 * dr) continue;
+            double y = 0.2126 * r[k] + 0.7152 * g[k] + 0.0722 * b[k];
+            if (y < 0.3 * level || y > 3 * level) continue;
+            sr += r[k];
+            sg += g[k];
+            sb += b[k];
+            sy += y;
+            m++;
+        }
+        return m >= 100 && sy > 0 ? new double[]{sr / sy, sg / sy, sb / sy} : new double[]{1, 1, 1};
     }
 
     /**
@@ -179,9 +228,20 @@ public final class MoonLook {
         return enlarge(r, g, b, w, h, cx, cy, radius, upPa, 0, 0);
     }
 
-    /** Enlarged, with the Earth's glow's tones if its {@code level} is given (3.1), black from {@code black}. */
+    /** Enlarged, with the Earth's glow's tones if its {@code level} is given (3.1), black from {@code black}, lifted anywhere. */
     public static Picture enlarge(float[] r, float[] g, float[] b, int w, int h, double cx, double cy, double radius, double upPa,
                                   double level, double black) {
+        return enlarge(r, g, b, w, h, cx, cy, radius, upPa, level, black, Double.NaN, Double.NaN, Double.NaN);
+    }
+
+    /**
+     * Enlarged, with the Earth's glow's tones if its {@code level} is given (3.1), black from {@code black}: lifted on
+     * the Moon's disk alone (its true centre and radius in these pixels, from the night side's edge; NaN: anywhere),
+     * so past the sunlit edge, its sharpening's last light and the glare left there stay as black as the plain
+     * photo's, the bright edge as crisp.
+     */
+    public static Picture enlarge(float[] r, float[] g, float[] b, int w, int h, double cx, double cy, double radius, double upPa,
+                                  double level, double black, double diskX, double diskY, double diskR) {
         Picture p = new Picture();
         p.w = p.h = SIDE;
         p.r = MOON / 2.0;
@@ -191,6 +251,7 @@ public final class MoonLook {
         double k = radius / p.r;
         float[][] big = new float[3][SIDE * SIDE];
         float[][] src = {r, g, b};
+        float[] on = level > 0 ? new float[SIDE * SIDE] : null;
         for (int j = 0; j < SIDE; j++) {
             for (int i = 0; i < SIDE; i++) {
                 double x = cx + (i - p.cx) * k, y = cy + (j - p.cy) * k;
@@ -202,9 +263,12 @@ public final class MoonLook {
                     if (level > 0) v = clampNear(src[c], w, h, x, y, v);
                     big[c][j * SIDE + i] = Math.max(0, v);
                 }
+                if (on != null) on[j * SIDE + i] = Double.isNaN(diskR) ? 1f
+                        : (float) (1 - Earthshine.ramp(Math.hypot(x - diskX, y - diskY) - diskR, -GLOW_EDGE, GLOW_EDGE));
             }
         }
-        p.argb = argb(big[0], big[1], big[2], level, black);
+        p.argb = level > 0 ? glowArgb(big[0], big[1], big[2], on, level, black, nightColour(r, g, b, w, level, diskX, diskY, diskR))
+                : argb(big[0], big[1], big[2]);
         return p;
     }
 
@@ -380,6 +444,14 @@ public final class MoonLook {
 
     /** The map's colours: the seas blue, the craters white, the mountains and valleys sand, the Apollo landings gold. */
     static final int SEA_BLUE = 0xFF8FD3FF, CRATER_WHITE = 0xFFFFFFFF, CRATER_DIM = 0xFFE3E8EB, MOUNTAIN_SAND = 0xFFFFCC80, APOLLO_GOLD = 0xFFFFD54F;
+    /** Names on the night side, seen by the Earth's glow (3.1): a seas' paler blue, and the craters' grey-blue. */
+    static final int GLOW_SEA = 0xFF9DBFDC, GLOW_CRATER = 0xFFC5D3E0;
+    /**
+     * The craters that show by the Earth's glow alone (3.1). Its light comes from almost straight behind us, so it
+     * casts no shadows: only how light or dark the ground is shows, and these are the brightest young craters and
+     * the darkest floor on the near side.
+     */
+    static final List<String> IN_GLOW = Arrays.asList("Aristarchus", "Copernicus", "Kepler", "Tycho", "Proclus", "Grimaldi");
     /** The Sun's height (degrees) under which a place's shadows are long: it is at its best tonight. */
     public static final double LOW_SUN = 12;
 
@@ -403,6 +475,8 @@ public final class MoonLook {
         public double bx0, by0, bx1, by1;
         /** The Sun is low there tonight (shadows long): seen at its best. */
         public boolean best;
+        /** Night there, the place seen by the Earth's glow (3.1). */
+        public boolean earthlit;
 
         MapLabel(MoonFeatures.Feature f, MoonSites.Site s, double x, double y, double z, double sunAlt) {
             this.feature = f;
@@ -436,15 +510,27 @@ public final class MoonLook {
      * on another (the most famous first; the rest only where there's room). {@code size} as for the landings' labels.
      */
     public static List<MapLabel> mapLayout(Picture pic, MoonGeo.View v, Painter p, float size) {
+        return mapLayout(pic, v, p, size, false);
+    }
+
+    /**
+     * The Moon map's names, as above; {@code earthlit} (3.1): the photo has the Earth's glow on its night side, so the
+     * seas there are named too, and the craters that show in it ({@link #IN_GLOW}).
+     */
+    public static List<MapLabel> mapLayout(Picture pic, MoonGeo.View v, Painter p, float size, boolean earthlit) {
         List<MapLabel> all = new ArrayList<MapLabel>();
         for (MoonFeatures.Feature f : MoonFeatures.ALL) {
             double[] q = v.inPicture(f.lat, f.lon, pic.cx, pic.cy, pic.r, pic.upPa);
             double sun = v.sunAltAt(f.lat, f.lon);
             boolean sea = f.kind == MoonFeatures.Kind.SEA;
             // a sea shows if it is lit and not squashed into the edge; the rest need the Sun up and to face us more
-            if (sea ? q[2] < 0.08 || sun < -2 : q[2] < 0.15 || sun <= 0.5) continue;
+            boolean lit = sea ? q[2] >= 0.08 && sun >= -2 : q[2] >= 0.15 && sun > 0.5;
+            // by the Earth's glow: the seas, and the craters bright or dark enough to show without shadows
+            boolean glow = !lit && earthlit && q[2] >= (sea ? 0.08 : 0.15) && (sea || IN_GLOW.contains(f.name));
+            if (!lit && !glow) continue;
             MapLabel l = new MapLabel(f, null, q[0], q[1], q[2], sun);
-            l.best = !sea && sun < LOW_SUN && q[2] > 0.3;
+            l.earthlit = glow;
+            l.best = !glow && !sea && sun < LOW_SUN && q[2] > 0.3;
             if (f.kind == MoonFeatures.Kind.CRATER) l.rim = rim(f, v, pic);
             all.add(l);
         }
@@ -506,6 +592,7 @@ public final class MoonLook {
             l.size = size * 0.56f;
             l.colour = MOUNTAIN_SAND;
         }
+        if (l.earthlit) l.colour = l.feature.kind == MoonFeatures.Kind.SEA ? GLOW_SEA : GLOW_CRATER;
         float w = p.width(name, l.size, l.bold);
         double across = l.feature != null ? l.feature.km / MoonGeo.RADIUS_KM * pic.r : 0;
         String[] words = name.split(" ");
@@ -717,7 +804,11 @@ public final class MoonLook {
         if (l.site != null) return siteStory(l.site, l.sunAlt);
         MoonFeatures.Feature f = l.feature;
         StringBuilder sb = new StringBuilder(f.what()).append("\n\n").append(f.story);
-        if (f.kind != MoonFeatures.Kind.SEA) {
+        if (l.earthlit) {
+            sb.append("\n\nTonight it's night there, with no sunlight at all: you see it by the Earth's glow, ").append(
+                    f.kind == MoonFeatures.Kind.SEA ? "its dark lava darker than the highlands round it."
+                            : "Grimaldi".equals(f.name) ? "its floor one of the darkest places on the Moon." : "its bright young rock shining out.");
+        } else if (f.kind != MoonFeatures.Kind.SEA) {
             if (l.best) sb.append(String.format(Locale.US, "\n\nTonight the Sun is only %.0f\u00b0 up there, so its shadows are long: it's at its best.",
                     Math.max(1, l.sunAlt)));
             else sb.append(String.format(Locale.US, "\n\nTonight the Sun is %.0f\u00b0 up there%s.", l.sunAlt,
@@ -804,9 +895,46 @@ public final class MoonLook {
 
     /** The caption under the photo: what it is, when, where from, how many frames. */
     public static String caption(MoonGeo.View v, MoonStack.Result r, String when, String where) {
+        return caption(v, r, when, where, 0);
+    }
+
+    /** As above, with the frames merged for the Earth's glow (3.1; 0: none). */
+    public static String caption(MoonGeo.View v, MoonStack.Result r, String when, String where, int glowFrames) {
         String phase = phaseName(v);
-        return String.format(Locale.US, "%s, %.0f%% lit · %s%s · %d of %d frames stacked", phase, v.illum * 100, when,
-                where.isEmpty() ? "" : " · " + where, r.used, r.total);
+        return String.format(Locale.US, "%s, %.0f%% lit · %s%s · %d of %d frames stacked%s", phase, v.illum * 100, when,
+                where.isEmpty() ? "" : " · " + where, r.used, r.total,
+                glowFrames > 0 ? String.format(Locale.US, ", %d for the Earth's glow", glowFrames) : "");
+    }
+
+    /**
+     * The Earth's glow's story (3.1) for the card under the photo: what lights the dark part, how bright it is on the
+     * photo against the sunlit crescent ({@code level}, the night side's share of the bright parts; 0 or less: not
+     * said), the Earth in the Moon's sky tonight, and who worked it out.
+     */
+    public static String glowStory(double level, MoonGeo.View v) {
+        StringBuilder sb = new StringBuilder("The dark part of the Moon isn't black: it's lit by sunlight bouncing off the Earth, the "
+                + "Earth's glow (astronomers call it earthshine).");
+        if (level > 0) sb.append(" On your photo it is about ").append(oneIn(1 / level)).append(" as bright as the sunlit crescent.");
+        // the Earth's phase seen from the Moon is the Moon's from the Earth turned inside out
+        double earth = 1 - v.illum;
+        sb.append(String.format(Locale.US, " From the Moon tonight the Earth is %.0f%% lit", earth * 100)).append(
+                earth > 0.8 ? ": a nearly full Earth, dozens of times brighter in the Moon's sky than our full Moon is in ours." : ".");
+        sb.append("\n\nLeonardo da Vinci worked this out around 1510, a hundred years before the telescope. An old Scottish sailors' song "
+                + "calls it the new Moon with the old Moon in her arms. The cloudier the Earth, the brighter the glow, so scientists "
+                + "measure it to see how much sunlight the whole Earth throws back into space.");
+        return sb.toString();
+    }
+
+    /** "1/2,800th": a share as one in a round number (two figures). */
+    static String oneIn(double n) {
+        long k = Math.round(n);
+        if (k >= 100) {
+            double mag = Math.pow(10, Math.floor(Math.log10(n)) - 1);
+            k = Math.round(Math.round(n / mag) * mag);
+        }
+        String s = String.format(Locale.US, "%,d", Math.max(1, k));
+        return "1/" + s + (s.endsWith("1") && !s.endsWith("11") ? "st" : s.endsWith("2") && !s.endsWith("12") ? "nd"
+                : s.endsWith("3") && !s.endsWith("13") ? "rd" : "th");
     }
 
     /** "Waxing crescent", "First quarter", "Full Moon"... */

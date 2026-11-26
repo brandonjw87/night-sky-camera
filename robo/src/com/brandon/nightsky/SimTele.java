@@ -35,7 +35,8 @@ final class SimTele {
     /** Read noise on the black level (counts). */
     static final int BLACK = 64;
 
-    final MoonSim sim;
+    /** The Moon drawn (the robot can swap in another: the Earth's glow's crescent, 3.1). */
+    MoonSim sim;
     final MoonCamera cam;
     /** Simulated light (MoonSim's gain) per unit of exposure (seconds x ISO). */
     final double gainPerLight;

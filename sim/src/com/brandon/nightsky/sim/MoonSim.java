@@ -41,6 +41,13 @@ public final class MoonSim {
      */
     public final double earthshine;
     final double[] earthTint;
+    /**
+     * The share of the disk lit, when not the night's own (NaN: the night's): the Sun moved round the Moon to light
+     * that much, the lit side where the night's is (for a robot whose clock's Moon is any phase, a crescent's).
+     */
+    public final double litShare;
+    /** Where the Sun is overhead on the Moon as drawn (degrees): the night's, or moved for {@link #litShare}. */
+    public double subSolarLat, subSolarLon;
 
     /**
      * @param arcsecPerPx the sensor's pixel scale
@@ -61,8 +68,15 @@ public final class MoonSim {
     /** With the Earth's glow as bright as {@code earthshine} (the full Moon's 1) and of the colour {@code earthTint}. */
     public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os, double[][] beacons, double earthshine,
                    double[] earthTint) {
+        this(unixMs, latDeg, lonDeg, arcsecPerPx, upPa, os, beacons, earthshine, earthTint, Double.NaN);
+    }
+
+    /** As above, with {@code litShare} of the disk lit ({@link #litShare}). */
+    public MoonSim(long unixMs, double latDeg, double lonDeg, double arcsecPerPx, double upPa, int os, double[][] beacons, double earthshine,
+                   double[] earthTint, double litShare) {
         this.earthshine = earthshine;
         this.earthTint = earthTint;
+        this.litShare = litShare;
         this.beacons = beacons;
         view = MoonGeo.view(unixMs, latDeg, lonDeg);
         this.upPa = upPa;
@@ -255,7 +269,21 @@ public final class MoonSim {
         double[] ey = {-Math.sin(b) * Math.cos(l), -Math.sin(b) * Math.sin(l), Math.cos(b)};
         double sl = view.b0 * D, so = view.l0 * D;
         double[] sun = {Math.cos(sl) * Math.cos(so), Math.cos(sl) * Math.sin(so), Math.sin(sl)};
-        double phaseFactor = Math.pow(10, -0.4 * 0.016 * view.phase);
+        double phase = view.phase;
+        if (!Double.isNaN(litShare)) {
+            // the Sun moved round to light that share (the angle Sun-Moon-us from it), towards the same side
+            double i = Math.acos(Math.max(-1, Math.min(1, 2 * litShare - 1)));
+            double dot = sun[0] * ez[0] + sun[1] * ez[1] + sun[2] * ez[2];
+            double[] side = {sun[0] - dot * ez[0], sun[1] - dot * ez[1], sun[2] - dot * ez[2]};
+            double n = Math.sqrt(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+            if (n < 1e-9) side = ex.clone();
+            else for (int c = 0; c < 3; c++) side[c] /= n;
+            for (int c = 0; c < 3; c++) sun[c] = Math.cos(i) * ez[c] + Math.sin(i) * side[c];
+            phase = i / D;
+        }
+        subSolarLat = Math.asin(Math.max(-1, Math.min(1, sun[2]))) / D;
+        subSolarLon = Math.atan2(sun[1], sun[0]) / D;
+        double phaseFactor = Math.pow(10, -0.4 * 0.016 * phase);
         double half = T / 2.0, scale = os * rPx;
         double[] g = new double[4];
         for (int j = 0; j < T; j++) {

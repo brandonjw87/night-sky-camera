@@ -25,7 +25,8 @@ import javax.imageio.ImageIO;
  * brightness, bluer than the Sun's light), shot as the Moonshot shoots it: the burst metered for the crescent, then,
  * after a moment of the hand moving and the phone rolling, 120 frames 66 times brighter (eight times longer, eight
  * times the ISO), the crescent burnt white and the lens's wide glare around it, a twilight sky with a slope, hot
- * pixels. The glow merged into the stack is checked against the simulated Moon's own: its brightness, its seas, its
+ * pixels; then again 400 times brighter (48 times the ISO, as the phone asks for: the frames' white level down in
+ * the sharpened stack's own noise). The glow merged into the stack is checked against the simulated Moon's own: its brightness, its seas, its
  * colour, no seam at the terminator, the sunlit crescent untouched, the sky black, the glare gone; and the merge
  * saying no when there is nothing to merge.
  */
@@ -41,7 +42,7 @@ public final class EarthshineTest {
     static final double[][] HALO = {{2, 3e-3}, {5, 2.5e-3}, {11, 2e-3}, {24, 1.5e-3}, {50, 1.2e-3}, {105, 1e-3}};
 
     /** The camera: electrons at the white level at the burst's ISO, read noise (electrons), and the glow's longer exposure and ISO. */
-    static final double FULL = 575, READ = 1.6, LONGER = 8.25, ISO = 8;
+    static final double FULL = 575, READ = 1.6, LONGER = 8.25, ISO = 8, ISO_MOST = 48;
 
     /** The glare around the Moon, in its own frame: (2N+1) px square per colour, the Moon's centre in the middle. */
     static float[][] glare(MoonSim sim, int N) {
@@ -195,6 +196,81 @@ public final class EarthshineTest {
         return s;
     }
 
+    /**
+     * Where the Moon's centre lies in the glow's average: every frame's own, put on the reference as the merge puts it
+     * (by the middles of their burnt crescents, turned by their tilts), averaged over the frames it keeps.
+     */
+    static double[] averageCentre(Shot s, int ref, int white) {
+        int n = s.glow.size();
+        double[][] k = new double[n][];
+        double[] area = new double[n];
+        for (int i = 0; i < n; i++) {
+            k[i] = burntMiddle(s.glow.get(i), white);
+            area[i] = k[i][2];
+        }
+        double[] sorted = area.clone();
+        Arrays.sort(sorted);
+        double med = sorted[n / 2];
+        MoonStack.Frame rf = s.glow.get(ref);
+        double sx = 0, sy = 0;
+        int m = 0;
+        for (int i = 0; i < n; i++) {
+            if (area[i] < 0.8 * med || area[i] > 1.6 * med) continue;
+            double da = Math.toRadians(s.glow.get(i).upPa - rf.upPa), c = Math.cos(da), sn = Math.sin(da);
+            double[] g = s.glowWhere.get(i);
+            double dx = g[0] - k[i][0], dy = g[1] - k[i][1];
+            sx += k[ref][0] + c * dx + sn * dy;
+            sy += k[ref][1] - sn * dx + c * dy;
+            m++;
+        }
+        return new double[]{sx / m, sy / m};
+    }
+
+    /** A frame's burnt crescent, as the merge finds it: its biggest patch of 2x2 blocks with a sample at the white level. {x, y, blocks}. */
+    static double[] burntMiddle(MoonStack.Frame f, int white) {
+        int bw = f.w / 2, bh = f.h / 2, at = white - 2;
+        boolean[] clip = new boolean[bw * bh];
+        for (int bj = 0; bj < bh; bj++) {
+            for (int bi = 0; bi < bw; bi++) {
+                int k = 2 * bj * f.w + 2 * bi;
+                clip[bj * bw + bi] = (f.raw[k] & 0xffff) >= at || (f.raw[k + 1] & 0xffff) >= at || (f.raw[k + f.w] & 0xffff) >= at
+                        || (f.raw[k + f.w + 1] & 0xffff) >= at;
+            }
+        }
+        int[] lab = new int[bw * bh], stack = new int[bw * bh];
+        int best = 0, bestN = 0, next = 0;
+        for (int q0 = 0; q0 < clip.length; q0++) {
+            if (!clip[q0] || lab[q0] != 0) continue;
+            next++;
+            int sp = 0, cnt = 0;
+            stack[sp++] = q0;
+            lab[q0] = next;
+            while (sp > 0) {
+                int q = stack[--sp];
+                cnt++;
+                int x = q % bw, y = q / bw;
+                int[] nb = {x > 0 ? q - 1 : -1, x < bw - 1 ? q + 1 : -1, y > 0 ? q - bw : -1, y < bh - 1 ? q + bw : -1};
+                for (int r : nb) {
+                    if (r >= 0 && clip[r] && lab[r] == 0) {
+                        lab[r] = next;
+                        stack[sp++] = r;
+                    }
+                }
+            }
+            if (cnt > bestN) {
+                bestN = cnt;
+                best = next;
+            }
+        }
+        double sx = 0, sy = 0;
+        for (int q = 0; q < clip.length; q++) {
+            if (lab[q] != best || best == 0) continue;
+            sx += 2 * (q % bw) + 0.5;
+            sy += 2 * (q / bw) + 0.5;
+        }
+        return new double[]{sx / Math.max(1, bestN), sy / Math.max(1, bestN), bestN};
+    }
+
     static double[] litCache;
     static double litCacheRot = Double.NaN;
     static MoonSim litCacheSim;
@@ -267,6 +343,32 @@ public final class EarthshineTest {
         return sab / Math.sqrt(saa * sbb + 1e-300);
     }
 
+    /**
+     * Past the Moon's true edge (the night side's, 0.75 to 8 sensor px out; the stack's grid is twice as fine): the
+     * glow photo's most over the plain photo (of 255, its brightness), and its coloured pixels (purple or green, a
+     * colour channel 12 past the other two). The 3.1 robot's first glow photos had a purple rim round the sunlit edge
+     * there, and a grey band: the stack's last light spread past it, lifted.
+     */
+    static double[] rim(MoonLook.Picture pic, MoonLook.Picture plain, MoonStack.Result res, Earthshine.Result es) {
+        double most = 0, coloured = 0, k = res.radius / pic.r;
+        for (int j = 0; j < pic.h; j++) {
+            for (int i = 0; i < pic.w; i++) {
+                double x = res.cx + (i - pic.cx) * k, y = res.cy + (j - pic.cy) * k;
+                double out = Math.hypot(x - es.moonCx, y - es.moonCy) - es.moonR;
+                if (out < 1.5 || out > 16) continue;
+                int a = pic.argb[j * pic.w + i], q = plain.argb[j * pic.w + i];
+                most = Math.max(most, luma(a) - luma(q));
+                int r = (a >> 16) & 255, g = (a >> 8) & 255, b = a & 255;
+                if (Math.min(r, b) - g > 12 || g - Math.max(r, b) > 12) coloured++;
+            }
+        }
+        return new double[]{most, coloured};
+    }
+
+    static double luma(int c) {
+        return 0.2126 * ((c >> 16) & 255) + 0.7152 * ((c >> 8) & 255) + 0.0722 * (c & 255);
+    }
+
     static void png(File f, int[] argb, int w, int h) throws Exception {
         BufferedImage im = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         im.setRGB(0, 0, w, h, argb, 0, w);
@@ -288,6 +390,20 @@ public final class EarthshineTest {
     public static void main(String[] args) throws Exception {
         File out = new File(args.length > 0 ? args[0] : "/tmp/earthshine");
         long t0 = System.currentTimeMillis();
+        // the glow 66 times the burst's light, then 400 times (48 times the ISO: what the phone asks for, the white
+        // level down in the stack's own noise)
+        scenario(out, ISO, "", true);
+        scenario(out, ISO_MOST, "_400x", false);
+        System.out.println(String.format(Locale.US, "  (%.1f s)", (System.currentTimeMillis() - t0) / 1000.0));
+        // the gate reads the last line: "ALL PASS" like every other test
+        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
+        if (failed > 0) System.exit(1);
+    }
+
+    /** One crescent shot and merged with the glow's frames {@code iso} times the burst's ISO; {@code extras}: the merges that must say no too. */
+    static void scenario(File out, double iso, String tag, boolean extras) throws Exception {
+        long t0 = System.currentTimeMillis();
+        System.out.println(String.format(Locale.US, "-- the glow %.0f times the burst's light", LONGER * iso));
         SensorSpec spec = MoonshotTest.spec();
         // a waxing crescent in the evening twilight, low in the west
         long t = MoonshotTest.find(MoonshotTest.utc(2026, 12, 11, 0, 0), 0.12, 0.2, 12);
@@ -308,7 +424,7 @@ public final class EarthshineTest {
         while (hot.size() < 400) hot.add((1530 + hr.nextInt(300) - 150) * 4080 + 2040 + hr.nextInt(300) - 150);
         System.out.println(String.format(Locale.US, "EarthshineTest: a %.0f%% lit crescent, %.0f px across; the glow %.2g of the full Moon; %.1f s to draw",
                 v.illum * 100, 2 * sim.rPx, sim.earthshine, (System.currentTimeMillis() - t0) / 1000.0));
-        Shot s = shoot(sim, glare, N, sky, 60, 120, photons, LONGER, ISO, 7, 1.4, 31, hot);
+        Shot s = shoot(sim, glare, N, sky, 60, 120, photons, LONGER, iso, 7, 1.4, 31, hot);
         MoonStack.Options o = new MoonStack.Options();
         o.expectedRadius = sim.rPx;
         o.brightLimbPa = v.chi;
@@ -323,7 +439,7 @@ public final class EarthshineTest {
         System.out.println(String.format(Locale.US, "  the stack's centre %.2f,%.2f against the truth's %.2f,%.2f; its radius %.2f against %.2f", res.disk.cx,
                 res.disk.cy, rwT[0], rwT[1], res.disk.r, sim.rPx));
         long tm = System.currentTimeMillis();
-        Earthshine.Result es = Earthshine.merge(s.glow, s.gains, LONGER * ISO, res, spec, Progress.NONE);
+        Earthshine.Result es = Earthshine.merge(s.glow, s.gains, LONGER * iso, res, spec, Progress.NONE);
         System.out.println("  " + es.log);
         System.out.println(String.format(Locale.US, "  (merged in %.2f s)", (System.currentTimeMillis() - tm) / 1000.0));
         check("the glow merged", es.ok, String.format(Locale.US, "level %.3g, %.1f times its noise", es.level, es.snr));
@@ -333,10 +449,12 @@ public final class EarthshineTest {
         double rollTruth = s.main.where.get(res.reference)[2] - s.glowWhere.get(gref)[2];
         check("the glow's turn against the stack found", Math.abs(es.turn - rollTruth) < 0.35,
                 String.format(Locale.US, "%.2f deg against the truth's %.2f (the tilt said %.2f)", es.turn, rollTruth, es.turnTilt));
-        // the Moon's centre in the glow's average: where it was in the reference glow frame
-        double[] gw = s.glowWhere.get(gref);
-        check("the Moon's centre found by its dark edge", Math.hypot(es.cx - gw[0], es.cy - gw[1]) < 0.4,
-                String.format(Locale.US, "%.2f,%.2f against %.2f,%.2f; radius %.2f against %.2f", es.cx, es.cy, gw[0], gw[1], es.radius, sim.rPx));
+        // the Moon's centre in the glow's average: where its frames put it, each lined up on the reference by its burnt
+        // crescent's middle (which a shaken frame's spreading moves a little off where a sharp one's is)
+        double[] gw = s.glowWhere.get(gref), mid = averageCentre(s, gref, (int) sim.white);
+        check("the Moon's centre found by its dark edge", Math.hypot(es.cx - mid[0], es.cy - mid[1]) < 0.4,
+                String.format(Locale.US, "%.2f,%.2f against %.2f,%.2f (in the reference frame %.2f,%.2f); radius %.2f against %.2f", es.cx, es.cy, mid[0],
+                        mid[1], gw[0], gw[1], es.radius, sim.rPx));
 
         if (es.r == null) {
             System.out.println("EarthshineTest: FAILED " + failed + " (no merged picture)");
@@ -439,7 +557,8 @@ public final class EarthshineTest {
         }
         check("no hot pixels on the night side", spike < 0.6 * lvlT, String.format(Locale.US, "the sharpest bump %.2g (the glow %.3g)", spike, lvlT));
         // the finished photo's tones: the night side a soft grey, the sky black, the crescent as it was
-        MoonLook.Picture pic = MoonLook.enlarge(es.r, es.g, es.b, es.w, es.h, res.cx, res.cy, res.radius, res.upPa, es.level, es.black);
+        MoonLook.Picture pic = MoonLook.enlarge(es.r, es.g, es.b, es.w, es.h, res.cx, res.cy, res.radius, res.upPa, es.level, es.black, es.moonCx,
+                es.moonCy, es.moonR);
         MoonLook.Picture plain = MoonLook.enlarge(res.r, res.g, res.b, res.w, res.h, res.cx, res.cy, res.radius, res.upPa);
         float[] tN = new float[tY.length];
         for (int k = 0; k < tY.length; k++) tN[k] = tY[k] / tTop;
@@ -462,27 +581,27 @@ public final class EarthshineTest {
         check("the night side a soft grey in the photo", ng > 45 && ng < 110, String.format(Locale.US, "%.0f of 255", ng));
         check("the sky black in the photo, specks and all", sg < 6 && sg99 < 30, String.format(Locale.US, "%.0f of 255 (its brightest 1%%: %.0f)", sg,
                 sg99));
-        png(new File(out, "earthshine_plain.png"), plain.argb, plain.w, plain.h);
-        png(new File(out, "earthshine_merged.png"), pic.argb, pic.w, pic.h);
-        png(new File(out, "earthshine_truth.png"), truthPic.argb, truthPic.w, truthPic.h);
-        png(new File(out, "earthshine_mean.png"), stretch(es.mean, 0, 6 * lvlT), es.meanW, es.meanH);
+        double[] rim = rim(pic, plain, res, es);
+        check("past the Moon's edge no rim: nothing brighter than in the plain photo, no coloured fringe", rim[0] < 10 && rim[1] == 0,
+                String.format(Locale.US, "%.0f of 255 brighter at the most, %.0f px coloured", rim[0], rim[1]));
+        png(new File(out, "earthshine_plain" + tag + ".png"), plain.argb, plain.w, plain.h);
+        png(new File(out, "earthshine_merged" + tag + ".png"), pic.argb, pic.w, pic.h);
+        png(new File(out, "earthshine_truth" + tag + ".png"), truthPic.argb, truthPic.w, truthPic.h);
+        png(new File(out, "earthshine_mean" + tag + ".png"), stretch(es.mean, 0, 6 * lvlT), es.meanW, es.meanH);
+        System.out.println(String.format(Locale.US, "  (%.1f s)", (System.currentTimeMillis() - t0) / 1000.0));
+        if (!extras) return;
 
         // nothing to merge: too few frames; no crescent burnt (the glow frames as dim as the burst's); a glow too faint
-        Earthshine.Result few = Earthshine.merge(s.glow.subList(0, 5), s.gains.subList(0, 5), LONGER * ISO, res, spec, Progress.NONE);
+        Earthshine.Result few = Earthshine.merge(s.glow.subList(0, 5), s.gains.subList(0, 5), LONGER * iso, res, spec, Progress.NONE);
         check("five frames: nothing merged", !few.ok, few.log);
         Shot dim = shoot(sim, glare, N, sky, 30, 30, photons, 1, 1, 0, 0, 32, null);
         MoonStack.Result dres = MoonStack.stack(dim.main.frames, spec, o, Progress.NONE);
         Earthshine.Result none = Earthshine.merge(dim.glow, dim.gains, 1, dres, spec, Progress.NONE);
         check("frames no brighter than the burst's: nothing merged", !none.ok, none.log);
         MoonSim dark = new MoonSim(t, MoonshotTest.LAT, MoonshotTest.LON, MoonshotTest.SCALE, upPa, 4, null, 0, null);
-        Shot black = shoot(dark, glare(dark, N), N, sky, 40, 60, photons, LONGER, ISO, 3, 0.5, 33, null);
+        Shot black = shoot(dark, glare(dark, N), N, sky, 40, 60, photons, LONGER, iso, 3, 0.5, 33, null);
         MoonStack.Result bres = MoonStack.stack(black.main.frames, spec, o, Progress.NONE);
-        Earthshine.Result nog = Earthshine.merge(black.glow, black.gains, LONGER * ISO, bres, spec, Progress.NONE);
+        Earthshine.Result nog = Earthshine.merge(black.glow, black.gains, LONGER * iso, bres, spec, Progress.NONE);
         check("no glow on the night side: nothing merged", !nog.ok, nog.log);
-
-        System.out.println(String.format(Locale.US, "  (%.1f s)", (System.currentTimeMillis() - t0) / 1000.0));
-        // the gate reads the last line: "ALL PASS" like every other test
-        System.out.println(failed == 0 ? "ALL PASS" : failed + " FAILED");
-        if (failed > 0) System.exit(1);
     }
 }

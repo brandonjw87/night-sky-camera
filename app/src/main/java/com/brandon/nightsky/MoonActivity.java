@@ -31,6 +31,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.brandon.nightsky.processing.CancelledException;
+import com.brandon.nightsky.processing.Earthshine;
 import com.brandon.nightsky.processing.MoonGeo;
 import com.brandon.nightsky.processing.MoonLook;
 import com.brandon.nightsky.processing.MoonSites;
@@ -51,7 +52,8 @@ import java.util.TimeZone;
  * it finds it, sets the exposure and focuses on its craters; Shoot the Moon takes 150 RAW frames in five seconds,
  * hand-held; the sharpest half are lined up and stacked ({@link MoonStack}) into the photo, saved twice in the
  * gallery (as it is, and labelled). Tap a landing site for its story. The Space Station's next crossings of the
- * Moon near here are listed below ({@link TransitFinder}).
+ * Moon near here are listed below ({@link TransitFinder}). On a crescent (3.1) it shoots 120 brighter frames after
+ * the burst for the Earth's glow on the dark part, merged into the photo ({@link Earthshine}).
  */
 public final class MoonActivity extends Activity implements MoonCamera.Listener {
     static final int GOLD = 0xFFFFD54F, WHITE = 0xFFFFFFFF, GREY = 0xFFB0BEC5, DIM = 0xFF78909C, CARD = 0xFF101418, LINE = 0xFF37474F;
@@ -83,11 +85,27 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     private List<MoonLook.MapLabel> mapLabels = new ArrayList<MoonLook.MapLabel>();
     private float labelSize = 30;
     private int labelLevel = MoonLook.LABELS_FAMOUS;
-    private boolean showBefore, mineral;
+    private boolean mineral;
+    /** What the photo shows (3.1): one frame, the stack, or the stack with the Earth's glow on its night side. */
+    static final int LOOK_ONE = 0, LOOK_STACK = 1, LOOK_GLOW = 2;
+    private int look = LOOK_STACK, shownLook = -1;
+    /** The Earth's glow (3.1): its merge (null: none shot, or it went wrong), its photo (null: none to show). */
+    private Earthshine.Result glowResult;
+    private MoonLook.Picture glowPic;
+    /**
+     * Shoot the Earth's glow too: on unless turned off, offered while tonight's Moon is a crescent at most
+     * {@link #GLOW_ILLUM} lit (past that the night side is too small, and the glow too faint against the glare).
+     */
+    private boolean glowOn = true;
+    private double tonightIllum = Double.NaN;
+    static final double GLOW_ILLUM = 0.45;
+    private Button glowToggle;
+    static final String HELP = "Hold the phone with both hands, elbows against your chest or a wall. It takes 150 pictures in five "
+            + "seconds and keeps the sharpest.";
     /** The label level the photo on the screen was drawn with. */
     private int shownLevel = -1;
     private Bitmap shown;
-    private Uri savedPlain, savedLabelled, savedMap;
+    private Uri savedPlain, savedLabelled, savedMap, savedNoGlow;
     /** The burst is a crossing's: the stations' silhouettes are found and laid on the photo. */
     private boolean transitShot;
     /** What crossed the Moon in the photo: "ISS", "Tiangong", or a mystery; and its story. */
@@ -211,14 +229,24 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 if (camera != null) {
                     clicks.play(MediaActionSound.SHUTTER_CLICK);
                     transitShot = false;
+                    camera.glowWant = glowOn && crescent() ? MoonCamera.GLOW : 0;
                     camera.shoot(MoonCamera.BURST);
                 }
             }
         });
         col.addView(shutter, gap(12));
-        shutterHelp = text("Hold the phone with both hands, elbows against your chest or a wall. It takes 150 pictures in five "
-                + "seconds and keeps the sharpest.", 13, GREY, false);
+        shutterHelp = text(HELP, 13, GREY, false);
         col.addView(shutterHelp, gap(6));
+        // the Earth's glow (3.1): on a crescent, brighter frames after the burst for the dark part
+        glowToggle = chip("", true);
+        glowToggle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                glowOn = !glowOn;
+                glowStyle();
+            }
+        });
+        col.addView(glowToggle, gap(8));
         refocus = button("Focus again", false);
         refocus.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -250,6 +278,23 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         TextView rice = text(MoonSites.RICE + "\n— President John F. Kennedy, Rice University, 12 September 1962", 13, GREY, false);
         rice.setTypeface(Typeface.create(Typeface.SERIF, Typeface.ITALIC));
         col.addView(rice, gap(22));
+        glowStyle();
+    }
+
+    /** Tonight's Moon a crescent: the Earth's glow on its dark part worth shooting (3.1). */
+    private boolean crescent() {
+        return !Double.isNaN(tonightIllum) && tonightIllum <= GLOW_ILLUM;
+    }
+
+    /** The Earth's glow's switch (3.1): there on a crescent, on or off, and the shutter's help to match. */
+    private void glowStyle() {
+        if (glowToggle == null) return;
+        boolean offered = crescent();
+        glowToggle.setVisibility(offered ? View.VISIBLE : View.GONE);
+        glowToggle.setText(glowOn ? "Earth's glow too: on (4 more seconds)" : "Earth's glow too: off");
+        chipStyle(glowToggle, glowOn);
+        shutterHelp.setText(HELP + (offered && glowOn ? " Then 120 brighter ones for the Earth's glow on the dark part: keep holding "
+                + "until the second click." : ""));
     }
 
     /** "Waxing gibbous, 57% lit, 31 degrees up in the south-east" (or when it rises). */
@@ -257,6 +302,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         long now = System.currentTimeMillis();
         double lat = place != null ? place.latDeg : Double.NaN, lon = place != null ? place.lonDeg : Double.NaN;
         MoonGeo.View v = MoonGeo.view(now, Double.isNaN(lat) ? 0 : lat, Double.isNaN(lon) ? 0 : lon);
+        tonightIllum = v.illum;
         String phase = MoonLook.phaseName(v) + String.format(Locale.US, ", %.0f%% lit", v.illum * 100);
         if (place == null) return phase + ". Where you are isn't known yet: allow the location in the main screen for the Moon's height.";
         if (v.alt > 0) return phase + String.format(Locale.US, ", %.0f° up in the %s", v.alt, compass(v.az));
@@ -325,6 +371,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 Locator.Place old = place;
                 place = p;
                 moonLine.setText(tonight());
+                glowStyle();
                 if (camera != null) camera.setMoon(MoonGeo.view(System.currentTimeMillis(), p.latDeg, p.lonDeg));
                 double moved = old == null ? 1e9 : 111.2 * Math.hypot(p.latDeg - old.latDeg, (p.lonDeg - old.lonDeg) * Math.cos(Math.toRadians(p.latDeg)));
                 if (moved > 0.3 && armed == null) showTransits();
@@ -395,7 +442,9 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
     @Override
     public void onLive(MoonCamera.Live l) {
         live = l;
-        String w = l.stage == MoonCamera.Stage.SHOOTING ? String.format(Locale.US, "Shooting: %d of %d, hold steady", l.got, l.want) : l.words;
+        String w = l.stage == MoonCamera.Stage.SHOOTING ? String.format(Locale.US, "Shooting: %d of %d, hold steady", l.got, l.want)
+                : l.stage == MoonCamera.Stage.GLOW ? String.format(Locale.US, "The Earth's glow: %d of %d, keep holding steady", l.got, l.want)
+                : l.words;
         // waiting for a crossing: the countdown first, and what the camera needs if it isn't ready
         if (armed != null && !firedArmed && countdownWords != null) w = countdownWords + (l.stage == MoonCamera.Stage.READY ? "" : "\n" + l.words);
         say(w);
@@ -403,7 +452,9 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 + (l.fps > 0 ? String.format(Locale.US, " · %.0f frames a second", l.fps) : ""));
         boolean ready = l.stage == MoonCamera.Stage.READY && job == null;
         shutter.setEnabled(ready);
-        shutter.setText(l.stage == MoonCamera.Stage.SHOOTING ? String.format(Locale.US, "Shooting %d of %d", l.got, l.want) : "Shoot the Moon");
+        shutter.setText(l.stage == MoonCamera.Stage.SHOOTING ? String.format(Locale.US, "Shooting %d of %d", l.got, l.want)
+                : l.stage == MoonCamera.Stage.GLOW ? String.format(Locale.US, "Earth's glow %d of %d", l.got, l.want) : "Shoot the Moon");
+        glowToggle.setEnabled(l.stage != MoonCamera.Stage.SHOOTING && l.stage != MoonCamera.Stage.GLOW);
         refocus.setEnabled(l.stage == MoonCamera.Stage.READY);
         Bitmap b = MoonCamera.bitmap(l);
         if (b != null) closeUp.setImageBitmap(b);
@@ -471,13 +522,16 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         jobCancelled = false;
         final long t = b.startMs;
         final Locator.Place pl = place;
+        // the Earth's glow's frames (3.1), if enough came: the stack's share of the bar, then theirs
+        final boolean glow = b.glow.size() >= Earthshine.MIN_FRAMES;
         Thread th = new Thread(new Runnable() {
             @Override
             public void run() {
                 String fail = null;
                 MoonStack.Result r = null;
                 MoonGeo.View v = null;
-                MoonLook.Picture p = null, p1 = null;
+                MoonLook.Picture p = null, p1 = null, pg = null;
+                Earthshine.Result es = null;
                 try {
                     v = MoonGeo.view(t, pl != null ? pl.latDeg : 0, pl != null ? pl.lonDeg : 0);
                     MoonStack.Options o = new MoonStack.Options();
@@ -487,28 +541,24 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                     o.brightLimbPa = v.chi;
                     // the sky's up at the top where it is known; else north up, as astronomers have it
                     o.outUpPa = pl != null ? v.q : 0;
-                    if (pl == null) for (MoonStack.Frame f : b.frames) f.upPa = Double.NaN;
-                    r = MoonStack.stack(b.frames, b.spec, o, new Progress() {
-                        @Override
-                        public void update(final String stage, final float fraction) {
-                            main.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    bar.setProgress(Math.round(fraction * 900));
-                                    barText.setText(stage + "…");
-                                    watchDone = String.format(Locale.US, "%s, %.0f%%", stage, fraction * 100);
-                                }
-                            });
-                        }
-
-                        @Override
-                        public boolean cancelled() {
-                            return jobCancelled;
-                        }
-                    });
+                    if (pl == null) {
+                        for (MoonStack.Frame f : b.frames) f.upPa = Double.NaN;
+                        for (MoonStack.Frame f : b.glow) f.upPa = Double.NaN;
+                    }
+                    r = MoonStack.stack(b.frames, b.spec, o, progress(0, glow ? 0.8f : 0.9f));
                     android.util.Log.i("NightSky", r != null ? r.log : "moon stack: nothing");
                     if (r == null || r.r == null) fail = "No Moon in the frames: point the phone at it and try again.";
                     else {
+                        if (glow) {
+                            try {
+                                es = Earthshine.merge(b.glow, b.glowGains, b.glowGain, r, b.spec, progress(0.8f, 0.9f));
+                                android.util.Log.i("NightSky", es.log);
+                            } catch (RuntimeException | OutOfMemoryError e) {
+                                // the glow is a bonus: the stacked photo stands without it
+                                android.util.Log.w("NightSky", "earthshine", e);
+                                es = null;
+                            }
+                        }
                         main.post(new Runnable() {
                             @Override
                             public void run() {
@@ -517,6 +567,15 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                         });
                         p = MoonLook.enlarge(r.r, r.g, r.b, r.w, r.h, r.cx, r.cy, r.radius, r.upPa);
                         p1 = MoonLook.enlarge(r.r1, r.g1, r.b1, r.w, r.h, r.cx, r.cy, r.radius, r.upPa);
+                        if (es != null && es.ok) {
+                            try {
+                                pg = MoonLook.enlarge(es.r, es.g, es.b, es.w, es.h, r.cx, r.cy, r.radius, r.upPa, es.level, es.black, es.moonCx,
+                                        es.moonCy, es.moonR);
+                            } catch (RuntimeException | OutOfMemoryError e) {
+                                android.util.Log.w("NightSky", "earthshine photo", e);
+                                pg = null;
+                            }
+                        }
                     }
                 } catch (CancelledException e) {
                     fail = "";
@@ -527,7 +586,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                 final String f = fail;
                 final MoonStack.Result rr = r;
                 final MoonGeo.View vv = v;
-                final MoonLook.Picture pp = p, pp1 = p1;
+                final MoonLook.Picture pp = p, pp1 = p1, ppg = pg;
+                final Earthshine.Result ee = es;
                 main.post(new Runnable() {
                     @Override
                     public void run() {
@@ -539,7 +599,7 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                             if (!f.isEmpty()) say(f);
                             return;
                         }
-                        shown(rr, vv, pp, pp1, b);
+                        shown(rr, vv, pp, pp1, ee, ppg, b);
                     }
                 });
             }
@@ -548,28 +608,65 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         th.start();
     }
 
-    /** The photo is made: shown, and saved twice (as it is, and labelled). */
-    private void shown(MoonStack.Result r, MoonGeo.View v, MoonLook.Picture p, MoonLook.Picture p1, MoonCamera.Burst b) {
+    /** The bar and the watch told how the work goes, its stage's fraction over {@code from} to {@code to} of the bar. */
+    private Progress progress(final float from, final float to) {
+        return new Progress() {
+            @Override
+            public void update(final String stage, final float fraction) {
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        bar.setProgress(Math.round((from + (to - from) * fraction) * 1000));
+                        barText.setText(stage + "…");
+                        watchDone = String.format(Locale.US, "%s, %.0f%%", stage, fraction * 100);
+                    }
+                });
+            }
+
+            @Override
+            public boolean cancelled() {
+                return jobCancelled;
+            }
+        };
+    }
+
+    /**
+     * The photo is made: shown, and saved three ways (as it is, labelled, as a Moon map), from the photo with the
+     * Earth's glow when there is one (3.1; {@code es}, {@code pg}), and then once more without it.
+     */
+    private void shown(MoonStack.Result r, MoonGeo.View v, MoonLook.Picture p, MoonLook.Picture p1, Earthshine.Result es, MoonLook.Picture pg,
+                       MoonCamera.Burst b) {
         result = r;
         view = v;
         base = p;
         before = p1;
+        glowResult = es;
+        glowPic = es != null && es.ok ? pg : null;
         baseMineral = null;
-        showBefore = false;
+        look = glowPic != null ? LOOK_GLOW : LOOK_STACK;
         mineral = false;
         resultBox.removeAllViews();
         resultBox.setVisibility(View.VISIBLE);
         nameCrossing(r, b);
         // the crossing just shot is over: the list again without it (no Catch for it on the screen or the watch)
         if (transitShot) showTransits();
-        watchDone = r.crossing != null ? "Your Moon, with " + crossingLabel + " crossing it, is ready" : "Your Moon is ready";
-        resultBox.addView(text(r.crossing == null ? "Your Moon" : "Your Moon, with " + crossingLabel + " crossing it", 20, GOLD, true));
+        String what = r.crossing != null ? "Your Moon, with " + crossingLabel + " crossing it" : glowPic != null ? "Your Moon, with the Earth's glow"
+                : "Your Moon";
+        watchDone = r.crossing == null && glowPic == null ? "Your Moon is ready" : what + ", is ready";
+        resultBox.addView(text(what, 20, GOLD, true));
         String howText = String.format(Locale.US, "The %d sharpest of %d frames, lined up and stacked: the edge's blur %.1f px in one frame, %.1f "
                 + "stacked and sharpened.", r.used, r.total, r.edgeSingle / 2, r.edgeSharp / 2);
         if (r.crossing != null) {
             howText += String.format(Locale.US, " %s crossed the lit Moon in %.2f seconds and was caught %d times, %.0f ms apart: every silhouette is on "
                     + "the photo.", crossingLabel, r.crossing.lastS - r.crossing.firstS, r.crossing.frames.length,
                     r.crossing.frames.length > 1 ? (r.crossing.lastS - r.crossing.firstS) / (r.crossing.frames.length - 1) * 1000 : 33);
+        }
+        if (glowPic != null) {
+            howText += String.format(Locale.US, " Then %d frames %.0f times brighter for the Earth's glow: %d of them lined up on the Moon's dark edge "
+                    + "and merged into the night side, where the Sun's light doesn't burn them white.", es.total, b.glowGain, es.used);
+        } else if (!b.glow.isEmpty()) {
+            howText += " The Earth's glow on the dark part was too faint to show this time (a thinner crescent, a darker sky and a steadier "
+                    + "hold all help).";
         }
         TextView how = text(howText, 13, GREY, false);
         resultBox.addView(how, gap(4));
@@ -583,9 +680,11 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             }
         });
         LinearLayout row1 = new LinearLayout(this);
-        final Button bBefore = chip("One frame", false), bAfter = chip("Stacked", true);
+        final Button bBefore = chip("One frame", false), bAfter = chip("Stacked", look == LOOK_STACK),
+                bGlow = glowPic != null ? chip("Earth's glow", true) : null;
         row1.addView(bBefore, weight());
         row1.addView(bAfter, weight());
+        if (bGlow != null) row1.addView(bGlow, weight());
         resultBox.addView(row1, gap(8));
         LinearLayout row2 = new LinearLayout(this);
         final Button lNone = chip("No labels", false), lFamous = chip("Landings", true), lAll = chip("Every one", false),
@@ -600,25 +699,37 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         View.OnClickListener pick = new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (v == bBefore || v == bAfter) showBefore = v == bBefore;
-                else if (v == lNone) labelLevel = MoonLook.LABELS_NONE;
+                // the mineral colours are the stack's: picking them shows it, and picking another look turns them off
+                if (v == bBefore) {
+                    look = LOOK_ONE;
+                    mineral = false;
+                } else if (v == bAfter) look = LOOK_STACK;
+                else if (v == bGlow) {
+                    look = LOOK_GLOW;
+                    mineral = false;
+                } else if (v == lNone) labelLevel = MoonLook.LABELS_NONE;
                 else if (v == lFamous) labelLevel = MoonLook.LABELS_FAMOUS;
                 else if (v == lAll) labelLevel = MoonLook.LABELS_ALL;
                 else if (v == lMap) labelLevel = MoonLook.LABELS_MAP;
-                else if (v == min) mineral = !mineral;
-                chipStyle(bBefore, showBefore);
-                chipStyle(bAfter, !showBefore);
+                else if (v == min) {
+                    mineral = !mineral;
+                    if (mineral) look = LOOK_STACK;
+                }
+                chipStyle(bBefore, look == LOOK_ONE);
+                chipStyle(bAfter, look == LOOK_STACK);
+                if (bGlow != null) chipStyle(bGlow, look == LOOK_GLOW);
                 chipStyle(lNone, labelLevel == MoonLook.LABELS_NONE);
                 chipStyle(lFamous, labelLevel == MoonLook.LABELS_FAMOUS);
                 chipStyle(lAll, labelLevel == MoonLook.LABELS_ALL);
                 chipStyle(lMap, labelLevel == MoonLook.LABELS_MAP);
                 chipStyle(min, mineral);
                 int was = shownLevel;
+                boolean wasGlow = shownLook == LOOK_GLOW;
                 redraw();
-                if (labelLevel != was) storyText.setText(hint());
+                if (labelLevel != was || (look == LOOK_GLOW) != wasGlow) storyText.setText(hint());
             }
         };
-        for (Button x : new Button[]{bBefore, bAfter, lNone, lFamous, lAll, lMap, min}) x.setOnClickListener(pick);
+        for (Button x : new Button[]{bBefore, bAfter, bGlow, lNone, lFamous, lAll, lMap, min}) if (x != null) x.setOnClickListener(pick);
         storyText = text("", 14, WHITE, false);
         LinearLayout story = card();
         story.addView(storyText);
@@ -636,6 +747,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             @Override
             public void onClick(View v) {
                 Uri u = labelLevel == MoonLook.LABELS_NONE ? savedPlain : labelLevel == MoonLook.LABELS_MAP ? savedMap : savedLabelled;
+                // the stack without the Earth's glow, plain (the labelled ones are saved with the glow)
+                if (look == LOOK_STACK && savedNoGlow != null && labelLevel == MoonLook.LABELS_NONE) u = savedNoGlow;
                 if (u == null) u = savedPlain;
                 if (u == null) return;
                 Intent s = new Intent(Intent.ACTION_SEND).setType("image/jpeg").putExtra(Intent.EXTRA_STREAM, u)
@@ -656,9 +769,13 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         if (live != null) onLive(live);
     }
 
-    /** What the card under the photo says before anything is tapped: the crossing's story, how to get a place's story. */
+    /**
+     * What the card under the photo says before anything is tapped: the crossing's story, the Earth's glow's (3.1, when
+     * it shows), how to get a place's story.
+     */
     private String hint() {
         String lead = result != null && result.crossing != null ? crossingStory + "\n\n" : "";
+        if (look == LOOK_GLOW && glowResult != null && view != null) lead += MoonLook.glowStory(glowResult.level, view) + "\n\n";
         if (labelLevel == MoonLook.LABELS_MAP) {
             String best = view != null ? MoonLook.bestTonight(mapLabels, view) : "";
             return lead + "Tap a sea, a crater or a mountain range for its story." + (best.isEmpty() ? "" : "\n\n" + best);
@@ -693,12 +810,18 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         }
     }
 
-    /** The photo as the chips say: one frame or stacked, mineral colours or not, labelled or not. */
+    /** The picture the chips choose: one frame, the stack, or the stack with the Earth's glow. */
+    private MoonLook.Picture picture() {
+        return look == LOOK_ONE ? before : look == LOOK_GLOW && glowPic != null ? glowPic : base;
+    }
+
+    /** The photo as the chips say: one frame, stacked or with the Earth's glow, mineral colours or not, labelled or not. */
     private void redraw() {
         if (base == null) return;
-        MoonLook.Picture p = showBefore ? before : base;
+        MoonLook.Picture p = picture();
+        boolean one = look == LOOK_ONE;
         int[] px = p.argb;
-        if (mineral && !showBefore) {
+        if (mineral && p == base) {
             if (baseMineral == null) {
                 float[][] m = MoonLook.mineral(result.r, result.g, result.b, result.w, result.h, 4);
                 baseMineral = MoonLook.enlarge(m[0], m[1], m[2], result.w, result.h, result.cx, result.cy, result.radius, result.upPa).argb;
@@ -711,29 +834,32 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         labels = new ArrayList<MoonLook.Label>();
         mapLabels = new ArrayList<MoonLook.MapLabel>();
         if (labelLevel == MoonLook.LABELS_MAP) {
-            mapLabels = MoonLook.mapLayout(p, view, cp, 30);
+            // with the Earth's glow the night side shows too: its seas and brightest craters named
+            mapLabels = MoonLook.mapLayout(p, view, cp, 30, p == glowPic);
             MoonLook.paintMap(cp, p, mapLabels, 30);
-            if (!showBefore) MoonLook.track(cp, p, result, crossingLabel, 30);
+            if (!one) MoonLook.track(cp, p, result, crossingLabel, 30);
         } else if (labelLevel != MoonLook.LABELS_NONE) {
             labels = MoonLook.layout(p, view, labelLevel, cp, 30);
             labelSize = MoonLook.fit(cp, p, labels, 30);
             labels = MoonLook.layout(p, view, labelLevel, cp, labelSize);
             MoonLook.paint(cp, p, labels, labelSize);
-            if (!showBefore) MoonLook.track(cp, p, result, crossingLabel, labelSize);
+            if (!one) MoonLook.track(cp, p, result, crossingLabel, labelSize);
         }
         shownLevel = labelLevel;
-        MoonLook.captions(cp, p, showBefore ? "ONE FRAME" : labelLevel == MoonLook.LABELS_MAP ? "MOON MAP" : "MOONSHOT", caption(), 30);
+        shownLook = look;
+        MoonLook.captions(cp, p, one ? "ONE FRAME" : labelLevel == MoonLook.LABELS_MAP ? "MOON MAP" : "MOONSHOT", caption(p == glowPic), 30);
         Bitmap old = shown;
         shown = bm;
         photo.show(bm, true);
         if (old != null && old != bm) old.recycle();
     }
 
-    private String caption() {
+    /** The caption under the photo; {@code glow}: with the frames merged for the Earth's glow. */
+    private String caption(boolean glow) {
         String when = new SimpleDateFormat("d MMM yyyy, h:mm a", Locale.US).format(new Date(System.currentTimeMillis()));
         String where = place != null ? String.format(Locale.US, "%.1f°%s, %.1f°%s", Math.abs(place.latDeg), place.latDeg >= 0 ? "N" : "S",
                 Math.abs(place.lonDeg), place.lonDeg >= 0 ? "E" : "W") : "";
-        return MoonLook.caption(view, result, when, where);
+        return MoonLook.caption(view, result, when, where, glow && glowResult != null ? glowResult.used : 0);
     }
 
     private void tapped(float x, float y) {
@@ -745,19 +871,23 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         }
         if (labels.isEmpty()) return;
         CanvasPainter cp = new CanvasPainter(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888));
-        MoonLook.Label l = MoonLook.at(labels, x, y, 60, cp, showBefore ? before : base, labelSize);
+        MoonLook.Label l = MoonLook.at(labels, x, y, 60, cp, picture(), labelSize);
         if (l == null) return;
         storyText.setText(MoonLook.siteStory(l.site, l.sunAlt));
     }
 
-    /** Saves the photo three ways in Pictures/NightSky: as it is, labelled (famous landings), and as a Moon map. */
+    /**
+     * Saves the photo three ways in Pictures/NightSky: as it is, labelled (famous landings), and as a Moon map; with
+     * the Earth's glow when there is one (3.1), and then the stack once more without it.
+     */
     private void save(final MoonCamera.Burst b) {
         // the last shot's photos aren't this one's: Share waits for these
-        savedPlain = savedLabelled = savedMap = null;
-        final MoonLook.Picture p = base;
+        savedPlain = savedLabelled = savedMap = savedNoGlow = null;
+        final boolean glow = glowPic != null;
+        final MoonLook.Picture p = glow ? glowPic : base, stacked = base;
         final MoonGeo.View v = view;
         final String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(b.startMs));
-        final String cap = caption();
+        final String cap = caption(glow), capStacked = caption(false);
         final MoonStack.Result rr = result;
         final String label = crossingLabel;
         new Thread(new Runnable() {
@@ -781,25 +911,38 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
                     MoonLook.captions(lp, p, "MOONSHOT", cap, 30);
                     final Uri u2 = MediaSaver.saveJpeg(MoonActivity.this, lab, "Moonshot_" + stamp + "_landings", exif(b, p));
                     lab.recycle();
-                    // the Moon map (3.1): the seas, craters and mountains named on it
+                    // the Moon map (3.1): the seas, craters and mountains named on it (with the glow, the night side's too)
                     Bitmap map = Bitmap.createBitmap(p.w, p.h, Bitmap.Config.ARGB_8888);
                     map.setPixels(p.argb, 0, p.w, 0, 0, p.w, p.h);
                     CanvasPainter mp = new CanvasPainter(map);
-                    MoonLook.paintMap(mp, p, MoonLook.mapLayout(p, v, mp, 30), 30);
+                    MoonLook.paintMap(mp, p, MoonLook.mapLayout(p, v, mp, 30, glow), 30);
                     MoonLook.track(mp, p, rr, label, 30);
                     MoonLook.captions(mp, p, "MOON MAP", cap, 30);
                     final Uri u3 = MediaSaver.saveJpeg(MoonActivity.this, map, "Moonshot_" + stamp + "_map", exif(b, p));
                     map.recycle();
                     plain.recycle();
+                    // the stack without the glow (3.1): the sunlit Moon alone, as before
+                    Uri u4 = null;
+                    if (glow) {
+                        Bitmap st = Bitmap.createBitmap(stacked.w, stacked.h, Bitmap.Config.ARGB_8888);
+                        st.setPixels(stacked.argb, 0, stacked.w, 0, 0, stacked.w, stacked.h);
+                        CanvasPainter sp = new CanvasPainter(st);
+                        MoonLook.captions(sp, stacked, "MOONSHOT", capStacked, 30);
+                        u4 = MediaSaver.saveJpeg(MoonActivity.this, st, "Moonshot_" + stamp + "_noglow", exif(b, stacked));
+                        st.recycle();
+                    }
+                    final Uri u4f = u4;
                     main.post(new Runnable() {
                         @Override
                         public void run() {
                             savedPlain = u1;
                             savedLabelled = u2;
                             savedMap = u3;
+                            savedNoGlow = u4f;
                             if (u1 != null) {
                                 prefs.setLastResultUri(u1.toString());
-                                if (!isFinishing()) toast("Saved in Pictures/NightSky: plain, with the landings, and as a Moon map");
+                                if (!isFinishing()) toast(glow ? "Saved in Pictures/NightSky: with the Earth's glow, with the landings, as a Moon map, and "
+                                        + "without the glow" : "Saved in Pictures/NightSky: plain, with the landings, and as a Moon map");
                             }
                         }
                     });
@@ -820,7 +963,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         MediaSaver.Exif e = new MediaSaver.Exif();
         e.make = android.os.Build.MANUFACTURER;
         e.model = android.os.Build.MODEL;
-        e.description = "Night Sky Moonshot: " + result.used + " of " + result.total + " frames stacked, " + b.lens;
+        e.description = "Night Sky Moonshot: " + result.used + " of " + result.total + " frames stacked"
+                + (p == glowPic && glowResult != null ? ", " + glowResult.used + " more for the Earth's glow" : "") + ", " + b.lens;
         e.exposureSeconds = b.exposureNs * 1e-9;
         e.iso = b.iso;
         e.fNumber = b.spec.fNumber;
@@ -938,6 +1082,8 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
             if (camera != null && camera.stage == MoonCamera.Stage.READY && job == null) {
                 firedArmed = true;
                 transitShot = true;
+                // a crossing's frames are all at the lit Moon's exposure: no glow after them
+                camera.glowWant = 0;
                 camera.shoot(TRANSIT_FRAMES);
                 clicks.play(MediaActionSound.START_VIDEO_RECORDING);
                 catchIt.setText("Shooting " + a.name + "'s crossing…");

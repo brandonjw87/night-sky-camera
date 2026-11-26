@@ -42,12 +42,34 @@ public final class Earthshine {
      * The glow's frames' blur past the stack's own (sigma, sensor px): the spreads the burnt crescent's bleed is made
      * of (the frames' blurs are a mix: most sharp, some shaken), and the one guessed when it can't be fitted.
      */
-    static final double[] SPILL = {0.6, 0.9, 1.3, 1.8, 2.5};
+    static final double[] SPILL = {0.6, 0.9, 1.3, 1.8, 2.5, 3.5, 5, 7, 10};
+    /**
+     * Of {@link #SPILL}, the first CORE are the frames' own blur (shake, the blocks, the lining up: about all of the
+     * stack's light between them); the wider ones the lens's glare close round the crescent, fitted with them so it
+     * isn't taken for blur.
+     */
+    static final int CORE = 5;
     static final double SPILL_GUESS = 1.0;
-    /** The stack's light that bleeds: all of it past SPILL_HIGH of the glow's frames' white level, none below SPILL_LOW. */
-    static final double SPILL_LOW = 0.12, SPILL_HIGH = 0.3;
+    /**
+     * The stack's light that bleeds: all of it past SPILL_HIGH of the glow's frames' white level, none below SPILL_LOW
+     * of it, in patches that reach the white level; never below FLOOR_HIGH and FLOOR_LOW times the stack's sharpening
+     * floor ({@link MoonStack#RL_FLOOR}: at the brightest glow the white level is down in the stack's noise).
+     */
+    static final double SPILL_LOW = 0.12, SPILL_HIGH = 0.3, FLOOR_LOW = 1.25, FLOOR_HIGH = 2.25;
+    /**
+     * A patch of light apart from the crescent: past SPECK times the stack's noise's SPECK_AT share (its specks'
+     * brightest), and not within SPECK_EDGE px of where the stack ends.
+     */
+    static final double SPECK = 3, SPECK_AT = 0.999, SPECK_EDGE = 6;
+    /**
+     * The stack's bright edge: where the Moon just inside it is past LIMB_LIT (its bright parts 1); the circle through
+     * it trusted if its points are within LIMB_SPREAD px of it (their spread).
+     */
+    static final double LIMB_LIT = 0.1, LIMB_SPREAD = 0.6;
     /** How far from the burnt part (px) its bleed is fitted. */
     static final double NEAR = 10;
+    /** The bleed's fit: only where the stack's light, spread by the widest bleed, is at most this share of the white level. */
+    static final double REGION = 0.6;
     /** The lens's wide halo past the bleed: the spreads (sigma, sensor pixels) whose sum is fitted to the glare. */
     static final double[] HALO = {3, 7, 16, 36, 80};
     /** How far the glare taken off can be trusted (a share of it): the glow's weight falls where it was large. */
@@ -61,6 +83,8 @@ public final class Earthshine {
     /** The glow's colour is smoothed this much (sigma, sensor px): the Earth lights the night side nearly one colour. */
     static final double CHROMA = 6;
     /** The fill's wider reach (sigma, sensor px), where there's too little glow close round. */
+    /** The fill takes the stack's light along where it's at most FILL_HI times the stack's noise (faint: the fill's better). */
+    static final double FILL_HI = 5;
     static final double FILL_WIDE = 5;
     /** Past the Moon's edge by this much (sensor px) is sky: the stack's light there isn't taken. */
     static final double SKY_CLEAR = 1.5;
@@ -347,11 +371,13 @@ public final class Earthshine {
         double[] areas = new double[n];
         for (int i = 0; i < n; i++) areas[i] = bt[i].ok ? bt[i].area : 0;
         double aMed = MoonStack.median(areas), gMed = MoonStack.median(gain);
-        // the frames that agree with the most: a cloud, or the exposure not yet through, changes the burnt part's size
+        // the frames that agree with the most: a cloud, or the exposure not yet through, shrinks the burnt part; the
+        // hand's blur spreads it (a shaken frame's crescent burns a third wider at the brightest glow, and is worth
+        // keeping: the glow is soft)
         boolean[] use = new boolean[n];
         int used = 0;
         for (int i = 0; i < n; i++) {
-            use[i] = bt[i].ok && bt[i].area >= 0.8 * aMed && bt[i].area <= 1.25 * aMed && Math.abs(gain[i] / gMed - 1) < 0.12;
+            use[i] = bt[i].ok && bt[i].area >= 0.8 * aMed && bt[i].area <= 1.6 * aMed && Math.abs(gain[i] / gMed - 1) < 0.12;
             if (use[i]) used++;
         }
         res.gain = gMed;
@@ -361,9 +387,21 @@ public final class Earthshine {
             res.log = log.append("; too few frames with the crescent (").append(used).append("), nothing merged").toString();
             return res;
         }
-        // the reference: the middle one of those kept (the least turned from the rest)
+        // the reference: of the middle half of those kept (the least turned from the rest), the one whose crescent burnt
+        // most like the most (the frames are lined up by their burnt crescents' middles, which a shaken frame's
+        // spreading moves a little: the average lies where a typical frame's does)
         int ref = -1, seen = 0;
-        for (int i = 0; i < n && ref < 0; i++) if (use[i] && seen++ == used / 2) ref = i;
+        double refOff = Double.MAX_VALUE;
+        for (int i = 0; i < n; i++) {
+            if (!use[i]) continue;
+            int at = seen++;
+            if (at < used / 4 || at > used - 1 - used / 4) continue;
+            double off = Math.abs(bt[i].area - aMed);
+            if (off < refOff) {
+                refOff = off;
+                ref = i;
+            }
+        }
         res.reference = ref;
         MoonStack.Frame rf = frames.get(ref);
         int gw = rf.w, gh = rf.h, np = gw * gh;
@@ -542,6 +580,17 @@ public final class Earthshine {
             double[] reg = register(cf, burntMask, dist, gw, gh, cx, cy, mY, main, 0);
             if (reg != null && reg[3] >= 0.6) beta = reg[2];
         }
+        // the stack's centre came from its bright edge alone, its radius with it: on a thin crescent's short edge a
+        // radius a little off moves the centre a pixel or more along the crescent's middle. The dark edge's radius is
+        // the true one: the bright edge fitted again with it, the stack put by that centre
+        double[] lc = limbCentre(mY, main.w, main.h, main.cx, main.cy, R * S, S);
+        if (lc != null && lc[3] < LIMB_SPREAD * S) {
+            double ux = (cps * lc[0] - sps * lc[1]) / S, uy = (sps * lc[0] + cps * lc[1]) / S;
+            tx = cx - (Math.cos(beta) * ux - Math.sin(beta) * uy);
+            ty = cy - (Math.sin(beta) * ux + Math.cos(beta) * uy);
+            log.append(String.format(Locale.US, "; the stack's bright edge with the dark edge's radius: its centre %.2f,%.2f off the stack's "
+                    + "(%d points, %.2f px apart from the circle)", lc[0] / S, lc[1] / S, (int) lc[2], lc[3] / S));
+        }
         pr.update("The Earth's glow: taking off the glare", 0.7f);
         int[] pts = new int[np];
         int npt = 0;
@@ -563,7 +612,10 @@ public final class Earthshine {
         float[][] mrgb = {main.r, main.g, main.b};
         // the stack's bright light: what bleeds in the glow's frames
         double white = main.unit / gMed;
-        float[][] hi = bright(mrgb, mY, W, H, SPILL_LOW * white, SPILL_HIGH * white, white);
+        // from a share of the glow's white level up, but never down in the stack's noise (where the brightest glow's
+        // white level is), in the patches that burn in the glow's frames
+        double loAt = Math.max(SPILL_LOW * white, FLOOR_LOW * MoonStack.RL_FLOOR), hiAt = Math.max(SPILL_HIGH * white, FLOOR_HIGH * MoonStack.RL_FLOOR);
+        float[][] hi = bright(mrgb, mY, W, H, loAt, hiAt, white);
         float[] hiY = MoonStack.lum(hi);
         // the glow's colours are as blurred as their development makes them: a colour with one sample a block (red,
         // blue: from its four nearest, a spread of 0.75 px squared each way) more than one with two (green, 0.25)
@@ -638,11 +690,13 @@ public final class Earthshine {
             }
         }
         // how far each pixel's glow can be trusted: not where its frames were short (the picture's edge), nor where
-        // any burnt (the rest, those dimmer there, average too dim), nor near the white level (not straight there)
+        // any burnt (the rest, those dimmer there, average too dim), nor near the white level (not straight there:
+        // by the glow's own average, or the stack's bright light; not by the stack's every pixel, whose noise's specks
+        // reach the brightest glow's white level)
         float[] fade = new float[NP];
         for (int k = 0; k < NP; k++) {
             if (ecnt[k] < 0.25 * used) continue;
-            double pg = Math.max(eraw[k], mY[k]) * gMed / main.unit;
+            double pg = Math.max(eraw[k], hiY[k]) * gMed / main.unit;
             fade[k] = (float) (Math.max(0, Math.min(1, 1 - ecf[k] / CF_FADE)) * Math.max(0, Math.min(1, (TRUST - pg) / FADE)));
         }
         // the glow smoothed (it was taken in 2x2 blocks, half as fine as the stack's sensor pixels and a quarter of
@@ -669,12 +723,14 @@ public final class Earthshine {
             chroma[ch] = cr;
         }
         // next to the burnt part, where the glow can't be trusted (some of its frames burnt there), the night side's
-        // glow filled in from round it (its smoothed colour's own), the stack's noise not left alone there; but not
-        // where the stack is lit, nor where it says it's clearly brighter than the fill (the terminator's last light:
-        // past its noise and its sharpening's floor, which holds specks of noise up)
+        // glow filled in from round it (its smoothed colour's own), the stack's noise not left alone there, with the
+        // stack's light where it's faint (its noise's few times: the crescent's last, its patch's edge); but not where
+        // the stack is lit, nor where its sure light says it's clearly brighter than the two (the terminator's last
+        // light, past its noise and its sharpening's floor; never a speck of its noise alone, which the sharpening
+        // holds up as bright as the brightest glow's white level)
         float[] tFill = MoonStack.blur(fade, W, H, 4.0 * S / 2), tFillW = MoonStack.blur(fade, W, H, FILL_WIDE * S);
         float[] eYw = trusted(eY, fade, W, H, FILL_WIDE * S);
-        float[] ms = MoonStack.blur(mY, W, H, S / 2);
+        float[] ms = MoonStack.blur(mY, W, H, S / 2), hiS = MoonStack.blur(hiY, W, H, S / 2);
         double sigMs = sigM / (2 * Math.sqrt(Math.PI) * (S / 2)), prior;
         {
             float[] lv = new float[NP];
@@ -711,8 +767,8 @@ public final class Earthshine {
             // the fill: from close round where there's enough, else from wider
             float tn = Math.min(1f, tFill[k] / 0.3f), tf = Math.max(tFill[k], tFillW[k]);
             fillV[k] = tn * eYc[k] + (1 - tn) * eYw[k];
-            if (fade[k] < 1 && (hiY[k] <= 0 || sky) && tf > 0.05f) {
-                double ex = (1 - sw0) * Math.max(0, ms[k] - fillV[k] - 2 * sigMs - MoonStack.RL_FLOOR);
+            if (fade[k] < 1 && (hiY[k] <= FILL_HI * sigM || sky) && tf > 0.05f) {
+                double ex = hiY[k] <= 0 ? 0 : (1 - sw0) * Math.max(0, ms[k] - fillV[k] - hiS[k] - 2 * sigMs - MoonStack.RL_FLOOR);
                 wf = (1 - fade[k]) * Math.min(1, tf / 0.3) / (prior * prior + ex * ex);
             }
             if (sky && (we > 0 || wf > 0)) wm *= 1 - sw0;
@@ -730,8 +786,12 @@ public final class Earthshine {
         float[] amS = MoonStack.blur(am, W, H, MIX_SMOOTH * S), aeS = MoonStack.blur(ae, W, H, MIX_SMOOTH * S),
                 afS = MoonStack.blur(af, W, H, MIX_SMOOTH * S);
         // the stack's faint parts, where it has a share (the noise there, and its sharpening's specks, would show
-        // once the night side is lifted): smoothed, in the glow's colour; its sunlit parts its own
-        float[] mYs = MoonStack.blur(mY, W, H, MAIN_SMOOTH * S);
+        // once the night side is lifted): smoothed, in the glow's colour; its sunlit parts its own. Smoothed from its
+        // faint pixels alone: the bright edge's and the terminator's light, spread past them, would ring them with a
+        // band brighter than the stack (and of the glow's colour there, the bleed's: purple), lifted bright
+        float[] faintW = new float[NP];
+        for (int k = 0; k < NP; k++) faintW[k] = (float) Math.max(0, Math.min(1, (6 * MoonStack.RL_FLOOR - mY[k]) / (4 * MoonStack.RL_FLOOR)));
+        float[] mYs = trusted(mY, faintW, W, H, MAIN_SMOOTH * S);
         // the night side's pixels, for its level
         float[] night = new float[NP];
         float[] nightGlare = new float[NP];
@@ -752,7 +812,7 @@ public final class Earthshine {
             double sk = skyW[k];
             double raw = Math.max(0, Math.min(1, (ms[k] - 2 * MoonStack.RL_FLOOR) / (4 * MoonStack.RL_FLOOR)));
             for (int ch = 0; ch < 3; ch++) {
-                double ev = (1 - sk) * hi[ch][k] + eYs[k] * chroma[ch][k], fv = fillV[k] * chroma[ch][k];
+                double ev = (1 - sk) * hi[ch][k] + eYs[k] * chroma[ch][k], fv = (1 - sk) * hi[ch][k] + fillV[k] * chroma[ch][k];
                 // (the sky's share of the stack, come from its neighbours' smoothed shares, takes the sky's fill, grey:
                 // the sky has no Moon's colour)
                 double mv = (1 - sk) * (raw * mrgb[ch][k] + (1 - raw) * mYs[k] * chroma[ch][k]) + sk * fillV[k];
@@ -872,20 +932,45 @@ public final class Earthshine {
 
     /**
      * The stack's bright light: each colour where its (lightly smoothed) brightness is past {@code hiAt}, none of it
-     * below {@code loAt}, a smooth step between, in the patches that are somewhere past {@code burnAt} (the stack's
-     * own noise on the night side mustn't count).
+     * below {@code loAt}, a smooth step between, in the patches that are somewhere past {@code burnAt}: the crescent
+     * (the biggest), and any other only past the stack's own specks by far and away from its edge (its sharpening
+     * makes the noise on the night side and in the sky sharp and bright here and there, its edge most; the brightest
+     * glow's white level is lower than they reach, and a speck taken for light would be taken off the glow as its
+     * bleed: a black hole round a white dot).
      */
     static float[][] bright(float[][] rgb, float[] Yl, int w, int h, double loAt, double hiAt, double burnAt) {
         float[] ys = MoonStack.blur(Yl, w, h, 1.0);
         float[][] out = new float[3][w * h];
         // only the patches that burn in the glow's frames: the crescent, a peak in the sunrise past the terminator
-        // (not a speck of the stack's noise, which its sharpening can make sharp and bright)
         boolean[] on = new boolean[ys.length];
         for (int k = 0; k < ys.length; k++) on[k] = ys[k] > loAt;
         int[] lab = new int[ys.length];
         int[] size = patches(on, w, h, lab);
-        boolean[] burns = new boolean[size.length];
-        for (int k = 0; k < ys.length; k++) if (lab[k] > 0 && Yl[k] >= burnAt) burns[lab[k]] = true;
+        int big = 0;
+        for (int i = 1; i < size.length; i++) if (size[i] > size[big]) big = i;
+        // the stack's noise off the crescent (where it has frames), and where it ends: its edge, the frames' last
+        // pixels, sharpened against nothing, is its noisiest
+        boolean[] none = new boolean[ys.length];
+        float[] off = new float[ys.length];
+        int m = 0;
+        for (int k = 0; k < ys.length; k++) {
+            int x = k % w, y = k / w;
+            none[k] = x == 0 || y == 0 || x == w - 1 || y == h - 1 || (rgb[0][k] == 0f && rgb[1][k] == 0f && rgb[2][k] == 0f);
+            if (lab[k] != big && !none[k]) off[m++] = Yl[k];
+        }
+        float[] toEdge = distance(none, w, h);
+        double sure = burnAt;
+        if (m >= 1000) {
+            Arrays.sort(off, 0, m);
+            sure = Math.max(burnAt, SPECK * off[(int) (SPECK_AT * (m - 1))]);
+        }
+        boolean[] burns = new boolean[size.length], edge = new boolean[size.length];
+        for (int k = 0; k < ys.length; k++) {
+            if (lab[k] == 0) continue;
+            if (Yl[k] >= (lab[k] == big ? burnAt : sure)) burns[lab[k]] = true;
+            if (toEdge[k] <= SPECK_EDGE) edge[lab[k]] = true;
+        }
+        for (int i = 1; i < size.length; i++) if (i != big && edge[i]) burns[i] = false;
         for (int k = 0; k < ys.length; k++) {
             if (lab[k] == 0 || !burns[lab[k]]) continue;
             double t = (ys[k] - loAt) / (hiAt - loAt);
@@ -994,10 +1079,17 @@ public final class Earthshine {
         int np = gw * gh;
         int[] idx = new int[np];
         int n = 0;
+        // the pixels fitted: near the burnt part, never burnt themselves, where the stack's light spread by the widest
+        // bleed stays well under the white level. Chosen by the model, not by what the pixels show: keeping only the
+        // ones that came out dark would leave out the bright ones the bleed made, and fit too little of it.
+        int nl0 = CORE - 1;
+        float[][] w3 = new float[3][];
+        for (int ch = 0; ch < 3; ch++) w3[ch] = MoonStack.blur(hi[ch], main.w, main.h, Math.sqrt(SPILL[nl0] * SPILL[nl0] + extra[ch]) * main.gridS);
+        float[] wide = mapped(MoonStack.lum(w3), main, tx0, ty0, beta0, gw, gh);
         for (int y = 2; y < gh - 2; y++) {
             for (int x = 2; x < gw - 2; x++) {
                 int k = y * gw + x;
-                if (dist[k] <= 0 || dist[k] > NEAR || cf[k] > 0 || cnt[k] < 0.5 * used || Y[k] > TRUST * white) continue;
+                if (dist[k] <= 0 || dist[k] > NEAR || cf[k] > 0 || cnt[k] < 0.5 * used || wide[k] > REGION * white) continue;
                 idx[n++] = k;
             }
         }
@@ -1065,7 +1157,7 @@ public final class Earthshine {
         sp.beta = best[3];
         sp.share = Arrays.copyOfRange(fit, 1, 1 + nl);
         double s2 = 0;
-        for (int i = 0; i < nl; i++) {
+        for (int i = 0; i < CORE; i++) {
             sp.a += sp.share[i];
             s2 += sp.share[i] * SPILL[i] * SPILL[i];
         }
@@ -1075,7 +1167,7 @@ public final class Earthshine {
         sp.rms = Math.sqrt(Math.max(0, best[0]) * ft.wscale / Math.max(1, n - out));
         sp.rmsStart = Math.sqrt(Math.max(0, chiStart) * ft.wscale / n);
         // a fit worth trusting: the bleed about as bright as the stack's light, the place inside the search
-        sp.ok = sp.a > 0.6 && sp.a < 1.6 && Math.abs(sp.tx - tx0) < 2.9 && Math.abs(sp.ty - ty0) < 2.9;
+        sp.ok = sp.a > 0.5 && sp.a < 2 && Math.abs(sp.tx - tx0) < 2.9 && Math.abs(sp.ty - ty0) < 2.9;
         return sp;
     }
 
@@ -1315,6 +1407,76 @@ public final class Earthshine {
         for (int h = 0; h < HALO.length; h++) halo.append(h > 0 ? ", " : "").append(String.format(Locale.US, "%.2g", coef[h]));
         g.halo = halo.toString();
         return g;
+    }
+
+    /**
+     * The Moon's centre on the stack's grid from its bright edge, the radius {@code r} known: along each direction from
+     * the guessed centre (cx, cy), where the brightness falls halfway from the lit limb's to the sky's (unbiased by the
+     * blur), and the circle of that radius through those points (least squares, the far-off ones left out; again from
+     * the centre found). {dx, dy (from the guess), the points, their spread}; null if too little of the limb is lit.
+     */
+    static double[] limbCentre(float[] Y, int w, int h, double cx, double cy, double r, double S) {
+        int na = 720;
+        double[] ex = new double[na], ey = new double[na];
+        double ox = 0, oy = 0, spread = 0;
+        int m = 0;
+        for (int round = 0; round < 2; round++) {
+            double gx = cx + ox, gy = cy + oy;
+            m = 0;
+            for (int a = 0; a < na; a++) {
+                double t = 2 * Math.PI * a / na, ux = Math.cos(t), uy = Math.sin(t);
+                // the lit limb's brightness (the brightest just inside: past the terminator, which can be near), the sky's
+                double top = 0, sky = 0;
+                int ns = 0;
+                for (double d = r - 4 * S; d <= r - 1.5 * S; d += 0.25) top = Math.max(top, MoonStack.sample(Y, w, h, gx + ux * d, gy + uy * d));
+                for (double d = r + 3 * S; d <= r + 5 * S; d += 0.25, ns++) sky += MoonStack.sample(Y, w, h, gx + ux * d, gy + uy * d);
+                sky /= Math.max(1, ns);
+                if (!(top > LIMB_LIT) || top < 10 * Math.abs(sky)) continue;
+                double mid = 0.5 * (top + sky), at = Double.NaN, prev = Double.NaN;
+                // the last fall through halfway, outward (the limb is the lit part's outer edge)
+                for (double d = r - 3 * S; d <= r + 3 * S; d += 0.125) {
+                    double v = MoonStack.sample(Y, w, h, gx + ux * d, gy + uy * d);
+                    if (prev >= mid && v < mid) at = d - 0.125 * (mid - v) / (prev - v);
+                    prev = v;
+                }
+                if (Double.isNaN(at)) continue;
+                ex[m] = gx + ux * at;
+                ey[m] = gy + uy * at;
+                m++;
+            }
+            if (m < 40) return null;
+            // the centre: Gauss-Newton on the points' distances from it, those far off the circle left out
+            double px = gx, py = gy;
+            boolean[] keep = new boolean[m];
+            Arrays.fill(keep, true);
+            for (int it = 0; it < 12; it++) {
+                double h00 = 0, h01 = 0, h11 = 0, g0 = 0, g1 = 0, ss = 0;
+                int nk = 0;
+                for (int q = 0; q < m; q++) {
+                    double dx = ex[q] - px, dy = ey[q] - py, dd = Math.hypot(dx, dy);
+                    if (dd < 1e-9) continue;
+                    double e = dd - r;
+                    if (it >= 4) keep[q] = Math.abs(e) < Math.max(0.5 * S, 3 * spread);
+                    if (!keep[q]) continue;
+                    double jx = -dx / dd, jy = -dy / dd;
+                    h00 += jx * jx;
+                    h01 += jx * jy;
+                    h11 += jy * jy;
+                    g0 += jx * e;
+                    g1 += jy * e;
+                    ss += e * e;
+                    nk++;
+                }
+                double det = h00 * h11 - h01 * h01;
+                if (nk < 30 || !(det > 1e-9)) return null;
+                spread = Math.sqrt(ss / nk);
+                px -= (h11 * g0 - h01 * g1) / det;
+                py -= (h00 * g1 - h01 * g0) / det;
+            }
+            ox = px - cx;
+            oy = py - cy;
+        }
+        return new double[]{ox, oy, m, spread};
     }
 
     /** How much brighter it is just inside a circle than just outside it, over the arc's directions (the average). */

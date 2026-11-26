@@ -73,7 +73,7 @@ final class MoonCamera {
         void onProblem(String why);
     }
 
-    enum Stage { OPENING, SEARCHING, METERING, FOCUSING, READY, SHOOTING }
+    enum Stage { OPENING, SEARCHING, METERING, FOCUSING, READY, SHOOTING, GLOW }
 
     /** What the camera sees now. */
     static final class Live {
@@ -100,6 +100,15 @@ final class MoonCamera {
         float focus;
         long exposureNs;
         int iso;
+        /**
+         * The Earth's glow (3.1): frames taken right after the burst, {@link #glowGain} times brighter (the crescent burnt
+         * white, the dark part showing), each one's own gain against the burst's (from its capture result), and their
+         * exposure. Empty if none were taken.
+         */
+        final List<MoonStack.Frame> glow = new ArrayList<MoonStack.Frame>();
+        final List<Double> glowGains = new ArrayList<Double>();
+        double glowGain;
+        String glowExposure = "";
     }
 
     /** A lens fit for the Moon, and how to open it. */
@@ -118,6 +127,14 @@ final class MoonCamera {
 
     /** Frames in a burst, and the stage's frame rate. */
     static final int BURST = 150, FPS = 30;
+    /**
+     * The Earth's glow (3.1): frames after the burst (four seconds), the most they are brightened against it (the glow
+     * is a thousandth to a ten-thousandth of the sunlit crescent), and the least worth taking.
+     */
+    static final int GLOW = 120;
+    static final double GLOW_GAIN = 400, GLOW_MIN = 12;
+    /** Frames to wait for the brighter exposure to come through before giving up on its capture results. */
+    static final int GLOW_WAIT = 20;
     /** Focus frames scored at each setting once the lens is still there. */
     static final int FOCUS_FRAMES = 3;
 
@@ -160,6 +177,11 @@ final class MoonCamera {
     double rExp = Double.NaN, arcsecPerPx = Double.NaN;
     Burst burst;
     int burstWant;
+    /** Frames of the Earth's glow to take after each burst (0: none), set from the screen (any thread). */
+    volatile int glowWant;
+    /** The burst's exposure, kept while the glow's is on; frames since the glow's was asked for. */
+    MoonMeter.Exposure mainExposure;
+    int glowWaited;
     long lastLiveMs, fpsT0;
     int fpsN;
     double fps;
@@ -564,7 +586,7 @@ final class MoonCamera {
         h.post(new Runnable() {
             @Override
             public void run() {
-                if (closed || focusLens == null || stage == Stage.SHOOTING) return;
+                if (closed || focusLens == null || stage == Stage.SHOOTING || stage == Stage.GLOW) return;
                 startFocus();
             }
         });
@@ -599,9 +621,10 @@ final class MoonCamera {
         long[] res = results.get(tNs);
         boolean asked = shotAsAsked(res);
         if (spot == null || lost >= 5) {
-            if (stage != Stage.SHOOTING) stage = Stage.SEARCHING;
-            if (stage == Stage.SHOOTING && lost > 15) {
-                // the Moon left the picture: what was caught so far is the burst
+            if (stage != Stage.SHOOTING && stage != Stage.GLOW) stage = Stage.SEARCHING;
+            if ((stage == Stage.SHOOTING || stage == Stage.GLOW) && lost > 15) {
+                // the Moon left the picture: what was caught so far is the burst (and its glow)
+                endGlow();
                 finishBurst();
             }
             live(now, null, 0, 0, w, h, "Point the phone at the Moon");
@@ -640,7 +663,10 @@ final class MoonCamera {
                 MoonStack.Frame f = new MoonStack.Frame(crop, side, side, c[0], c[1], tNs);
                 f.upPa = upPa();
                 burst.frames.add(f);
-                if (burst.frames.size() >= burstWant) finishBurst();
+                if (burst.frames.size() >= burstWant && !startGlow()) finishBurst();
+                break;
+            case GLOW:
+                glowFrame(raw, rowStride, w, h, tNs, res, asked);
                 break;
         }
         if (now - lastLiveMs >= 100) {
@@ -671,6 +697,66 @@ final class MoonCamera {
             g = new double[]{gravity[0], gravity[1], gravity[2]};
         }
         return MoonGeo.upAngle(moon.q, g, MoonGeo.sensorUp(spec.sensorOrientation));
+    }
+
+    /**
+     * The exposure for the Earth's glow: as long as the frame rate allows (the hand still holds a thirtieth of a
+     * second), then the ISO, up to {@link #GLOW_GAIN} times the burst's light.
+     */
+    static MoonMeter.Exposure glowExposure(MoonMeter.Exposure main, MoonMeter.Limits l, long frameNs) {
+        long ns = Math.max(l.minNs, Math.min(l.maxNs, frameNs));
+        double want = main.light() * GLOW_GAIN;
+        double iso = Math.min(l.maxIso, Math.max(l.minIso, want / (ns * 1e-9)));
+        if (iso <= l.minIso && ns * 1e-9 * l.minIso > want) ns = Math.max(main.ns, Math.round(want / l.minIso * 1e9));
+        return new MoonMeter.Exposure(ns, (int) Math.round(iso));
+    }
+
+    /** At the burst's end: the glow's frames next, if wanted and worth it (false: the burst is done). */
+    private boolean startGlow() {
+        if (glowWant <= 0 || burst == null || exposure == null) return false;
+        MoonMeter.Exposure g = glowExposure(exposure, limits, Math.max(minFrameNs, 1_000_000_000L / FPS));
+        double gain = g.light() / exposure.light();
+        if (gain < GLOW_MIN) return false;
+        mainExposure = exposure;
+        exposure = g;
+        burst.glowGain = gain;
+        burst.glowExposure = g.toString();
+        glowWaited = 0;
+        stage = Stage.GLOW;
+        apply();
+        return true;
+    }
+
+    /**
+     * A frame while the glow's exposure is on: kept once it comes through (its capture result says so, or after
+     * {@link #GLOW_WAIT} frames whatever it says), cropped wider than the burst's so the whole disk and the sky around
+     * it are in, whichever way the lit crescent's middle is.
+     */
+    private void glowFrame(ShortBuffer raw, int rowStride, int w, int h, long tNs, long[] res, boolean asked) {
+        glowWaited++;
+        if (!asked && glowWaited < GLOW_WAIT) return;
+        double r = Double.isNaN(rExp) ? spot.r : rExp;
+        int side = MoonFinder.side(r * 1.5);
+        int[] c = MoonFinder.corner(spot.x, spot.y, side, w, h);
+        short[] crop = MoonFinder.crop(raw, rowStride, w, h, c[0], c[1], side, side);
+        MoonStack.Frame f = new MoonStack.Frame(crop, side, side, c[0], c[1], tNs);
+        f.upPa = upPa();
+        burst.glow.add(f);
+        // this frame's own light against the burst's (what the camera really gave), else the light asked for
+        double light = res != null && res[0] > 0 && res[1] > 0 ? res[0] * 1e-9 * res[1] : exposure.light();
+        burst.glowGains.add(light / mainExposure.light());
+        if (burst.glow.size() >= glowWant) {
+            endGlow();
+            finishBurst();
+        }
+    }
+
+    /** The burst's own exposure back. */
+    private void endGlow() {
+        if (mainExposure == null) return;
+        exposure = mainExposure;
+        mainExposure = null;
+        apply();
     }
 
     private void finishBurst() {
@@ -741,6 +827,8 @@ final class MoonCamera {
                 return "Ready: hold steady and shoot";
             case SHOOTING:
                 return "Shooting: hold steady";
+            case GLOW:
+                return "Now the Earth's glow on the dark part: hold steady";
             default:
                 return "Looking for the Moon";
         }
@@ -762,8 +850,8 @@ final class MoonCamera {
         l.lens = lens != null ? lens.describe() : "";
         l.words = words;
         l.fps = fps;
-        l.got = burst != null ? burst.frames.size() : 0;
-        l.want = burst != null ? burstWant : 0;
+        l.got = burst != null ? (stage == Stage.GLOW ? burst.glow.size() : burst.frames.size()) : 0;
+        l.want = burst != null ? (stage == Stage.GLOW ? glowWant : burstWant) : 0;
         main.post(new Runnable() {
             @Override
             public void run() {

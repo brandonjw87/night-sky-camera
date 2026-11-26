@@ -80,7 +80,9 @@ import java.util.concurrent.TimeUnit;
  * Then the Transit Hunter: a crossing elsewhere (the map), then the ISS crossing the Moon right here in twenty
  * seconds; the watch's Catch arms it; the watch counts it down (its buzzes); the phone beeps and shoots by itself four
  * seconds before; the station crosses the simulated Moon in the frames at that moment; the stack finds it, names it
- * the ISS and draws its track. The screens and the watch's faces are drawn to PNG, and it ends by leaving the screen.
+ * the ISS and draws its track. Then the Earth's glow (3.1): the simulated Moon made a crescent, the switch on, the
+ * burst and the glow's brighter frames, the glow merged into the photo, saved four ways, its story, the Moon map
+ * naming the night side. The screens and the watch's faces are drawn to PNG, and it ends by leaving the screen.
  * <p>
  * Usage: robo/run.sh Moon
  */
@@ -168,6 +170,9 @@ public class Moon {
         ctrl = Robolectric.buildActivity(MoonActivity.class).setup();
         a = ctrl.get();
         ShadowLooper.idleMainLooper(300, TimeUnit.MILLISECONDS);
+        // the Earth's glow (3.1) is offered only on a crescent, and tonight's Moon (the clock's) may be any phase: the
+        // first shots are made as on a fuller Moon, and the glow gets a crescent of its own below
+        glowAt(0.9);
         check("the screen is the Moonshot the watch reaches", MoonActivity.current == a, "");
         TextureView tv = (TextureView) field(a, "texture");
         TextureView.SurfaceTextureListener stl = tv.getSurfaceTextureListener();
@@ -256,8 +261,11 @@ public class Moon {
         say("  watch: " + w);
         check("the watch's face: the phase, how much is lit, Shoot", w.contains("[Shoot, Back]") && w.contains("%") && w.contains("picture"), w);
         save(WatchProbe.moonDraw(app, st, System.currentTimeMillis(), 454), "watch_1_ready");
+        glowAt(0.9);
+        check("on a fuller Moon the Earth's glow isn't offered", ((View) field(a, "glowToggle")).getVisibility() == View.GONE, "");
         String said = fromWatch("shoot");
         check("the watch's Shoot: the phone shoots", said.startsWith("Shooting the Moon"), said);
+        check("with no glow after the burst", cam.glowWant == 0, String.valueOf(cam.glowWant));
         check("with the shutter's sound", ShadowMediaActionSound.getPlayCount(MediaActionSound.SHUTTER_CLICK) == 1,
                 ShadowMediaActionSound.getPlayCount(MediaActionSound.SHUTTER_CLICK) + "");
 
@@ -542,6 +550,8 @@ public class Moon {
         check("Focus again: focused again", k > 0 && Math.abs(cam.focus - SimTele.BEST_FOCUS) < 0.02,
                 String.format(Locale.US, "%d frames, focus %.3f", k, cam.focus));
 
+        earthsGlow(upPa, simMs, shutter, status);
+
         // ---- leaving
         say("== leaving the screen");
         Button done = button((ViewGroup) a.getWindow().getDecorView(), "Done");
@@ -559,6 +569,239 @@ public class Moon {
         say(String.format(Locale.US, "%d frames, %.0f s", tele.n, (System.currentTimeMillis() - started) / 1000.0));
         say(failed == 0 ? "ALL PASS" : failed + " FAILED");
         if (failed > 0) throw new AssertionError(failed + " checks failed");
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // the Earth's glow (3.1)
+
+    /** The Moon tonight as lit as {@code illum} for the screen's Earth's glow switch (shown on a crescent). */
+    void glowAt(double illum) throws Exception {
+        setField(a, "tonightIllum", illum);
+        call(a, "glowStyle", new Class<?>[0]);
+    }
+
+    /**
+     * The Earth's glow on a crescent: tonight's simulated Moon made a 15% crescent (its lit side where tonight's is,
+     * the Earth's glow on its night side), the switch on, Shoot: the burst, then the glow's frames at the brightest
+     * exposure the frame rate and ISO allow, then the burst's exposure back; the stack, the glow merged into it, the
+     * photo with the glow shown and saved four ways, its story, the Moon map naming the night side, and the chips.
+     */
+    void earthsGlow(double upPa, long simMs, final Button shutter, final TextView status) throws Exception {
+        say("== the Earth's glow on a crescent");
+        // the glow as faint as a real one (6e-5 of the full Moon: a few thousandths of the crescent's light), a little bluer
+        MoonSim cres = new MoonSim(simMs, place.latDeg, place.lonDeg, cam.arcsecPerPx, upPa, 4, null, 6e-5, new double[]{0.92, 1.0, 1.12}, 0.15);
+        cres.smoothBlur = true;
+        tele.sim = cres;
+        glowAt(0.15);
+        Button glowT = (Button) field(a, "glowToggle");
+        TextView help = (TextView) field(a, "shutterHelp");
+        check("on a crescent the Earth's glow is offered, on", glowT.getVisibility() == View.VISIBLE && glowT.getText().toString().contains(": on"),
+                glowT.getText().toString());
+        check("the shutter's help says what it takes", help.getText().toString().contains("Earth's glow"), help.getText().toString());
+        glowT.performClick();
+        check("the switch turns it off", glowT.getText().toString().contains(": off") && !help.getText().toString().contains("Earth's glow"),
+                glowT.getText().toString());
+        glowT.performClick();
+        // the crescent is dimmer than tonight's Moon was: the camera puts its exposure right, still ready
+        int settle = frames(400, new Until() {
+            @Override
+            public boolean done() {
+                return cam.stage == MoonCamera.Stage.READY && cam.spot != null && cam.spot.ok && cam.spot.clipped <= 0.003
+                        && Math.abs(cam.spot.level / MoonMeter.TARGET - 1) <= 0.25;
+            }
+        });
+        check("the crescent metered", settle > 0, cam.spot == null ? "no Moon" : String.format(Locale.US, "level %.2f clipped %.4f, %s",
+                cam.spot.level, cam.spot.clipped, cam.exposure));
+        frames(10, null);
+        screen("6_glow_ready");
+        final MoonMeter.Exposure ex0 = cam.exposure;
+        final int rows0 = FakeMediaStore.rows.size();
+        final double[] most = {0};
+        final String[] words = {"", ""};
+        final MoonMeter.Exposure[] after = {null};
+        shutter.performClick();
+        check("Shoot: the glow wanted after the burst", cam.glowWant == MoonCamera.GLOW, String.valueOf(cam.glowWant));
+        int n = frames(900, new Until() {
+            @Override
+            public boolean done() {
+                if (cam.stage == MoonCamera.Stage.GLOW) {
+                    most[0] = Math.max(most[0], cam.exposure.light() / ex0.light());
+                    if (words[0].isEmpty() && status.getText().toString().startsWith("The Earth's glow:")) words[0] = status.getText().toString();
+                    if (words[1].isEmpty() && shutter.getText().toString().startsWith("Earth's glow")) words[1] = shutter.getText().toString();
+                }
+                if (after[0] == null && cam.burst == null && cam.stage == MoonCamera.Stage.READY) after[0] = cam.exposure;
+                return cam.burst == null && cam.stage == MoonCamera.Stage.READY && field(a, "job") != null;
+            }
+        });
+        check("150 frames, then the glow's 120 (and a few while the exposure changed)", n >= 270 && n <= 270 + MoonCamera.GLOW_WAIT + 15, n + " frames");
+        check("the glow's frames many times brighter", most[0] >= MoonCamera.GLOW_MIN && most[0] <= MoonCamera.GLOW_GAIN * 1.01,
+                String.format(Locale.US, "%.0fx (%s, the burst's %s)", most[0], cam.exposure, ex0));
+        check("then the burst's exposure back", after[0] != null && after[0].ns == ex0.ns && after[0].iso == ex0.iso,
+                after[0] == null ? "never" : after[0] + " against " + ex0);
+        check("the screen said so while they came", words[0].contains("of " + MoonCamera.GLOW) && words[1].contains("of " + MoonCamera.GLOW),
+                words[0] + " / " + words[1]);
+        long t0 = System.currentTimeMillis();
+        frames(30000, new Until() {
+            @Override
+            public boolean done() {
+                return field(a, "job") == null;
+            }
+        });
+        say(String.format(Locale.US, "  stacked and merged in %.1f s", (System.currentTimeMillis() - t0) / 1000.0));
+        frames(900, new Until() {
+            @Override
+            public boolean done() {
+                return field(a, "savedNoGlow") != null && FakeMediaStore.rows.size() >= rows0 + 4;
+            }
+        });
+        MoonStack.Result r = (MoonStack.Result) field(a, "result");
+        say("  " + (r != null ? r.log : "no result"));
+        com.brandon.nightsky.processing.Earthshine.Result es = (com.brandon.nightsky.processing.Earthshine.Result) field(a, "glowResult");
+        say("  " + (es != null ? es.log : "no glow merged"));
+        check("the glow merged", es != null && es.ok, es == null ? "none" : es.log.substring(Math.max(0, es.log.length() - 60)));
+        if (es == null || !es.ok) return;
+        check("all 120 of its frames given, most merged", es.total == MoonCamera.GLOW && es.used >= 0.75 * es.total, es.used + " of " + es.total);
+        MoonLook.Picture gp = (MoonLook.Picture) field(a, "glowPic"), sp = (MoonLook.Picture) field(a, "base");
+        check("the photo with the glow made", gp != null && sp != null && gp.w == sp.w && gp.cx == sp.cx && gp.r == sp.r, "");
+        if (gp == null || sp == null) return;
+        // the night side: black in the stack, a soft grey with the glow; the sky round it black in both
+        double nightS = 0, nightG = 0, skyMax = 0;
+        int nn = 0;
+        List<Double> sky = new ArrayList<Double>();
+        for (int y = 0; y < gp.h; y += 2) {
+            for (int x = 0; x < gp.w; x += 2) {
+                double d = Math.hypot(x - gp.cx, y - gp.cy) / gp.r;
+                int k = y * gp.w + x;
+                if (d < 0.85 && luma(sp.argb[k]) < 6) {
+                    nightS += luma(sp.argb[k]);
+                    nightG += luma(gp.argb[k]);
+                    nn++;
+                } else if (d > 1.12 && d < 1.35) {
+                    sky.add(luma(gp.argb[k]));
+                }
+            }
+        }
+        java.util.Collections.sort(sky);
+        double sky95 = sky.isEmpty() ? 0 : sky.get((int) (0.95 * (sky.size() - 1)));
+        check("the night side: black in the stack, grey with the Earth's glow", nn > 500 && nightS / nn < 6 && nightG / nn > 25,
+                String.format(Locale.US, "%.0f against %.0f of 255 over %d px", nightG / Math.max(1, nn), nightS / Math.max(1, nn), nn));
+        check("the sky round it still black", sky95 < 20, String.format(Locale.US, "95%%: %.0f of 255", sky95));
+        // past the Moon's true edge no rim round the sunlit crescent: nothing brighter than the stack's photo, no purple
+        // (3.1's first robot runs: a purple line and a grey band there, the stack's last light lifted with the night)
+        double rimMost = 0;
+        int rimColoured = 0;
+        double rk = r.radius / gp.r;
+        for (int y = 0; y < gp.h; y++) {
+            for (int x = 0; x < gp.w; x++) {
+                double sx = r.cx + (x - gp.cx) * rk, sy = r.cy + (y - gp.cy) * rk;
+                double past = Math.hypot(sx - es.moonCx, sy - es.moonCy) - es.moonR;
+                if (past < 1.5 || past > 16) continue;
+                int c = gp.argb[y * gp.w + x];
+                rimMost = Math.max(rimMost, luma(c) - luma(sp.argb[y * gp.w + x]));
+                int cr = (c >> 16) & 255, cg = (c >> 8) & 255, cb = c & 255;
+                if (Math.min(cr, cb) - cg > 12 || cg - Math.max(cr, cb) > 12) rimColoured++;
+            }
+        }
+        check("no rim past the Moon's edge: nothing brighter than in the stack's photo, no purple", rimMost < 10 && rimColoured == 0,
+                String.format(Locale.US, "%.0f of 255 brighter at the most, %d px coloured", rimMost, rimColoured));
+        ViewGroup box = (ViewGroup) field(a, "resultBox");
+        TextView title = firstText(box);
+        check("the screen: \"Your Moon, with the Earth's glow\"", title != null && title.getText().toString().equals("Your Moon, with the Earth's glow"),
+                title == null ? "" : title.getText().toString());
+        String how = "";
+        for (int i = 0; i < box.getChildCount(); i++) {
+            View v = box.getChildAt(i);
+            if (v instanceof TextView && !(v instanceof Button) && ((TextView) v).getText().toString().startsWith("The ")) how = ((TextView) v).getText().toString();
+        }
+        check("how it was made, the glow too", how.contains("times brighter for the Earth's glow"), how);
+        Button bGlow = button(box, "Earth's glow"), bStack = button(box, "Stacked"), bMap = button(box, "Moon map"), bNone = button(box, "No labels"),
+                bShare = button(box, "Share");
+        check("an Earth's glow chip, chosen", bGlow != null && ((Integer) field(a, "look")) == 2, String.valueOf(field(a, "look")));
+        String story = ((TextView) field(a, "storyText")).getText().toString();
+        check("its story on the card: Leonardo da Vinci, the Earth in the Moon's sky", story.contains("Leonardo da Vinci") && story.contains("as bright as the sunlit crescent")
+                && story.contains("From the Moon tonight the Earth is"), story.substring(0, Math.min(140, story.length())));
+        // saved four ways: with the glow (plain, landings, map) and the stack without it
+        Uri noGlow = (Uri) field(a, "savedNoGlow"), plain = (Uri) field(a, "savedPlain");
+        String nNo = noGlow != null ? FakeMediaStore.name(noGlow) : null;
+        check("saved four times more: with the glow three ways, and without it", FakeMediaStore.rows.size() == rows0 + 4 && nNo != null && nNo.endsWith("_noglow.jpg")
+                && plain != null, (FakeMediaStore.rows.size() - rows0) + " saved, " + nNo);
+        File fg = plain != null ? FakeMediaStore.file(plain) : null, fn = noGlow != null ? FakeMediaStore.file(noGlow) : null;
+        Bitmap jg = fg != null ? BitmapFactory.decodeFile(fg.getPath()) : null, jn = fn != null ? BitmapFactory.decodeFile(fn.getPath()) : null;
+        check("whole JPEGs, the saved one with the glow brighter on the night side", jg != null && jn != null && jg.getWidth() == MoonLook.SIDE
+                && nightMean(jg, gp, sp) > nightMean(jn, gp, sp) + 15, jg == null || jn == null ? "missing" : String.format(Locale.US, "%.0f against %.0f",
+                nightMean(jg, gp, sp), nightMean(jn, gp, sp)));
+        // the screen's Moon is tonight's (the clock's), the simulated one a crescent: the screen told where the Sun is on
+        // the crescent, so the map names what is in the dark on it
+        MoonGeo.View sv = (MoonGeo.View) field(a, "view");
+        sv.l0 = cres.subSolarLon;
+        sv.b0 = cres.subSolarLat;
+        sv.illum = cres.litShare;
+        screen("6_glow_result");
+        whole("6_glow_result_page");
+        save(bitmapOf(gp), "6_photo_glow");
+        save(bitmapOf(sp), "6_photo_glow_stack");
+        String st = watchStatus();
+        String w = WatchProbe.moonWords(st, System.currentTimeMillis());
+        check("the watch hears it", w.contains("with the Earth's glow, is ready"), w);
+        // the Moon map with the glow: the night side's seas and bright craters named too
+        if (bMap != null) {
+            bMap.performClick();
+            @SuppressWarnings("unchecked")
+            List<MoonLook.MapLabel> names = (List<MoonLook.MapLabel>) field(a, "mapLabels");
+            MoonLook.MapLabel lit = null;
+            int earthlit = 0;
+            for (MoonLook.MapLabel l : names) {
+                if (l.earthlit) {
+                    earthlit++;
+                    if (lit == null || l.feature.kind == com.brandon.nightsky.processing.MoonFeatures.Kind.SEA) lit = l;
+                }
+            }
+            check("the Moon map names the night side's seas by the Earth's glow", earthlit >= 3, earthlit + " of " + names.size() + " names");
+            save((Bitmap) field(a, "shown"), "6_photo_glow_map");
+            if (lit != null) {
+                call(a, "tapped", new Class<?>[]{float.class, float.class}, (float) ((lit.bx0 + lit.bx1) / 2), (float) ((lit.by0 + lit.by1) / 2));
+                String ls = ((TextView) field(a, "storyText")).getText().toString();
+                check("a night-side name tapped: its story, seen by the Earth's glow", ls.contains("you see it by the Earth's glow"),
+                        ls.substring(Math.max(0, ls.length() - 100)));
+            }
+        }
+        // Stacked: the stack without the glow, the card without its story; No labels and Share: the photo without it
+        if (bStack != null && bNone != null && bShare != null && bGlow != null) {
+            int[] withGlow = pixels((Bitmap) field(a, "shown"));
+            bStack.performClick();
+            check("Stacked shows the stack without the glow", !java.util.Arrays.equals(pixels((Bitmap) field(a, "shown")), withGlow)
+                    && !((TextView) field(a, "storyText")).getText().toString().contains("Leonardo"), "");
+            bNone.performClick();
+            bShare.performClick();
+            Intent sent = sent(Shadows.shadowOf(a).getNextStartedActivity());
+            check("Share there sends the photo without the glow", sent != null && noGlow != null && noGlow.equals(sent.getParcelableExtra(Intent.EXTRA_STREAM)),
+                    String.valueOf(sent));
+            bGlow.performClick();
+            check("Earth's glow: back, with its story", ((TextView) field(a, "storyText")).getText().toString().contains("Leonardo"), "");
+            bShare.performClick();
+            sent = sent(Shadows.shadowOf(a).getNextStartedActivity());
+            check("and Share sends the one with the glow", sent != null && plain != null && plain.equals(sent.getParcelableExtra(Intent.EXTRA_STREAM)),
+                    String.valueOf(sent));
+        }
+    }
+
+    static double luma(int c) {
+        return ((c >> 16) & 255) * 0.2126 + ((c >> 8) & 255) * 0.7152 + (c & 255) * 0.0722;
+    }
+
+    /** A saved photo's mean on the night side (where the stack {@code sp} is black inside the disk of {@code gp}). */
+    static double nightMean(Bitmap b, MoonLook.Picture gp, MoonLook.Picture sp) {
+        double s = 0;
+        int n = 0;
+        for (int y = 0; y < gp.h; y += 3) {
+            for (int x = 0; x < gp.w; x += 3) {
+                if (Math.hypot(x - gp.cx, y - gp.cy) / gp.r < 0.85 && luma(sp.argb[y * gp.w + x]) < 6) {
+                    s += luma(b.getPixel(x, y));
+                    n++;
+                }
+            }
+        }
+        return n == 0 ? 0 : s / n;
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -862,6 +1105,12 @@ public class Moon {
             }
         }
         throw new RuntimeException("no field " + name);
+    }
+
+    static void setField(Object o, String name, Object v) throws Exception {
+        Field f = o.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(o, v);
     }
 
     static void setStatic(Class<?> c, String name, Object v) throws Exception {
