@@ -12,6 +12,8 @@
 #                                    saved, the watch's Shoot and Catch, the ISS crossing the Moon caught by itself
 #   robo/run.sh Jupiter              Jupiter's four moons (3.2) on a simulated telephoto: finding, metering, focusing, the two
 #                                    bursts stacked, the moons named and saved, Galileo's notebook, the stories, the watch's Shoot
+#   robo/run.sh Window               the Sky Window (3.3) held up to a simulated sky with the compass off: the star lock from the
+#                                    camera's frames, a card, Find and the 5x's hand-off, time travel, X-ray, red, through the Earth
 #
 # Output goes to $OUT (default build/robo): the test's log and pictures, and TEST.out (the console, whose end is shown).
 # Environment: ROBO_HOME (as for robo/setup.sh); ANDROID_JAR and ANDROID_RES_JAR (as for tools/build_apk.sh); SESSIONS,
@@ -21,7 +23,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-TEST=${1:?usage: robo/run.sh Night|Monkey|Shots|Launches|EditFlow|Intro|Stops|Moon|Jupiter [only]}
+TEST=${1:?usage: robo/run.sh Night|Monkey|Shots|Launches|EditFlow|Intro|Stops|Moon|Jupiter|Window [only]}
 ONLY=${2:-}
 ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo17}
 ANDROID_JAR=${ANDROID_JAR:-/opt/android-jars/android-37.jar}

@@ -186,6 +186,16 @@ public final class MoonActivity extends Activity implements MoonCamera.Listener 
         moonLine = text("", 15, WHITE, false);
         col.addView(moonLine, gap(4));
         moonLine.setText(tonight());
+        // where it is (3.3): the Sky Window steers the phone to it, and comes back here once it's in the 5x's frame
+        Button findIt = button("Find the Moon in the sky", false);
+        findIt.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MoonActivity.this, SkyWindowActivity.class).putExtra(SkyWindowActivity.EXTRA_FIND, "the Moon")
+                        .putExtra(SkyWindowActivity.EXTRA_FROM, "moon"));
+            }
+        });
+        col.addView(findIt, gap(8));
 
         // the telephoto's picture, the Moon ringed, and its close-up in the corner
         FrameLayout liveBox = new FrameLayout(this);

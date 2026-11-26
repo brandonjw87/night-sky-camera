@@ -20,11 +20,14 @@ International Space Station crossing the Moon by itself, with the countdown on y
 photo names the Moon's seas, craters and mountains where they are tonight (**Moon map**), and on a crescent it brings
 out the dark part, lit by sunlight bouncing off the Earth (**the Earth's glow**). Since 3.2, **Jupiter's moons**:
 Jupiter from the telephoto with its four big moons, each named where it is tonight, and **Galileo's notebook**, your
-nights drawn beside the ones Galileo drew in January 1610.
+nights drawn beside the ones Galileo drew in January 1610. Since 3.3, the **Sky Window**: hold the phone up and
+everything in the camera's picture is named (stars, constellations, planets, the Moon, galaxies, black holes,
+spacecraft, the space station flying over), and after dark it locks onto the stars themselves so every name sits on
+its star; **Find** turns you to anything, and hands the Moon and Jupiter to the 5x.
 
 It needs **Android 17** or newer and is made for the Pixel 10 and newer.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.2.
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.3.
 
 ## What it does
 
@@ -204,6 +207,32 @@ Install it with Google's USB tool instead:
    ```
 
    It prints `Success` when it's done.
+
+## The Sky Window (3.3)
+
+Tap **Open the Sky Window**, the first card on the main screen (it also says which planets are up now). Allow the
+camera and your rough location the first time.
+
+1. **Hold the phone up like a window on the sky.** The camera's picture fills the screen with the sky drawn over it:
+   the stars (the brighter, the bigger, each in its own colour), the constellations' lines and names, the planets,
+   the Moon in tonight's phase, galaxies, nebulae and clusters, black holes, spacecraft, the space station and other
+   bright satellites as they fly over, and where tonight's meteors come from. Below the horizon the ground is drawn,
+   with the compass points along the horizon (north in coral). The middle of the screen says what's there.
+2. **After dark, hold still a moment.** The window finds the stars in the camera's own picture and locks onto them:
+   the top says **★ Star lock** and how far off the compass was, and every name moves onto its star. Without a lock
+   (by day, under cloud, in a bright town) it goes by the compass and says the labels may be a few degrees off.
+3. **Tap anything** for its card: what it is, where, how far, how old its light is, when it rises, is highest and
+   sets, and its story. **Find it** on the card turns you to it.
+4. **Find** lists what there is to find: the space station when it's up, and its next passes over you with the time,
+   how high and which way; the Moon and the planets; spacecraft; meteor showers; black holes; the best galaxies and
+   nebulae; the North Star and the brightest stars up. Tap one and follow the arrow until the ring closes on it and
+   the phone buzzes. For the Moon and Jupiter the 5x camera's frame is drawn; when it's inside,
+   **Shoot the Moon with the 5x** or **Shoot Jupiter's moons with the 5x** opens that screen. (The Moonshot and
+   Jupiter's moons have **Find the Moon in the sky** and **Find Jupiter in the sky** buttons that come here.)
+5. **Point it at the ground** to see the sky on the other side of the Earth.
+6. **Time** slides the sky up to 12 hours either way (**Now** comes back), **X-ray** marks the unseen (pulsars,
+   exploded stars, stars with planets, the messages we've sent), **Red** keeps your eyes used to the dark, and
+   **Camera** turns the camera off for the drawn sky alone. Pinch to zoom; double-tap to come back.
 
 ## The Moonshot (3.0)
 
@@ -796,6 +825,10 @@ app/src/main/java/com/brandon/nightsky/
                         and the Earth's glow's brighter frames after the burst (3.1); Jupiter and its moons' two bursts (3.2)
     JupiterActivity     Jupiter's moons (3.2): tonight, the telephoto's picture, the photo and its names, Galileo's
                         notebook, the stories
+    SkyWindowActivity   the Sky Window (3.3): the camera's picture with the sky drawn over it, the star lock, cards,
+                        Find and the 5x's frame, time, X-ray, red, through the Earth
+    SkyCamera           the Sky Window's camera: the live picture by day, RAW frames by night, the meter, the night
+                        picture and the star lock on their own threads
     Transits            the Transit Hunter's list, worked out from the satellite orbits for this place
     link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
                         the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
@@ -869,6 +902,10 @@ app/src/main/java/com/brandon/nightsky/
         PointFinder, JupiterMeter  Jupiter found in a RAW frame and followed, its sharpness; its exposure and the moons'
         JupiterStack    both bursts lined up on Jupiter, its glow taken off, the moons found and named (or why not)
         JupiterLook     the photo, its names, tonight's line-up and Galileo's notebook page; JupiterStories the stories
+        SkyWindow       the Sky Window's sums (3.3): which way the phone points, what's in the sky and where, rising
+                        and setting, the way to something, the space station's passes, the night picture, the exposure
+        StarLock        the star lock: a night frame's stars matched to the catalogue (SkySolver) near where the
+                        sensors say the camera points, or refused
         Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
 watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
@@ -964,6 +1001,10 @@ in Jupiter's shadow, one close in, two in one dot, one on another's skirt with a
 `JupiterLookTest` (an output folder: the
 photo's sky black and moons clear, every moon named or its absence said, the line-up, and the notebook page with
 Galileo's nights as he drew them). `JupiterSim` is the simulated Jupiter they share.
+The 3.3 test: `WindowTest` (an output folder: where the phone points from its sensors; the star lock at 20 parts of
+the sky with the compass up to 20° out and the sensors' tilt off too, under a suburb's and a town's sky and with
+shaking hands, and the frames it must refuse; what's out there; the space station's passes over 40 days, each one
+checked; rising and setting against NOAA's; the way to things; the night picture and the exposure).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -986,4 +1027,8 @@ checks the Moon map and shoots a crescent with the Earth's glow, from the switch
 `robo/run.sh Jupiter` (3.2) does the same for Jupiter's moons: tonight's screen, finding, metering and focusing on
 `JupiterSim`'s Jupiter, both bursts from the watch's Shoot, the moons named, three photos saved, the notebook kept
 and read back, and the stories.
+`robo/run.sh Window` (3.3) holds a simulated Pixel up to a simulated sky with its compass 12° out: the window opens
+at a night exposure, the star lock finds the compass's error from the camera's frames and keeps the labels on the
+stars through a turn, a star's card, Find to Jupiter or the Moon with the 5x's frame and the hand-off, time travel,
+X-ray, red, the camera off and on, through the Earth, pause and resume, and day.
 [robo/README.md](robo/README.md) lists every scenario.

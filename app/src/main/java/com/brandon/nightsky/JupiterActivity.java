@@ -155,6 +155,16 @@ public final class JupiterActivity extends Activity implements MoonCamera.Listen
         col.addView(top);
         tonight = text("", 15, WHITE, false);
         col.addView(tonight, gap(4));
+        // where it is (3.3): the Sky Window steers the phone to it, and comes back here once it's in the 5x's frame
+        Button findIt = button("Find Jupiter in the sky", false);
+        findIt.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(JupiterActivity.this, SkyWindowActivity.class).putExtra(SkyWindowActivity.EXTRA_FIND, "Jupiter")
+                        .putExtra(SkyWindowActivity.EXTRA_FROM, "jupiter"));
+            }
+        });
+        col.addView(findIt, gap(8));
 
         // tonight's line-up from the sums, and what happens tonight
         lineUp = new ImageView(this);

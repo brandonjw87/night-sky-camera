@@ -24,11 +24,31 @@ public final class SkySolver {
         public double jdUtc = Double.NaN;
         /** Observer (radians), or NaN. */
         public double lat = Double.NaN, lon = Double.NaN;
-        /** How far the optical axis may be from the zenith (radians). */
+        /** How far the optical axis may be from the zenith (radians), or from {@link #axis} when that is given. */
         public double maxTilt = 20 * Astro.DEG;
+        /**
+         * Where the optical axis is expected to point (J2000 unit vector), or null for the zenith (the phone lying flat).
+         * 3.3, the Sky Window: where the phone's own sensors say its camera points, held up at any part of the sky.
+         */
+        public double[] axis;
+        /**
+         * The most elongated a detection may be and still be used to find the pointing (3.3: a hand-held frame's stars are
+         * short trails, all alike; a tripod's are round, and a long streak is a plane or a satellite).
+         */
+        public float maxElong = 2f;
 
         public boolean located() {
             return !Double.isNaN(jdUtc) && !Double.isNaN(lat) && !Double.isNaN(lon);
+        }
+
+        /** The direction the axis is looked for around: {@link #axis}; else the zenith, with a time and a place; else null. */
+        double[] center() {
+            if (axis != null) return axis;
+            if (!located()) return null;
+            double[] M = Astro.j2000ToEnu(jdUtc, lat, lon);
+            double[] z = new double[3];
+            Rot.apply(Rot.transpose(M), 0, 0, 1, z);
+            return z;
         }
     }
 
@@ -92,7 +112,7 @@ public final class SkySolver {
         // the brightest point-like stars, as bearings, taken in turns from across the frame so that no one patch
         // (a plane's lights, a bright cluster) can fill the list
         int nd = 0;
-        int[] di = spread(find, model.width, model.height, FIND_STARS);
+        int[] di = spread(find, model.width, model.height, FIND_STARS, prior != null ? prior.maxElong : 2f);
         nd = di.length;
         if (nd < 5) return null;
         double[] db = new double[3 * nd];
@@ -108,13 +128,10 @@ public final class SkySolver {
         model.unproject(model.width / 2.0, model.height / 2.0, c0);
         model.unproject(0, 0, c1);
         double halfDiag = Astro.sep(c0, c1);
-        // catalogue candidates
-        double[] zenith = null;
+        // catalogue candidates: around where the axis should be (the zenith, or where the sensors say), else the whole sky
+        double[] zenith = prior != null ? prior.center() : null;
         int[] cand;
-        if (prior != null && prior.located()) {
-            double[] M = Astro.j2000ToEnu(prior.jdUtc, prior.lat, prior.lon);
-            zenith = new double[3];
-            Rot.apply(Rot.transpose(M), 0, 0, 1, zenith);
+        if (zenith != null) {
             cand = catalog.within(zenith, prior.maxTilt + halfDiag + 1 * Astro.DEG, 6.5);
             if (cand.length > CAT_LOCAL) cand = Arrays.copyOf(cand, CAT_LOCAL);
         } else {
@@ -163,7 +180,7 @@ public final class SkySolver {
         int pn = Math.min(nd, PAIR_STARS);
         double[] bestR = null;
         int bestScore = 0;
-        double cosTilt = prior != null && prior.located() ? Math.cos(prior.maxTilt + 0.5 * Astro.DEG) : -2;
+        double cosTilt = zenith != null ? Math.cos(prior.maxTilt + 0.5 * Astro.DEG) : -2;
         outer:
         for (int i = 0; i < pn; i++) {
             for (int j = i + 1; j < pn; j++) {
@@ -179,7 +196,7 @@ public final class SkySolver {
                         double[] R = triad(a1, a2, b1, b2);
                         if (R == null) continue;
                         if (zenith != null) {
-                            // the optical axis must point near the zenith
+                            // the optical axis must point near the zenith (or where the sensors say it points)
                             double ax = R[2] * zenith[0] + R[5] * zenith[1] + R[8] * zenith[2];
                             if (ax < cosTilt) continue;
                         }
@@ -207,12 +224,16 @@ public final class SkySolver {
      * in order of brightness).
      */
     static int[] spread(StarList s, int W, int H, int max) {
+        return spread(s, W, H, max, 2f);
+    }
+
+    static int[] spread(StarList s, int W, int H, int max, float maxElong) {
         int G = 4;
         int[][] lists = new int[G * G][];
         int[] len = new int[G * G];
         for (int c = 0; c < lists.length; c++) lists[c] = new int[Math.min(s.count, max)];
         for (int i = 0; i < s.count; i++) {
-            if (s.elong[i] > 2f) continue;
+            if (s.elong[i] > maxElong) continue;
             int cx = Math.min(G - 1, Math.max(0, (int) (s.x[i] * G / W))), cy = Math.min(G - 1, Math.max(0, (int) (s.y[i] * G / H)));
             int c = cy * G + cx;
             if (len[c] < lists[c].length) lists[c][len[c]++] = i;

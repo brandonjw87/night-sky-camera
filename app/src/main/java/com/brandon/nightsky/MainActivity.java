@@ -577,6 +577,32 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** The Sky Window card's line (3.3): what it does, and the planets up now. */
+    private String skyWindowLine() {
+        String what = "Hold the phone up to the sky: every star, planet, constellation, galaxy, black hole and space station named on the "
+                + "camera's picture. At night it locks onto the stars themselves, so the names sit right on them.";
+        Locator.Place pl = Locator.best(this, prefs);
+        if (pl == null) return what;
+        long now = System.currentTimeMillis();
+        double tt = com.brandon.nightsky.processing.Astro.jdTt(com.brandon.nightsky.processing.Astro.jdUtc(now));
+        double[] toEnu = com.brandon.nightsky.processing.Astro.j2000ToEnu(com.brandon.nightsky.processing.Astro.jdUtc(now),
+                Math.toRadians(pl.latDeg), Math.toRadians(pl.lonDeg));
+        List<String> up = new ArrayList<String>();
+        for (int p = 0; p < com.brandon.nightsky.processing.Planets.NAMES.length; p++) {
+            if (p == 5 || p == 6) continue; // Uranus and Neptune need a telescope
+            double[] d = com.brandon.nightsky.processing.Planets.seen(p, tt).dir;
+            double z = toEnu[6] * d[0] + toEnu[7] * d[1] + toEnu[8] * d[2];
+            if (z > Math.sin(Math.toRadians(5))) up.add(com.brandon.nightsky.processing.Planets.NAMES[p]);
+        }
+        double moonAlt = com.brandon.nightsky.processing.Astro.altitude(com.brandon.nightsky.processing.Astro.moonEnu(now, Math.toRadians(pl.latDeg),
+                Math.toRadians(pl.lonDeg)));
+        if (moonAlt > Math.toRadians(5)) up.add(0, "the Moon");
+        if (up.isEmpty()) return what;
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < up.size(); i++) b.append(i == 0 ? "" : i == up.size() - 1 ? " and " : ", ").append(up.get(i));
+        return what + "\nUp now: " + b + ".";
+    }
+
     /** The Moonshot card's line: what it does, and the Moon tonight. */
     private String moonshotLine() {
         String what = "The Moon from the 5x telephoto, sharper than any single photo, with every landing site labelled, and the "
@@ -615,6 +641,20 @@ public final class MainActivity extends Activity {
         col.addView(title);
         col.addView(text("Long exposures of the stars from your Pixel's main camera", 14, RED_DIM, false), gap(4));
 
+        // the Sky Window (3.3): hold the phone up, everything on the camera's picture named, locked onto the stars
+        LinearLayout win = card();
+        win.addView(text("Sky Window", 20, RED, true));
+        win.addView(text(skyWindowLine(), 14, RED_DIM, false), gap(2));
+        Button look = button("Open the Sky Window", true);
+        look.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, SkyWindowActivity.class));
+            }
+        });
+        win.addView(look, gap(10));
+        col.addView(win, gap(16));
+
         // the Moonshot (3.0): the Moon from the telephoto, its landing sites, the space stations crossing it
         LinearLayout moon = card();
         moon.addView(text("Moonshot", 20, RED, true));
@@ -627,7 +667,7 @@ public final class MainActivity extends Activity {
             }
         });
         moon.addView(shoot, gap(10));
-        col.addView(moon, gap(16));
+        col.addView(moon, gap(12));
 
         // Jupiter's moons (3.2): Galileo's four, from the telephoto, named, in his notebook beside his own nights
         LinearLayout jup = card();

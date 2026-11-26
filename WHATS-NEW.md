@@ -1,5 +1,71 @@
 # Night Sky Camera: what's new
 
+## Version 3.3: the Sky Window
+
+> "Remember to look up at the stars and not down at your feet." Stephen Hawking
+
+3.3 makes the phone a window on the sky. Hold it up and the **Sky Window** names everything the camera's picture
+holds: the stars and their constellations, the planets, the Moon in tonight's phase, galaxies and nebulae, black
+holes, the spacecraft we've sent out, the space station as it flies over, and the point tonight's meteors fly out
+of. At night it **locks onto the stars**: it finds them in the camera's own picture, works out exactly which way the
+phone points, and sets every name on its star (a phone's compass is often 5 to 20 degrees out; after the lock the
+names are within a pixel or two). Tap anything for its story. **Find** points the way to anything, and for the Moon
+and Jupiter it hands you straight to the Moonshot or Jupiter's moons once the 5x camera has it.
+
+### What's new
+
+- **Sky Window.** A new card at the top of the main screen: **Open the Sky Window**, with what's up now (the Moon
+  and the planets you can see).
+  - **Hold the phone up like a window.** By day it's the camera's live picture with the sky drawn over it: the stars
+    are all still there, only outshone, and the Moon (and often Venus) is there to find in daylight. After dark the
+    camera takes an eighth of a second at its most sensitive, over and over, and the picture is brightened so the
+    stars show.
+  - **Everything named where it is:** 8,400 stars as dots (the brighter, the bigger, each in its own colour), the
+    constellations' lines and names, the Moon drawn in its phase, Saturn with its rings, the galaxies, nebulae and
+    clusters, Voyager 1 and 2, New Horizons and the Pioneers, the James Webb telescope's spot, Cygnus X-1 and the
+    other black holes, the radiant of any meteor shower that's on, and every satellite bright enough to see, the
+    station with a tail showing where it's going. The ground is drawn below the horizon, with north in coral.
+  - **Star lock.** After dark, hold still for a moment: the window finds the stars in the camera's picture (dozens
+    to hundreds of them), looks them up and moves every name onto its star. The top says
+    **★ Star lock: 142 stars · the compass was 12° off**. The phone's gyro then carries the lock as you turn, and it
+    looks again every second or two. With cloud or a bright sky it says so and keeps to the compass. It never
+    guesses: with too few stars, a poor match, or an answer too far from the compass's it keeps looking.
+  - **Tap anything** for its card: what it is, where it is, how far away and how old its light is ("The light you
+    see left it in 2017"), when it rises, is highest and sets, and its story. A star's card says what colour it is
+    and what that means (a hot blue-white star, an orange star, a cool orange-red one).
+  - **Find**: the Moon, the planets, the spacecraft, the meteor showers, the black holes, the best galaxies and
+    nebulae, the North Star and the brightest stars up, the dwarf planets and the Sun (to know where not to look).
+    The space station is at the top when it's up, and its next passes over you in the next day are there with the
+    time, how high and which way. Tap one and an arrow at the edge of the screen turns you to it ("Higher and to
+    the left · 34° away"), then a ring closes on it and the phone buzzes: **Got it!**
+  - **The Moon and Jupiter, then the 5x.** Finding the Moon or Jupiter draws the 5x camera's frame in the middle;
+    once it's in, **Shoot the Moon with the 5x** or **Shoot Jupiter's moons with the 5x** opens the Moonshot or
+    Jupiter's moons, pointed right. Both of those screens have a new button the other way: **Find the Moon in the
+    sky** and **Find Jupiter in the sky**.
+  - **Through the Earth.** Point the phone at the ground and see the sky on the other side of the planet, under
+    your feet, with the ground drawn see-through.
+  - **Time**: slide the sky up to 12 hours either way, to see where the Moon will be at midnight or what rises before
+    dawn. **Now** comes back.
+  - **X-ray** marks the unseen: pulsars, exploded stars, stars with planets and the messages we've sent to the stars.
+  - **Red** turns the whole screen dim red, to keep your eyes used to the dark.
+  - Pinch to zoom (half to eight times), double-tap to come back.
+
+### Under the hood
+
+- `SkyWindow`: which way the phone points from its sensors (the gyro's smooth turning, the compass only for where
+  north is), what's in the sky and where, rising and setting, the way to something, the space station's passes,
+  the night picture and the exposure, in plain Java.
+- `StarLock` and `SkySolver`: the camera's stars matched to the catalogue near where the sensors say it points; the
+  answer refused when too few stars match, the fit is poor, it's more than 28° from the compass's or tilts the sky
+  more than 6°. Star trails from a shaking hand are allowed for, hot pixels left out.
+- `SkyCamera`: the main camera under the window: its live picture by day, RAW frames by night, the meter, the night
+  picture and the lock each on their own thread.
+- Tests: `WindowTest` (where the phone points; 20 holds at 20 parts of the sky with the compass up to 20° out, all
+  locked within 0.002°; a town's bright sky; shaking hands; refusals; 33 station passes in 40 days, each one
+  checked; sunrise and sunset within 2 minutes of NOAA's; the way to things; the picture and the exposure) and a
+  new robot run, `robo/run.sh Window`: the whole window on a simulated Pixel held up to a simulated sky with its
+  compass 12° out, from the lock to Find, the 5x hand-off, time travel, X-ray, red, through the Earth and day.
+
 ## Version 3.2: Jupiter's four moons
 
 > "...three little stars, small but very bright, were near the planet." Galileo Galilei, The Starry Messenger, 1610
