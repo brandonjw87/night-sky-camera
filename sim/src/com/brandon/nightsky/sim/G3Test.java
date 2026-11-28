@@ -179,7 +179,7 @@ public final class G3Test {
         look.northUp = false;
         Master.Loaded l = Master.read(s.dir, back.stackKey);
         SensorSpec cs = Master.colourSpec(spec, l.meta);
-        Renderer.Analysis la = Master.analyze(l.image, cs, l.meta.trails);
+        Renderer.Analysis la = Master.analyze(l.image, cs, l.meta.trails, l.meta.solution());
         Framing lf = look.framing(la.cw, la.ch, look.north(la, l.meta.model, l.meta.solutionR));
         int[] lp = Master.photo(l.image, la, look.params(), lf);
         Framing bf = back.framing(la.cw, la.ch, back.north(la, l.meta.model, l.meta.solutionR));

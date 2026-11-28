@@ -67,7 +67,7 @@ import java.util.concurrent.TimeUnit;
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36, qualifiers = "w412dp-h915dp-port-xhdpi")
+@Config(sdk = 37, qualifiers = "w412dp-h915dp-port-xhdpi")
 public class Monkey {
     static final int MAX_DEPTH = 3, MAX_SCREENS = 120;
     static Application app;
@@ -126,7 +126,7 @@ public class Monkey {
         sa = Shadows.shadowOf(app);
         deny = Boolean.getBoolean("monkey.deny");
         String[] perms = {Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.READ_MEDIA_IMAGES};
+                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES, "android.permission.ACCESS_LOCAL_NETWORK", Manifest.permission.READ_MEDIA_IMAGES};
         if (deny) sa.denyPermissions(perms);
         else sa.grantPermissions(perms);
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {

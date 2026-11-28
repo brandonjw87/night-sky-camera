@@ -93,6 +93,11 @@ public final class StarSong {
                 n.hz = ROOT_HZ * semis(t.objectKind == 'G' ? 7 : 4);
                 n.gain = 0.35;
                 n.dur = 4.0;
+            } else if ("craft".equals(t.kind)) {
+                // a spacecraft (2.4): its radio calling home, three pips two octaves up
+                n.hz = ROOT_HZ * 4;
+                n.gain = 0.45;
+                n.dur = 1.2;
             } else {
                 // a star named by you: its own colour's note, as a sparkle
                 n.hz = pitch(t.bv) * 2;
@@ -242,6 +247,13 @@ public final class StarSong {
                 // a hum: two voices slightly apart, a slow swell
                 double env = Math.sin(Math.PI * Math.min(1, t / n.dur));
                 s = 0.8 * env * (Math.sin(w * k) + Math.sin(w * 1.006 * k));
+            } else if ("craft".equals(n.kind)) {
+                // a radio calling home (2.4): three short pips, a little buzzy, the last one higher
+                double slot = t / 0.16;
+                int pip = (int) slot;
+                double on = pip < 3 && slot - pip < 0.55 ? Math.min(1, (slot - pip) / 0.05) * Math.min(1, (0.55 - (slot - pip)) / 0.05) : 0;
+                double ww = pip == 2 ? w * 1.5 : w;
+                s = 0.8 * on * (Math.sin(ww * k) + 0.25 * Math.sin(3 * ww * k));
             } else if ("mine".equals(n.kind)) {
                 // a sparkle: the note, its fifth and octave in quick turns
                 double step = t < 0.12 ? 1 : t < 0.24 ? 1.5 : 2;

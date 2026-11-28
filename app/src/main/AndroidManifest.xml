@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.brandon.nightsky"
-    android:versionCode="15"
-    android:versionName="2.3">
+    android:versionCode="22"
+    android:versionName="3.3">
 
-    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="36" />
+    <!-- 3.0, the Moonshot: Android 17 or newer -->
+    <uses-sdk android:minSdkVersion="37" android:targetSdkVersion="37" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
@@ -17,7 +18,14 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- the approximate place, for the Sun, the Moon, the compass and the frame length; it never leaves the phone -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- remote viewer: a small web server on the local network, and an optional hotspot for it -->
+    <!-- the Moonshot's Transit Hunter (3.0): a space station's crossing of the Moon is seen only from a strip a few km
+         wide, so it asks for the precise place (Brandon can still choose approximate) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- the Pixel Watch (2.5): straight to the watch over Bluetooth when it's near -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- remote viewer: a small web server on the local network, and an optional hotspot for it; Android 17 asks
+         before an app talks on the local network (the Nearby devices permission, already granted with Bluetooth) -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -56,6 +64,27 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- the Moonshot (3.0): the Moon from the 5x telephoto, lucky-imaged, every landing labelled, the ISS caught crossing it -->
+        <activity
+            android:name=".MoonActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
+
+        <!-- Jupiter's moons (3.2): Jupiter and its four moons from the telephoto, named, in Galileo's notebook -->
+        <activity
+            android:name=".JupiterActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
+
+        <!-- the Sky Window (3.3): hold the phone up, the sky named on the camera's picture, locked onto the stars -->
+        <activity
+            android:name=".SkyWindowActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density" />
 
         <!-- the "Night sky" Quick Settings tile: opens the app, over the lock screen if the phone is locked -->
         <service

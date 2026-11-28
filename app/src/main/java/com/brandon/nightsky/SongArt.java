@@ -27,7 +27,7 @@ final class SongArt {
     /** How long a ring lasts (s), by kind; a name stays a second longer. */
     static double life(StarSong.Note n) {
         if ("moon".equals(n.kind)) return 3.0;
-        if ("planet".equals(n.kind) || "object".equals(n.kind) || "mine".equals(n.kind)) return 2.4;
+        if ("planet".equals(n.kind) || "object".equals(n.kind) || "mine".equals(n.kind) || "craft".equals(n.kind)) return 2.4;
         return 1.2 + 0.8 * n.gain;
     }
 
@@ -267,6 +267,7 @@ final class SongArt {
         if ("moon".equals(n.kind)) return 0xFFE6E6F0;
         if ("object".equals(n.kind)) return 0xFFBE8CFF;
         if ("mine".equals(n.kind)) return 0xFFFF8FC6;
+        if ("craft".equals(n.kind)) return 0xFF7CFFB2;
         return starColour(n.bv);
     }
 

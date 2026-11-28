@@ -78,7 +78,7 @@ import java.util.concurrent.TimeUnit;
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36, qualifiers = "w412dp-h915dp-port-xhdpi", shadows = {FakeRig.class},
+@Config(sdk = 37, qualifiers = "w412dp-h915dp-port-xhdpi", shadows = {FakeRig.class},
         instrumentedPackages = {"com.brandon.nightsky.CameraRig"})
 public class Night {
     static final long STEP_MS = 50;
@@ -132,6 +132,13 @@ public class Night {
         laptop.start();
         hold(2500);
         putDown();
+        // three particles from space through the chip (2.6), each in one frame, for Cosmic Ray Hunter to find
+        untilFrames(2);
+        SimCamera cam = SimCamera.get();
+        cam.particle(3, 520, 410, 30, 12, 120);
+        cam.particle(6, 1310, 905, 0, 1, 160);
+        cam.particle(9, 905, 1210, 115, 8, 110);
+        particlesSent = 3;
         follow(20 * 60_000L);
         report();
         Monkey.say("  result screen: " + labels());
@@ -141,6 +148,602 @@ public class Night {
         namesCheck();
         songCheck();
         missionCheck();
+        nasaCheck();
+        xrayCheck();
+        extrasCheck();
+    }
+
+    // ---- the Pixel Watch (2.5) ----
+
+    static com.brandon.nightsky.watch.WatchActivity wa;
+    static org.robolectric.android.controller.ActivityController<com.brandon.nightsky.watch.WatchActivity> wctl;
+    static boolean wristOn;
+    static String wristPart = "", wristSeen = "";
+
+    interface Check {
+        boolean ok() throws Exception;
+    }
+
+    /**
+     * The Pixel Watch (2.5): Night Sky on the watch paired with the phone by the code it shows, then a session started,
+     * followed (with the watch's screen off too) and stopped from the wrist. First over the internet alone (the relay: a
+     * stand-in for ntfy.sh on this computer, keeping its limits), then over Bluetooth alone (the relay down); unpaired
+     * from the watch, then from the phone, each end hearing it from the other.
+     */
+    static void wrist() throws Exception {
+        begin("the Pixel Watch: paired by its code, a session started, followed and stopped from the wrist");
+        com.brandon.nightsky.sim.MockNtfy relay = new com.brandon.nightsky.sim.MockNtfy();
+        Monkey.say("  the relay's stand-in at " + relay.base() + " (ntfy.sh's limits: 60 requests, then one every 5 s)");
+        WatchLink.relayOverride = relay.base();
+        com.brandon.nightsky.watch.WatchProbe.setup(relay.base(), false);
+        android.bluetooth.BluetoothAdapter bt = ((android.bluetooth.BluetoothManager) Monkey.app.getSystemService(Context.BLUETOOTH_SERVICE)).getAdapter();
+        org.robolectric.shadows.ShadowBluetoothAdapter sbt = Shadow.extract(bt);
+        sbt.setEnabled(false);
+        try {
+            if (wristInternet(relay)) wristBluetooth(relay, sbt);
+        } finally {
+            if (wctl != null) {
+                try {
+                    if (wristOn) wctl.pause().stop();
+                    wctl.destroy();
+                } catch (Throwable ignored) {
+                }
+            }
+            wristOn = false;
+            com.brandon.nightsky.watch.WatchProbe.end(Monkey.app);
+            relay.stop();
+            WatchLink.relayOverride = null;
+            sbt.setEnabled(false);
+        }
+    }
+
+    /** Over the internet: pairing typed on the phone, Ready, the crown, Start, Mute, +5 min, the screen off, Stop, Done. */
+    static boolean wristInternet(com.brandon.nightsky.sim.MockNtfy relay) throws Exception {
+        final Context ctx = Monkey.app;
+        wristPart = "net";
+        Monkey.say("  -- over the internet only (Bluetooth off on the phone, none on the watch)");
+        wctl = Robolectric.buildActivity(com.brandon.nightsky.watch.WatchActivity.class).setup();
+        wa = wctl.get();
+        wristOn = true;
+        if (!untilW("a code on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return !com.brandon.nightsky.watch.WatchProbe.code(ctx).isEmpty();
+            }
+        }, 30_000)) return false;
+        String code = com.brandon.nightsky.watch.WatchProbe.code(ctx);
+        wshot("pair");
+        pairFromPhone(code);
+        if (!untilW("paired on both", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.paired(ctx) && Monkey.svc.watch().paired();
+            }
+        }, 120_000)) return false;
+        String check = com.brandon.nightsky.watch.WatchProbe.check(ctx), line = Monkey.svc.watch().line();
+        Monkey.say("  paired: the watch shows " + check + "; the phone says: " + line);
+        if (check.length() != 4 || !line.contains(check)) Monkey.problem(scenario + ": the check digits differ: watch " + check + ", phone: " + line);
+        if (!"paired".equals(com.brandon.nightsky.watch.WatchProbe.lastBuzz())) {
+            Monkey.problem(scenario + ": the watch didn't buzz for pairing (last: " + com.brandon.nightsky.watch.WatchProbe.lastBuzz() + ")");
+        }
+        wshot("paired");
+        wa.action("ok");
+        if (!untilW("Ready on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return "idle".equals(com.brandon.nightsky.watch.WatchProbe.state(ctx));
+            }
+        }, 90_000)) return false;
+        run(1000);
+        String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        wshot("ready");
+        if (!face.startsWith("Ready") || !face.contains("[Start, Sky, Moon]")) Monkey.problem(scenario + ": the watch's ready screen: " + face);
+        // the Moon screen (3.0) from Ready, with the phone's Moonshot closed: the phase, how much is lit, only Back
+        wa.action("moon");
+        run(500);
+        String moon = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        wshot("moon");
+        Monkey.say("  the watch's Moon screen: " + moon);
+        if (!moon.matches("(New Moon|Waxing crescent|First quarter|Waxing gibbous|Full Moon|Waning gibbous|Last quarter|Waning crescent)"
+                + " \\| \\d+% \\| .*\\| \\[Back\\] \\|.*")) {
+            Monkey.problem(scenario + ": the watch's Moon screen: " + moon);
+        }
+        wa.action("moon-back");
+        run(500);
+        face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        if (!face.startsWith("Ready") || !face.contains("[Start, Sky, Moon]")) Monkey.problem(scenario + ": Back from the watch's Moon screen: " + face);
+        // the Sky Pointer (2.6), from the ready screen, while the phone waits
+        wristSky();
+        // the crown: a setup picked on the watch becomes the phone's
+        final Prefs prefs = new Prefs(ctx);
+        final String[] want = {prefs.preset()};
+        String trail = want[0].isEmpty() ? "(none)" : want[0];
+        for (int turn : new int[]{1, 1, -1}) {
+            final String was = prefs.preset();
+            wa.rotate(turn);
+            if (!untilW("the crown's setup on the phone", new Check() {
+                @Override
+                public boolean ok() {
+                    return !prefs.preset().equals(was);
+                }
+            }, 30_000)) break;
+            trail += " -> " + prefs.preset();
+        }
+        run(2000);
+        Monkey.say("  the crown: " + trail + "; the watch says \"" + com.brandon.nightsky.watch.WatchProbe.toast(ctx) + "\"");
+        // Start on the watch, the phone put down
+        wa.action("start");
+        if (!untilW("the phone starting", new Check() {
+            @Override
+            public boolean ok() {
+                return Monkey.svc.controller().status().phase != SessionController.Phase.IDLE;
+            }
+        }, 30_000)) return false;
+        Monkey.say("  the watch says \"" + com.brandon.nightsky.watch.WatchProbe.toast(ctx) + "\"");
+        hold(1500);
+        putDown();
+        if (!untilW("capturing, 3 frames in, on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return "capturing".equals(com.brandon.nightsky.watch.WatchProbe.state(ctx)) && Monkey.svc.controller().status().done >= 3;
+            }
+        }, 15 * 60_000L)) return false;
+        wshot("capturing");
+        if (!"capturing".equals(com.brandon.nightsky.watch.WatchProbe.lastBuzz()) && com.brandon.nightsky.watch.WatchProbe.buzzes() < 3) {
+            Monkey.problem(scenario + ": no buzz for the first frame (last: " + com.brandon.nightsky.watch.WatchProbe.lastBuzz() + ")");
+        }
+        // Mute, from the wrist
+        wa.action("mute");
+        untilW("the phone muted", new Check() {
+            @Override
+            public boolean ok() {
+                return Monkey.svc.controller().status().muted && com.brandon.nightsky.watch.WatchProbe.statusBool(ctx, "muted");
+            }
+        }, 60_000);
+        if (!com.brandon.nightsky.watch.WatchProbe.buttons(wa).contains("unmute")) Monkey.problem(scenario + ": no Sound button once muted: " + com.brandon.nightsky.watch.WatchProbe.face(wa));
+        // +5 min
+        final int planned = Monkey.svc.controller().status().planned;
+        wa.action("add-time");
+        untilW("five more minutes", new Check() {
+            @Override
+            public boolean ok() {
+                return Monkey.svc.controller().status().planned > planned;
+            }
+        }, 60_000);
+        run(1500);
+        Monkey.say("  +5 min: " + planned + " -> " + Monkey.svc.controller().status().planned + " frames; the watch says \""
+                + com.brandon.nightsky.watch.WatchProbe.toast(ctx) + "\"");
+        // the watch's screen off: the service follows the session
+        wristScreen(false);
+        org.robolectric.android.controller.ServiceController<com.brandon.nightsky.watch.WatchService> sc =
+                Robolectric.buildService(com.brandon.nightsky.watch.WatchService.class).create().startCommand(0, 1);
+        run(6000);
+        android.app.NotificationManager nm = (android.app.NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        org.robolectric.shadows.ShadowNotificationManager snm = Shadows.shadowOf(nm);
+        android.app.Notification ongoing = snm.getNotification(7101);
+        String ot = ongoing != null ? ongoing.extras.getString(android.app.Notification.EXTRA_TITLE) : null;
+        Monkey.say("  screen off: the watch's notification says \"" + ot + "\"");
+        if (ot == null || !ot.startsWith("Capturing")) Monkey.problem(scenario + ": the watch's ongoing notification: " + ot);
+        if (!com.brandon.nightsky.watch.WatchProbe.active(ctx)) Monkey.problem(scenario + ": the link closed with the screen");
+        // the screen on: Stop asks once more, then stops
+        wristScreen(true);
+        wa.action("stop");
+        if (!com.brandon.nightsky.watch.WatchProbe.face(wa).contains("Sure?")) Monkey.problem(scenario + ": Stop didn't ask first: " + com.brandon.nightsky.watch.WatchProbe.face(wa));
+        if (Monkey.svc.controller().status().phase != SessionController.Phase.CAPTURING) Monkey.problem(scenario + ": one tap on Stop stopped it");
+        wa.action("stop");
+        untilW("the phone stopping", new Check() {
+            @Override
+            public boolean ok() {
+                SessionController.Phase p = Monkey.svc.controller().status().phase;
+                return p != SessionController.Phase.CAPTURING && p != SessionController.Phase.PAUSED;
+            }
+        }, 60_000);
+        // the screen off till it's done: the buzz, and a notification to say so
+        wristScreen(false);
+        final org.robolectric.shadows.ShadowService ss = Shadows.shadowOf(sc.get());
+        if (!untilW("the photo, with the watch's screen off", new Check() {
+            @Override
+            public boolean ok() {
+                return ss.isStoppedBySelf();
+            }
+        }, 25 * 60_000L)) return false;
+        android.app.Notification done = snm.getNotification(7102);
+        String dt = done != null ? done.extras.getString(android.app.Notification.EXTRA_TITLE) : null;
+        String dx = done != null ? String.valueOf(done.extras.getCharSequence(android.app.Notification.EXTRA_TEXT)) : null;
+        Monkey.say("  done: the watch buzzed \"" + com.brandon.nightsky.watch.WatchProbe.lastBuzz() + "\" and says \"" + dt + ": " + dx + "\"");
+        if (!"Your photo is ready".equals(dt)) Monkey.problem(scenario + ": the watch's last notification: " + dt + " / " + dx + " (" + outcome() + ")");
+        if (!"done".equals(com.brandon.nightsky.watch.WatchProbe.lastBuzz())) Monkey.problem(scenario + ": no done buzz: " + com.brandon.nightsky.watch.WatchProbe.lastBuzz());
+        sc.destroy();
+        if (com.brandon.nightsky.watch.WatchProbe.active(ctx)) Monkey.problem(scenario + ": the link stayed up after the service, with the screen off");
+        // the screen on: Done
+        wristScreen(true);
+        untilW("Done on the watch", new Check() {
+            @Override
+            public boolean ok() throws Exception {
+                return com.brandon.nightsky.watch.WatchProbe.face(wa).startsWith("Done!");
+            }
+        }, 90_000);
+        wshot("done");
+        Monkey.say(String.format(Locale.US, "  the relay: %d requests, %d messages, %d refused (ntfy.sh's limits)", relay.requests.get(),
+                relay.publishes.get(), relay.refused.get()));
+        if (relay.refused.get() > 0) Monkey.problem(scenario + ": the relay refused " + relay.refused.get() + " requests: too many");
+        return true;
+    }
+
+    /** Over Bluetooth: unpaired from the watch, paired again with the relay down, a session with the live picture, unpaired from the phone. */
+    static void wristBluetooth(com.brandon.nightsky.sim.MockNtfy relay, org.robolectric.shadows.ShadowBluetoothAdapter sbt) throws Exception {
+        final Context ctx = Monkey.app;
+        wristPart = "bt";
+        Monkey.say("  -- unpaired on the watch; then Bluetooth only (the relay down)");
+        wa.action("tap");
+        wshot("more");
+        wa.action("unpair");
+        if (!com.brandon.nightsky.watch.WatchProbe.face(wa).contains("Sure?")) Monkey.problem(scenario + ": Unpair didn't ask first: " + com.brandon.nightsky.watch.WatchProbe.face(wa));
+        wa.action("unpair");
+        untilW("the phone forgetting the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return !Monkey.svc.watch().paired();
+            }
+        }, 60_000);
+        Monkey.say("  the phone says: " + Monkey.svc.watch().line());
+        if (!Monkey.svc.watch().line().contains("unpaired on the watch")) Monkey.problem(scenario + ": the phone's line after the watch unpaired: " + Monkey.svc.watch().line());
+        if (!untilW("a new code on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return !com.brandon.nightsky.watch.WatchProbe.code(ctx).isEmpty();
+            }
+        }, 30_000)) return;
+        // no internet now; Bluetooth on at both ends, the phone bonded to the watch
+        relay.down = true;
+        relay.dropStreams();
+        Monkey.sa.grantPermissions(Manifest.permission.BLUETOOTH_CONNECT);
+        sbt.setEnabled(true);
+        android.bluetooth.BluetoothDevice phoneDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("00:11:22:33:44:55");
+        final android.bluetooth.BluetoothDevice watchDev = org.robolectric.shadows.ShadowBluetoothDevice.newInstance("66:77:88:99:AA:BB");
+        sbt.setBondedDevices(new java.util.HashSet<android.bluetooth.BluetoothDevice>(Arrays.asList(phoneDev)));
+        String why = Monkey.svc.watch().pair(com.brandon.nightsky.watch.WatchProbe.code(ctx));
+        if (why != null) {
+            Monkey.problem(scenario + ": pairing again: " + why);
+            return;
+        }
+        if (!untilW("the phone listening on Bluetooth", new Check() {
+            @Override
+            public boolean ok() throws Exception {
+                return Shots.field(Monkey.svc.watch(), "btServer") != null;
+            }
+        }, 30_000)) return;
+        com.brandon.nightsky.watch.WatchProbe.bluetooth(ctx, true);
+        if (!untilW("the watch's Bluetooth socket", new Check() {
+            @Override
+            public boolean ok() throws Exception {
+                return com.brandon.nightsky.watch.WatchProbe.socket(ctx) != null;
+            }
+        }, 30_000)) return;
+        // the radio between them: what one end writes, the other reads
+        android.bluetooth.BluetoothSocket ws = com.brandon.nightsky.watch.WatchProbe.socket(ctx);
+        org.robolectric.shadows.ShadowBluetoothServerSocket server = Shadow.extract(Shots.field(Monkey.svc.watch(), "btServer"));
+        android.bluetooth.BluetoothSocket ps = server.deviceConnected(watchDev);
+        org.robolectric.shadows.ShadowBluetoothSocket sw = Shadow.extract(ws), sp = Shadow.extract(ps);
+        bridge(sw.getOutputStreamSink(), sp.getInputStreamFeeder(), "watch-to-phone");
+        bridge(sp.getOutputStreamSink(), sw.getInputStreamFeeder(), "phone-to-watch");
+        if (!untilW("paired over Bluetooth", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.paired(ctx) && Monkey.svc.watch().paired();
+            }
+        }, 60_000)) return;
+        if (!untilW("the phone heard over Bluetooth", new Check() {
+            @Override
+            public boolean ok() {
+                return "Bluetooth".equals(com.brandon.nightsky.watch.WatchProbe.via(ctx));
+            }
+        }, 60_000)) return;
+        wa.action("ok");
+        run(1500);
+        Monkey.say("  paired over Bluetooth: the phone says: " + Monkey.svc.watch().line());
+        wshot("ready_bt");
+        // Again, from the watch: the live picture comes over Bluetooth
+        wa.action("start");
+        untilW("the phone starting again", new Check() {
+            @Override
+            public boolean ok() {
+                SessionController.Phase p = Monkey.svc.controller().status().phase;
+                return p != SessionController.Phase.IDLE && p != SessionController.Phase.DONE && p != SessionController.Phase.FAILED;
+            }
+        }, 30_000);
+        hold(1500);
+        putDown();
+        if (!untilW("capturing, with the live picture on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return "capturing".equals(com.brandon.nightsky.watch.WatchProbe.state(ctx)) && com.brandon.nightsky.watch.WatchProbe.picture(ctx)
+                        && Monkey.svc.controller().status().done >= 2;
+            }
+        }, 15 * 60_000L)) return;
+        wshot("capturing_bt");
+        wa.action("stop");
+        wa.action("stop");
+        if (!untilW("Done on the watch, over Bluetooth", new Check() {
+            @Override
+            public boolean ok() {
+                return "done".equals(com.brandon.nightsky.watch.WatchProbe.state(ctx));
+            }
+        }, 25 * 60_000L)) return;
+        run(10_000);
+        wshot("done_bt");
+        // unpaired on the phone: the watch hears it, and shows a new code
+        Monkey.svc.watch().unpair();
+        if (!untilW("the watch forgetting the phone", new Check() {
+            @Override
+            public boolean ok() {
+                return !com.brandon.nightsky.watch.WatchProbe.paired(ctx) && !com.brandon.nightsky.watch.WatchProbe.code(ctx).isEmpty();
+            }
+        }, 60_000)) return;
+        Monkey.say("  unpaired on the phone; the watch says \"" + com.brandon.nightsky.watch.WatchProbe.toast(ctx) + "\"");
+        wshot("unpaired");
+        Monkey.say(String.format(Locale.US, "  the relay (down for this part): %d requests in all", relay.requests.get()));
+    }
+
+    /** Runs until {@code c}, taking a picture of the watch each time what it shows changes; false (and a problem) at {@code maxMs}. */
+    static boolean untilW(String what, Check c, long maxMs) throws Exception {
+        long end = SystemClock.elapsedRealtime() + maxMs;
+        while (SystemClock.elapsedRealtime() < end) {
+            step();
+            wristLook();
+            if (c.ok()) return true;
+        }
+        Monkey.problem(scenario + ": no " + what + " after " + maxMs / 1000 + " s: watch " + (wa != null ? com.brandon.nightsky.watch.WatchProbe.face(wa) : "")
+                + "; phone " + outcome());
+        return false;
+    }
+
+    /**
+     * The Sky Pointer (2.6): Sky on the ready screen; the arm held at a bright star (as the watch's rotation sensor would
+     * say, magnetic north and all) and it names it; Find, and it steers the arm to the Moon ("Higher", then "Got it!" and
+     * the found buzz); the crown on to the next thing; the middle tapped to flip the arm; Back.
+     */
+    static void wristSky() throws Exception {
+        final Context ctx = Monkey.app;
+        if (!untilW("the phone's place on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.place(ctx) != null;
+            }
+        }, 60_000)) return;
+        double[] at = com.brandon.nightsky.watch.WatchProbe.place(ctx);
+        Locator.Place phone = new Prefs(ctx).savedPlace();
+        if (phone == null || Math.abs(at[0] - phone.latDeg) > 0.06 || Math.abs(at[1] - phone.lonDeg) > 0.06) {
+            Monkey.problem(scenario + ": the watch's place " + at[0] + ", " + at[1] + " isn't the phone's, to a tenth of a degree: "
+                    + (phone == null ? "none" : phone.latDeg + ", " + phone.lonDeg));
+        }
+        wa.action("sky");
+        if (!untilW("the stars read on the watch", new Check() {
+            @Override
+            public boolean ok() {
+                return com.brandon.nightsky.watch.WatchProbe.skyStars();
+            }
+        }, 30_000)) return;
+        if (!com.brandon.nightsky.watch.WatchProbe.skyOn(wa)) {
+            Monkey.problem(scenario + ": Sky didn't open the Sky Pointer: " + com.brandon.nightsky.watch.WatchProbe.face(wa));
+            return;
+        }
+        if (!com.brandon.nightsky.watch.WatchProbe.skyListening(wa, ssm)) Monkey.problem(scenario + ": the Sky Pointer isn't listening to the rotation sensor");
+        // the arm at a bright star that's up
+        String star = null;
+        double[] dir = null;
+        for (String s : new String[]{"Vega", "Capella", "Arcturus", "Deneb", "Altair", "Polaris"}) {
+            double[] d = com.brandon.nightsky.watch.WatchProbe.skyWhere(wa, s);
+            if (d != null && d[2] > 0.2) {
+                star = s;
+                dir = d;
+                break;
+            }
+        }
+        if (dir == null) {
+            Monkey.problem(scenario + ": no bright star up for the Sky Pointer");
+            return;
+        }
+        skyPoint(dir, at);
+        String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        wshot("sky_" + star.toLowerCase(Locale.US));
+        if (!face.startsWith("Pointing at | " + star + " | ")) Monkey.problem(scenario + ": pointing at " + star + ", the watch says: " + face);
+        // Find: the Moon first on the crown's list
+        wa.action("sky-find");
+        run(300);
+        String first = com.brandon.nightsky.watch.WatchProbe.skyFinding(wa);
+        if (!"the Moon".equals(first)) Monkey.problem(scenario + ": Find began with " + first + ", not the Moon");
+        double[] moon = com.brandon.nightsky.watch.WatchProbe.skyWhere(wa, "the Moon");
+        if (moon != null) {
+            // 30 degrees under it: higher
+            double alt = Math.asin(moon[2]), az = Math.atan2(moon[0], moon[1]), lo = alt - Math.toRadians(30);
+            skyPoint(new double[]{Math.cos(lo) * Math.sin(az), Math.cos(lo) * Math.cos(az), Math.sin(lo)}, at);
+            face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+            wshot("sky_find_moon");
+            if (!face.contains(" | Higher")) Monkey.problem(scenario + ": 30 degrees under the Moon, the watch says: " + face);
+            int buzzes = com.brandon.nightsky.watch.WatchProbe.buzzes();
+            skyPoint(moon, at);
+            run(800);
+            face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+            wshot("sky_got_moon");
+            if (!face.contains("Got it!") || !face.contains(" | tick")) Monkey.problem(scenario + ": on the Moon, the watch says: " + face);
+            if (!"found".equals(com.brandon.nightsky.watch.WatchProbe.lastBuzz()) || com.brandon.nightsky.watch.WatchProbe.buzzes() <= buzzes) {
+                Monkey.problem(scenario + ": no found buzz on the Moon (last: " + com.brandon.nightsky.watch.WatchProbe.lastBuzz() + ")");
+            }
+        }
+        // the crown: on to the next thing
+        wa.rotate(1);
+        run(300);
+        String next = com.brandon.nightsky.watch.WatchProbe.skyFinding(wa);
+        if (next.isEmpty() || next.equals(first)) Monkey.problem(scenario + ": the crown didn't move Find on from " + first + " (" + next + ")");
+        // the middle: the arm flipped (the crown toward the elbow), and back
+        boolean was = com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx);
+        wa.action("tap");
+        boolean flipped = com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx);
+        wa.action("tap");
+        if (flipped == was || com.brandon.nightsky.watch.WatchProbe.crownToElbow(ctx) != was) Monkey.problem(scenario + ": the middle tap didn't flip the arm");
+        Monkey.say("  the Sky Pointer: " + star + " named, Find from " + first + " on to " + next + "; the arm flipped and back");
+        wa.action("sky-back");
+        run(300);
+        face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        if (com.brandon.nightsky.watch.WatchProbe.skyOn(wa) || !face.startsWith("Ready")) Monkey.problem(scenario + ": Back didn't leave the Sky Pointer: " + face);
+    }
+
+    /**
+     * The watch's rotation sensor saying its arm points along {@code enu} (true north; the sensor's own is magnetic, so
+     * turned back by the declination where the watch is): a run of readings, as the sensor gives them while the arm is held.
+     */
+    static void skyPoint(double[] enu, double[] at) throws Exception {
+        double d = Math.toRadians(new android.hardware.GeomagneticField((float) at[0], (float) at[1], 0f, System.currentTimeMillis()).getDeclination());
+        // true to magnetic: the level part turned back by the declination
+        double e = enu[0] * Math.cos(d) - enu[1] * Math.sin(d), n = enu[0] * Math.sin(d) + enu[1] * Math.cos(d), u = enu[2];
+        double[] x = {e, n, u};
+        // the face as near up as it can be, then the watch's y axis
+        double k = x[2];
+        double[] z = {-k * x[0], -k * x[1], 1 - k * x[2]};
+        double zn = Math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+        if (zn < 1e-6) {
+            z = new double[]{0, -1, 0};
+            zn = 1;
+        }
+        for (int i = 0; i < 3; i++) z[i] /= zn;
+        double[] y = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+        // rows: east, north, up; columns: the watch's x, y, z
+        double[] R = {x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]};
+        float[] q = quaternion(R);
+        // to the watch's listener alone (the rotation sensor is the phone's too, in this one process)
+        for (int i = 0; i < 40; i++) {
+            android.hardware.SensorEvent ev = org.robolectric.shadows.SensorEventBuilder.newBuilder().setSensor(rotation)
+                    .setValues(new float[]{q[0], q[1], q[2], q[3], (float) Math.toRadians(4)}).setTimestamp(System.nanoTime())
+                    .setAccuracy(android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_HIGH).build();
+            com.brandon.nightsky.watch.WatchProbe.skyEvent(wa, ev);
+            run(20);
+        }
+        run(100);
+    }
+
+    /** Android's rotation vector (x, y, z, w) for the rotation matrix {@code R} (rows first), as getRotationMatrixFromVector reads it. */
+    static float[] quaternion(double[] R) {
+        double tr = R[0] + R[4] + R[8], x, y, z, w;
+        if (tr > 0) {
+            double s = Math.sqrt(tr + 1) * 2;
+            w = s / 4;
+            x = (R[7] - R[5]) / s;
+            y = (R[2] - R[6]) / s;
+            z = (R[3] - R[1]) / s;
+        } else if (R[0] > R[4] && R[0] > R[8]) {
+            double s = Math.sqrt(1 + R[0] - R[4] - R[8]) * 2;
+            w = (R[7] - R[5]) / s;
+            x = s / 4;
+            y = (R[1] + R[3]) / s;
+            z = (R[2] + R[6]) / s;
+        } else if (R[4] > R[8]) {
+            double s = Math.sqrt(1 + R[4] - R[0] - R[8]) * 2;
+            w = (R[2] - R[6]) / s;
+            x = (R[1] + R[3]) / s;
+            y = s / 4;
+            z = (R[5] + R[7]) / s;
+        } else {
+            double s = Math.sqrt(1 + R[8] - R[0] - R[4]) * 2;
+            w = (R[3] - R[1]) / s;
+            x = (R[2] + R[6]) / s;
+            y = (R[5] + R[7]) / s;
+            z = s / 4;
+        }
+        // getRotationMatrixFromVector takes w as given (or works it out from x, y, z if left out): keep it positive
+        if (w < 0) {
+            w = -w;
+            x = -x;
+            y = -y;
+            z = -z;
+        }
+        return new float[]{(float) x, (float) y, (float) z, (float) w};
+    }
+
+    /** A picture of the watch each time the phone's state on it changes. */
+    static void wristLook() throws Exception {
+        if (wa == null || !wristOn) return;
+        String st = com.brandon.nightsky.watch.WatchProbe.state(Monkey.app);
+        if (st.isEmpty() || st.equals(wristSeen)) return;
+        wristSeen = st;
+        wshot("state_" + st);
+    }
+
+    /** The watch's screen as it is now: in the log, and drawn to a picture 456 pixels across (a Pixel Watch's). */
+    static void wshot(String name) throws Exception {
+        String face = com.brandon.nightsky.watch.WatchProbe.face(wa);
+        Monkey.say("  " + clock() + ": watch " + name + ": " + face);
+        Bitmap b = com.brandon.nightsky.watch.WatchProbe.draw(wa, 456);
+        FileOutputStream fo = new FileOutputStream(new File(Monkey.out, "watch_" + wristPart + "_" + name + ".png"));
+        try {
+            b.compress(Bitmap.CompressFormat.PNG, 100, fo);
+        } finally {
+            fo.close();
+        }
+    }
+
+    /** The watch's screen going off (lowered wrist) or on again. */
+    static void wristScreen(boolean on) throws Exception {
+        if (on == wristOn) return;
+        if (on) wctl.restart().resume();
+        else wctl.pause().stop();
+        wristOn = on;
+        run(500);
+        Monkey.say("  " + clock() + ": the watch's screen " + (on ? "on" : "off"));
+    }
+
+    /** The code typed on the phone: Settings' Pixel Watch card, Pair a watch, the six digits as the watch shows them. */
+    static void pairFromPhone(String code) throws Exception {
+        View b = findLabel("Pair a watch");
+        if (b == null) throw new IllegalStateException("no Pair a watch among: " + labels());
+        b.performClick();
+        run(300);
+        android.app.Dialog d = ShadowDialog.getLatestDialog();
+        android.widget.EditText e = editText(d.getWindow().getDecorView());
+        if (e == null) throw new IllegalStateException("no box for the code in the dialog");
+        e.setText(code.substring(0, 3) + " " + code.substring(3));
+        ((android.app.AlertDialog) d).getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick();
+        run(300);
+        String asked = Monkey.answerPermissions();
+        run(300);
+        Monkey.say("  " + clock() + ": typed " + code + " in Pair a watch" + asked + " -> " + Monkey.svc.watch().line());
+    }
+
+    static android.widget.EditText editText(View v) {
+        if (v instanceof android.widget.EditText) return (android.widget.EditText) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                android.widget.EditText e = editText(g.getChildAt(i));
+                if (e != null) return e;
+            }
+        }
+        return null;
+    }
+
+    /** Copies what one Bluetooth end writes into what the other reads. */
+    static void bridge(final InputStream from, final java.io.OutputStream to, String name) {
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                byte[] b = new byte[8192];
+                try {
+                    int n;
+                    while ((n = from.read(b)) > 0) {
+                        to.write(b, 0, n);
+                        to.flush();
+                    }
+                } catch (java.io.IOException ignored) {
+                    // an end closed
+                }
+                try {
+                    to.close();
+                } catch (java.io.IOException ignored) {
+                }
+            }
+        }, "bt-" + name);
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
@@ -556,7 +1159,7 @@ public class Night {
         Monkey.say("  result screen: " + labels());
         SessionController.Result r = Monkey.svc.controller().status().result;
         // the next scenario as the app comes: deep sky
-        new Prefs(Monkey.app).setMode(false, false);
+        new Prefs(Monkey.app).setMode(false, false, false);
         if (r == null) {
             Monkey.problem(scenario + ": no result");
             return;
@@ -594,6 +1197,124 @@ public class Night {
         }
         if (findLabel("Play it") == null || findLabel("Share as GIF") == null) Monkey.problem(scenario + ": the result screen has no Earth's turn: " + labels());
         shot("earth");
+    }
+
+    /**
+     * The time lapse (2.5): 10 minutes in its mode, in the comet tails look (choosing the mode moves the length to its own
+     * 30 minutes; 10 is among its lengths). The film is in the session's folder: H.264 in a 16:12 shape, a picture for every
+     * frame of the night (stretched to 8 seconds: 4 pictures a frame at most) and 0.7 s held at the end; in the gallery; the
+     * result screen says what it is and plays it. Then it's made again from the result screen in another look (Trails
+     * growing), which replaces the folder's copy and adds a gallery copy; and opened again from the sessions page, the card
+     * and its looks are still there.
+     */
+    static void lapse() throws Exception {
+        begin("10 minutes of time lapse, comet tails");
+        press("Time lapse");
+        Prefs prefs = new Prefs(Monkey.app);
+        if (!prefs.timelapse() || prefs.durationMin() != Prefs.LAPSE_DEFAULT_MIN) {
+            Monkey.problem(scenario + ": choosing the time lapse: mode " + prefs.timelapse() + ", " + prefs.durationMin() + " min");
+        }
+        minutes(10);
+        press("Comet tails");
+        try {
+            startAndPutDown();
+            follow(30 * 60_000L);
+            report();
+        } finally {
+            // the next scenario as the app comes: deep sky
+            prefs.setMode(false, false, false);
+            prefs.setLapseStyle("sky");
+        }
+        Monkey.say("  result screen: " + labels());
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result");
+            return;
+        }
+        com.brandon.nightsky.processing.SessionStore st = new com.brandon.nightsky.processing.SessionStore(new File(Monkey.root, r.session));
+        String log = st.readLog();
+        for (String l : log.split("\n")) if (l.contains("time lapse")) Monkey.say("    log: " + l.replaceFirst("^\\S+ ", ""));
+        int units = 0;
+        for (com.brandon.nightsky.processing.UnitRecord u : st.readUnits()) if (!u.disturbed) units++;
+        if (r.lapse == null || !r.lapse.isFile()) {
+            Monkey.problem(scenario + ": no time lapse (" + units + " frames)");
+            return;
+        }
+        if (!"comet".equals(r.lapseStyle)) Monkey.problem(scenario + ": the look is " + r.lapseStyle);
+        Monkey.say("  words: " + r.lapseWords);
+        if (!r.lapseWords.contains("times faster") || !r.lapseWords.contains("comet tails")) Monkey.problem(scenario + ": the words: " + r.lapseWords);
+        if (!"developed".equals(st.state())) Monkey.problem(scenario + ": the session is " + st.state());
+        if (r.lapseVideo == null || FakeMediaStore.file(r.lapseVideo) == null) Monkey.problem(scenario + ": the time lapse isn't in the gallery");
+        lapseClip(r.lapse, units);
+        if (findLabel("Play it") == null || findLabel("Share video") == null || findLabel("Trails growing") == null) {
+            Monkey.problem(scenario + ": the result screen has no time lapse card: " + labels());
+        }
+        shot("lapse");
+
+        // made again in another look, from the result screen
+        android.net.Uri first = r.lapseVideo;
+        press("Trails growing");
+        lapseMade(r, "trails");
+        SessionController.Status after = Monkey.svc.controller().status();
+        Monkey.say("  made again: " + after.headline + " / " + after.detail);
+        if (after.result != r || !"trails".equals(r.lapseStyle) || !r.lapse.isFile()) {
+            Monkey.problem(scenario + ": made again: " + r.lapseStyle + ", " + after.headline + " / " + after.detail);
+        }
+        if (r.lapseVideo == null || r.lapseVideo.equals(first)) Monkey.problem(scenario + ": made again, no new gallery copy");
+        if (!"Your time lapse is ready".equals(after.headline)) Monkey.problem(scenario + ": made again, it says " + after.headline);
+        lapseClip(r.lapse, units);
+        if (new File(r.lapse.getParentFile(), r.name + "_timelapse.part.mp4").exists()) Monkey.problem(scenario + ": the part made is left behind");
+        shot("lapse-again");
+
+        // opened again from the sessions page: the card, its looks (the frames are kept)
+        Monkey.idle();
+        Monkey.svc.controller().openSession(new File(Monkey.root, r.session));
+        until("the session opened again", new Cond() {
+            @Override
+            public boolean ok(SessionController.Status s) {
+                return s.phase == SessionController.Phase.DONE && s.result != null && s.result != r;
+            }
+        }, 180_000L);
+        run(1500);
+        SessionController.Result o = Monkey.svc.controller().status().result;
+        if (o.lapse == null || !o.lapse.equals(r.lapse) || !"trails".equals(o.lapseStyle) || !String.valueOf(r.lapseVideo).equals(String.valueOf(o.lapseVideo))) {
+            Monkey.problem(scenario + ": opened again, the time lapse is " + o.lapse + " (" + o.lapseStyle + ", " + o.lapseVideo + ")");
+        }
+        if (!o.lapseFrames) Monkey.problem(scenario + ": opened again, its frames aren't offered for another look");
+        if (findLabel("Play it") == null || findLabel("Sky turning") == null) Monkey.problem(scenario + ": opened again, no time lapse card: " + labels());
+        Monkey.say("  opened again from the sessions page: " + labels());
+        // a look made from the frames as they're kept (their defective pixels found again)
+        press("Sky turning");
+        lapseMade(o, "sky");
+        after = Monkey.svc.controller().status();
+        Monkey.say("  from the kept frames: " + after.headline + " / " + after.detail);
+        if (!"sky".equals(o.lapseStyle) || o.lapseSource == null) Monkey.problem(scenario + ": from the kept frames: " + o.lapseStyle + ", " + after.detail);
+        lapseClip(o.lapse, units);
+        shot("lapse-reopened");
+    }
+
+    /** Until the time lapse asked for on the result screen is made in {@code style} (or making it ended otherwise). */
+    static void lapseMade(final SessionController.Result r, final String style) throws Exception {
+        until("the time lapse made", new Cond() {
+            @Override
+            public boolean ok(SessionController.Status s) {
+                return s.phase == SessionController.Phase.FAILED || (s.phase == SessionController.Phase.DONE
+                        && (style.equals(r.lapseStyle) || s.headline.equals("No time lapse") || s.headline.equals("Cancelled")));
+            }
+        }, 20 * 60_000L);
+        run(1500);
+    }
+
+    /** A time lapse's film: H.264, its pictures as its night's {@code units} frames make them. */
+    static void lapseClip(File f, int units) throws Exception {
+        if (!FfmpegVideo.haveFfmpeg()) return;
+        String[] p = exec("ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                "stream=codec_name,width,height,nb_read_frames", "-of", "csv=p=0", f.getPath()).trim().split(",");
+        Monkey.say("  film: " + Arrays.toString(p) + ", " + f.length() / 1024 + " KB, " + units + " frames of the night");
+        int want = Math.max(units, Math.min(units * 4, 240)) + 21;
+        if (p.length < 4 || !"h264".equals(p[0].trim()) || Integer.parseInt(p[3].trim()) != want) {
+            Monkey.problem(scenario + ": the film is " + Arrays.toString(p) + ", " + want + " pictures expected");
+        }
     }
 
     /**
@@ -1700,11 +2421,20 @@ public class Night {
             Monkey.problem(scenario + ": no photo with a video to save again");
             return;
         }
-        Bitmap pic = decode(r.jpeg);
-        if (pic == null) {
+        Bitmap decoded = decode(r.jpeg);
+        if (decoded == null) {
             Monkey.problem(scenario + ": the photo doesn't decode, to save it again");
             return;
         }
+        // its pixels alone, as the app's own photo is before it's saved: Robolectric's decoder (4.18, Android 17) keeps
+        // the photo's brightness map out of sight of hasGainmap and getGainmap, yet its encoder still writes it, so the
+        // map would come back in a photo saved "without" one (a phone shows the map, and the app takes it off itself)
+        int pw = decoded.getWidth(), ph = decoded.getHeight();
+        int[] px = new int[pw * ph];
+        decoded.getPixels(px, 0, pw, 0, 0, pw, ph);
+        Bitmap pic = Bitmap.createBitmap(px, pw, ph, Bitmap.Config.ARGB_8888);
+        px = null;
+        decoded.recycle();
         Integer before = HdrScreen.readsBackForced;
         try {
             String[] names = {"fallback-video", "fallback-plain", "read-back"};
@@ -2033,6 +2763,296 @@ public class Night {
         }
     }
 
+    /**
+     * The NASA version (2.4) on the result screen: Mission Replay's GIF in the gallery, read back frame by frame, and
+     * shared; Deep Space Zoom's close-ups in the gallery (1080 x 1080 pictures), on the screen and shared all at once;
+     * Deep Space Network's card, with this sky's Pioneer 10 in the photo, and Show all filling in the rest.
+     */
+    static void nasaCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result for 2.4's checks");
+            return;
+        }
+        // Mission Replay
+        File gif = r.replayGif != null ? FakeMediaStore.file(r.replayGif) : null;
+        if (r.replay == null || gif == null || !gif.isFile()) {
+            Monkey.problem(scenario + ": no Mission Replay in the gallery (" + r.replayWords + ")");
+        } else {
+            javax.imageio.ImageReader rd = javax.imageio.ImageIO.getImageReadersByFormatName("gif").next();
+            javax.imageio.stream.ImageInputStream in = javax.imageio.ImageIO.createImageInputStream(gif);
+            int frames;
+            try {
+                rd.setInput(in);
+                frames = rd.getNumImages(true);
+                java.awt.image.BufferedImage last = rd.read(frames - 1);
+                Monkey.say(String.format(Locale.US, "  Mission Replay: %s, %d KB, %d frames of %d x %d", gif.getName(), gif.length() / 1024, frames,
+                        last.getWidth(), last.getHeight()));
+            } finally {
+                in.close();
+            }
+            if (frames < 10) Monkey.problem(scenario + ": Mission Replay has only " + frames + " frames");
+            if (gif.length() > (8L << 20)) Monkey.problem(scenario + ": Mission Replay is " + gif.length() / 1024 + " KB, too big for a message");
+            if (findLabel("Mission Replay") == null) Monkey.problem(scenario + ": Mission Replay isn't on the result screen");
+            shareCheck("Share the GIF", Intent.ACTION_SEND, "image/gif", r.replayGif);
+        }
+        // Deep Space Zoom
+        if (r.zooms.isEmpty()) {
+            Monkey.problem(scenario + ": no Deep Space Zoom close-ups: " + r.zoomWords);
+        } else {
+            StringBuilder names = new StringBuilder();
+            for (SessionController.ZoomShot z : r.zooms) {
+                File f = z.uri != null ? FakeMediaStore.file(z.uri) : null;
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                if (f != null) BitmapFactory.decodeFile(f.getPath(), o);
+                names.append(names.length() > 0 ? ", " : "").append(z.title).append(f != null ? " (" + f.length() / 1024 + " KB)" : "");
+                if (f == null || o.outWidth != 1080 || o.outHeight != 1080) {
+                    Monkey.problem(scenario + ": the close-up of " + z.title + " isn't a 1080 x 1080 picture in the gallery: " + o.outWidth + " x " + o.outHeight);
+                }
+                if (findLabel(z.title) == null) Monkey.problem(scenario + ": " + z.title + " isn't on the result screen");
+            }
+            Monkey.say("  Deep Space Zoom: " + names);
+            if (r.zooms.size() == 1) shareCheck("Share the close-up", Intent.ACTION_SEND, "image/jpeg", r.zooms.get(0).uri);
+            else shareCheck("Share the close-ups", Intent.ACTION_SEND_MULTIPLE, "image/jpeg", null);
+        }
+        // Deep Space Network: this sky has Pioneer 10 (and L2) in the photo
+        List<String> before = networkHeads();
+        if (before.isEmpty()) {
+            Monkey.problem(scenario + ": no Deep Space Network card: " + labels());
+            return;
+        }
+        boolean pioneer = false;
+        for (String hd : before) pioneer |= hd.startsWith("Pioneer 10: in your photo");
+        if (!pioneer) Monkey.problem(scenario + ": Pioneer 10 isn't in this photo's Deep Space Network card: " + before);
+        // (X-Ray Vision's card has a Show all of its own, above this one)
+        View more = findLabel("Show all 7");
+        if (more == null) {
+            if (before.size() < 7) Monkey.problem(scenario + ": the Deep Space Network card shows " + before.size() + " of 7, and no Show all");
+        } else {
+            press("Show all 7");
+            List<String> after = networkHeads();
+            if (findLabel("Show all 7") != null) Monkey.problem(scenario + ": Show all is still there after a tap");
+            if (after.size() != 7) Monkey.problem(scenario + ": Show all shows " + after.size() + " of the 7 far travellers: " + after);
+            before = after;
+        }
+        for (String hd : before) Monkey.say("    " + hd);
+    }
+
+    /**
+     * X-Ray Vision (2.5) on the result screen: the photo as an X-ray film in the gallery (kept as xray.jpg to look at),
+     * on the screen with its things' stories (Show all filling in the rest), shared, and the pulsars' beats played: the
+     * button says which one is playing, and a tap stops them.
+     */
+    static void xrayCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result for X-Ray Vision's checks");
+            return;
+        }
+        File xf = r.xrayUri != null ? FakeMediaStore.file(r.xrayUri) : null;
+        if (r.xray == null || xf == null || !xf.isFile()) {
+            Monkey.problem(scenario + ": no X-Ray Vision picture in the gallery (" + r.xrayWords + ", " + r.xray + ")");
+            return;
+        }
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(xf.getPath(), o);
+        Monkey.say(String.format(Locale.US, "  X-Ray Vision: %s, %d KB, %d x %d: %s", xf.getName(), xf.length() / 1024, o.outWidth, o.outHeight,
+                r.xrayWords));
+        java.nio.file.Files.copy(xf.toPath(), new File(Monkey.out, scenario + "_xray.jpg").toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        if (o.outWidth < 1000 || o.outHeight < 700) Monkey.problem(scenario + ": the X-Ray Vision picture is only " + o.outWidth + " x " + o.outHeight);
+        if (r.xrayWords.isEmpty()) Monkey.problem(scenario + ": X-Ray Vision says nothing of what's in the photo");
+        List<String> heads = new ArrayList<String>();
+        collectTexts(Monkey.a.getWindow().getDecorView(), new String[]{""}, heads);
+        int before = 0;
+        for (String t : heads) if (t.contains(": in your photo, ")) before++;
+        if (before == 0) Monkey.problem(scenario + ": the X-Ray Vision card names nothing in the photo");
+        View more = null;
+        for (View v : Monkey.controls()) {
+            String l = Monkey.label(v);
+            if (l.startsWith("Show all ") && v.getParent() != null && hasText((View) v.getParent(), "X-Ray Vision")) more = v;
+        }
+        if (more != null) {
+            more.performClick();
+            run(300);
+            heads.clear();
+            collectTexts(Monkey.a.getWindow().getDecorView(), new String[]{""}, heads);
+            int after = 0;
+            for (String t : heads) if (t.contains(": in your photo, ") || t.contains(": up in your sky, ")) after++;
+            Monkey.say("  X-Ray Vision's list: " + before + " named in the photo at first, " + after + " after Show all");
+            if (after <= before) Monkey.problem(scenario + ": X-Ray Vision's Show all added nothing");
+        }
+        shareCheck("Share the X-ray", Intent.ACTION_SEND, "image/jpeg", r.xrayUri);
+        View hear = findLabel("Hear the pulsar");
+        if (hear == null) {
+            Monkey.say("  X-Ray Vision: no pulsar in this photo or up in its sky");
+            return;
+        }
+        press("Hear the pulsar");
+        String playing = "";
+        for (long until = System.currentTimeMillis() + 5000; System.currentTimeMillis() < until && !playing.contains("\u00b7 stop"); ) {
+            run(200);
+            playing = String.valueOf(((android.widget.TextView) hear).getText());
+        }
+        Monkey.say("  X-Ray Vision's pulsars: " + playing);
+        if (!playing.contains("\u00b7 stop")) Monkey.problem(scenario + ": Hear the pulsars didn't say which one is playing: " + playing);
+        ((View) hear).performClick();
+        run(300);
+        String after = String.valueOf(((android.widget.TextView) hear).getText());
+        if (!after.startsWith("Hear the pulsar")) Monkey.problem(scenario + ": a tap didn't stop the pulsars: " + after);
+        if (Monkey.field(Monkey.a, "beats") != null) Monkey.problem(scenario + ": the pulsars still play after a tap");
+    }
+
+    /**
+     * The 2.6 extras on the result screen: Cosmic Ray Hunter, Earth's Address and the postcard, each a picture in the gallery
+     * (kept as base_cosmic.jpg and so on to look at) and a card with its share; the map's pulsars played (the button says
+     * which one is ticking), X-Ray Vision's taking over when tapped while they play, and a tap stopping those.
+     */
+    static void extrasCheck() throws Exception {
+        SessionController.Result r = Monkey.svc.controller().status().result;
+        if (r == null) {
+            Monkey.problem(scenario + ": no result for the 2.6 extras' checks");
+            return;
+        }
+        if (r.cosmicHits < 0) Monkey.problem(scenario + ": Cosmic Ray Hunter didn't run");
+        // the particles sent through the chip found (one may fall on a star and be left out with it), and nothing else
+        if (particlesSent > 0 && (r.cosmicHits < particlesSent - 1 || r.cosmicHits > particlesSent)) {
+            Monkey.problem(scenario + ": Cosmic Ray Hunter found " + r.cosmicHits + " of the " + particlesSent + " particles sent through the chip: "
+                    + r.cosmicWords);
+        }
+        if (r.cosmicHits > 0 && !r.cosmicWords.startsWith(r.cosmicHits == 1 ? "1 particle from space" : r.cosmicHits + " particles from space")) {
+            Monkey.problem(scenario + ": Cosmic Ray Hunter's words don't say how many: " + r.cosmicWords);
+        }
+        extraPicture("Cosmic Ray Hunter", r.cosmic, r.cosmicUri, "cosmic", 1600, 1600, r.cosmicWords);
+        extraPicture("Earth's Address", r.address, r.addressUri, "address", 1600, 1600, r.addressWords);
+        extraPicture("Postcard from Another World", r.postcard, r.postcardUri, "postcard", 1800, 1200, r.postcardFrom + ": " + r.postcardWords);
+        if (r.postcardFrom.isEmpty() || !r.postcardWords.startsWith("Wish you were here!")) {
+            Monkey.problem(scenario + ": the postcard says nothing (" + r.postcardFrom + ": " + r.postcardWords + ")");
+        }
+        List<String> texts = new ArrayList<String>();
+        collectTexts(Monkey.a.getWindow().getDecorView(), new String[]{""}, texts);
+        for (String card : new String[]{"Cosmic Ray Hunter", "Earth's Address", "Postcard from Another World"}) {
+            if (!texts.contains(card)) Monkey.problem(scenario + ": no " + card + " card on the result screen");
+        }
+        shareCheck("Share the particles", Intent.ACTION_SEND, "image/jpeg", r.cosmicUri);
+        shareCheck("Share the map", Intent.ACTION_SEND, "image/jpeg", r.addressUri);
+        shareCheck("Send the postcard", Intent.ACTION_SEND, "image/jpeg", r.postcardUri);
+        // the map's pulsars, one after another
+        View map = findLabel("Hear its pulsars");
+        if (map == null) {
+            Monkey.problem(scenario + ": no Hear its pulsars on Earth's Address: " + labels());
+            return;
+        }
+        map.performClick();
+        String ticking = waitText(map, "\u00b7 stop");
+        Monkey.say("  Earth's Address's pulsars: " + ticking);
+        if (!ticking.contains("\u00b7 stop")) Monkey.problem(scenario + ": Hear its pulsars didn't say which one is ticking: " + ticking);
+        View xr = findLabel("Hear the pulsar");
+        if (xr != null) {
+            // X-Ray Vision's pulsars tapped while the map's tick: they take over
+            xr.performClick();
+            String playing = waitText(xr, "\u00b7 stop");
+            run(400);
+            String mapNow = String.valueOf(((android.widget.TextView) map).getText());
+            Monkey.say("  then X-Ray Vision's: " + playing + "; the map's button: " + mapNow);
+            if (!playing.contains("\u00b7 stop")) Monkey.problem(scenario + ": X-Ray Vision's pulsars didn't take over from the map's: " + playing);
+            if (!mapNow.equals("Hear its pulsars")) Monkey.problem(scenario + ": the map's button still says " + mapNow);
+            xr.performClick();
+        } else {
+            map.performClick();
+        }
+        run(300);
+        String after = String.valueOf(((android.widget.TextView) map).getText());
+        if (!after.equals("Hear its pulsars")) Monkey.problem(scenario + ": a tap didn't stop the pulsars: " + after);
+        if (Monkey.field(Monkey.a, "beats") != null) Monkey.problem(scenario + ": the pulsars still play after a tap");
+    }
+
+    /** Particles from space sent through the simulated chip in this scenario (2.6). */
+    static int particlesSent;
+
+    /** A 2.6 extra's picture: in the gallery at its size, a copy kept to look at, its words said. */
+    static void extraPicture(String what, File own, android.net.Uri uri, String suffix, int w, int h, String words) throws Exception {
+        File f = uri != null ? FakeMediaStore.file(uri) : null;
+        if (own == null || !own.isFile() || f == null || !f.isFile()) {
+            Monkey.problem(scenario + ": no " + what + " picture in the gallery (" + own + ", " + uri + ")");
+            return;
+        }
+        BitmapFactory.Options o = new BitmapFactory.Options();
+        o.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), o);
+        Monkey.say(String.format(Locale.US, "  %s: %s, %d KB, %d x %d: %s", what, f.getName(), f.length() / 1024, o.outWidth, o.outHeight, words));
+        java.nio.file.Files.copy(f.toPath(), new File(Monkey.out, scenario + "_" + suffix + ".jpg").toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        if (o.outWidth != w || o.outHeight != h) Monkey.problem(scenario + ": the " + what + " picture is " + o.outWidth + " x " + o.outHeight);
+        if (words.trim().isEmpty() || words.trim().equals(":")) Monkey.problem(scenario + ": " + what + " says nothing");
+    }
+
+    /** The control's text once it contains {@code part} (5 s at most), or as it is then. */
+    static String waitText(View v, String part) throws Exception {
+        String t = "";
+        for (long until = System.currentTimeMillis() + 5000; System.currentTimeMillis() < until && !t.contains(part); ) {
+            run(200);
+            t = String.valueOf(((android.widget.TextView) v).getText());
+        }
+        return t;
+    }
+
+    /** Whether {@code v} or a view in it shows a text starting with {@code s}. */
+    static boolean hasText(View v, String s) {
+        if (v instanceof android.widget.TextView && String.valueOf(((android.widget.TextView) v).getText()).startsWith(s)) return true;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) if (hasText(g.getChildAt(i), s)) return true;
+        }
+        return false;
+    }
+
+    /** The Deep Space Network card's lines on the screen: "Voyager 1: up in your sky, ..." */
+    static List<String> networkHeads() {
+        List<String> out = new ArrayList<String>();
+        String[] names = {"Voyager 1:", "Voyager 2:", "New Horizons:", "Pioneer 10:", "Pioneer 11:", "L2, Webb's home:", "Pluto:"};
+        collectTexts(Monkey.a.getWindow().getDecorView(), names, out);
+        return out;
+    }
+
+    static void collectTexts(View v, String[] starts, List<String> out) {
+        if (v instanceof android.widget.TextView) {
+            String t = String.valueOf(((android.widget.TextView) v).getText());
+            for (String s : starts) if (t.startsWith(s)) out.add(t);
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) collectTexts(g.getChildAt(i), starts, out);
+        }
+    }
+
+    /** Taps {@code label}; the share sheet it opens must offer {@code action} of {@code type} with {@code uri} (null: any). */
+    static void shareCheck(String label, String action, String type, android.net.Uri uri) throws Exception {
+        if (findLabel(label) == null) {
+            Monkey.problem(scenario + ": no " + label + " on the result screen");
+            return;
+        }
+        org.robolectric.shadows.ShadowActivity sa = Shadows.shadowOf(Monkey.a);
+        while (sa.getNextStartedActivity() != null) {
+            // what was started before
+        }
+        press(label);
+        Intent chooser = sa.getNextStartedActivity();
+        Intent i = chooser != null ? (Intent) chooser.getParcelableExtra(Intent.EXTRA_INTENT) : null;
+        if (i == null || !action.equals(i.getAction()) || !type.equals(i.getType())) {
+            Monkey.problem(scenario + ": " + label + " offered " + (i == null ? "nothing" : i.getAction() + " of " + i.getType()));
+            return;
+        }
+        if (Intent.ACTION_SEND.equals(action) && uri != null && !uri.equals(i.getParcelableExtra(Intent.EXTRA_STREAM))) {
+            Monkey.problem(scenario + ": " + label + " shared " + i.getParcelableExtra(Intent.EXTRA_STREAM) + ", not " + uri);
+        }
+        if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            java.util.ArrayList<android.net.Uri> all = i.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (all == null || all.size() < 2) Monkey.problem(scenario + ": " + label + " shared " + (all == null ? 0 : all.size()) + " pictures");
+        }
+    }
+
     /** A GET from the phone's own server (straight, never through a proxy). */
     static byte[] get(String url) throws Exception {
         java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection(java.net.Proxy.NO_PROXY);
@@ -2071,6 +3091,53 @@ public class Night {
         if (!r.video.equals(o.video) || !o.motion) Monkey.problem(scenario + ": opened again, the photo has no video (" + o.video + ", inside: " + o.motion + ")");
         if (findLabel("Play its video") == null) Monkey.problem(scenario + ": opened again, there's no Play its video: " + labels());
         Monkey.say("  opened again from the sessions page: " + labels());
+        // 2.4: the night's Mission Replay and close-ups come back with it, the same gallery copies
+        if (r.replay != null) {
+            if (o.replay == null || !String.valueOf(r.replayGif).equals(String.valueOf(o.replayGif)) || findLabel("Mission Replay") == null) {
+                Monkey.problem(scenario + ": opened again, no Mission Replay (" + o.replay + ", " + o.replayGif + ")");
+            }
+        }
+        StringBuilder back = new StringBuilder();
+        if (o.zooms.size() != r.zooms.size()) {
+            Monkey.problem(scenario + ": opened again, " + o.zooms.size() + " close-ups where it had " + r.zooms.size());
+        } else {
+            for (int i = 0; i < r.zooms.size(); i++) {
+                SessionController.ZoomShot a = r.zooms.get(i), b = o.zooms.get(i);
+                if (!a.title.equals(b.title) || !String.valueOf(a.uri).equals(String.valueOf(b.uri)) || b.small == null || findLabel(b.title) == null) {
+                    Monkey.problem(scenario + ": opened again, close-up " + (i + 1) + " is " + b.title + " " + b.uri + " (was " + a.title + " " + a.uri + ")");
+                }
+                back.append(i > 0 ? ", " : "").append(b.title);
+            }
+        }
+        if (r.replay != null || !r.zooms.isEmpty()) {
+            Monkey.say("  opened again, still there: " + (o.replay != null ? "Mission Replay" : "no replay") + "; " + o.zooms.size() + " close-ups"
+                    + (back.length() > 0 ? " (" + back + ")" : ""));
+        }
+        // 2.5: and its X-Ray Vision, the same gallery copy
+        if (r.xray != null) {
+            if (o.xray == null || !String.valueOf(r.xrayUri).equals(String.valueOf(o.xrayUri)) || !r.xrayWords.equals(o.xrayWords)
+                    || findLabel("Share the X-ray") == null) {
+                Monkey.problem(scenario + ": opened again, no X-Ray Vision (" + o.xray + ", " + o.xrayUri + ", " + o.xrayWords + ")");
+            } else {
+                Monkey.say("  opened again, X-Ray Vision still there: " + o.xrayWords);
+            }
+        }
+        // 2.6: and its three extras, the same gallery copies
+        if (r.cosmicHits >= 0 || r.address != null || r.postcard != null) {
+            boolean same = r.cosmicHits == o.cosmicHits && String.valueOf(r.cosmicUri).equals(String.valueOf(o.cosmicUri))
+                    && String.valueOf(r.addressUri).equals(String.valueOf(o.addressUri)) && r.addressWords.equals(o.addressWords)
+                    && String.valueOf(r.postcardUri).equals(String.valueOf(o.postcardUri)) && r.postcardFrom.equals(o.postcardFrom)
+                    && r.postcardWords.equals(o.postcardWords);
+            boolean shown = (r.cosmicUri == null || findLabel("Share the particles") != null) && (r.addressUri == null || findLabel("Share the map") != null)
+                    && (r.postcardUri == null || findLabel("Send the postcard") != null);
+            if (!same || !shown) {
+                Monkey.problem(scenario + ": opened again, the 2.6 extras aren't all back (" + o.cosmicHits + " " + o.cosmicUri + ", " + o.addressUri
+                        + ", " + o.postcardUri + " " + o.postcardFrom + "; on the screen: " + shown + ")");
+            } else {
+                Monkey.say("  opened again, still there: Cosmic Ray Hunter (" + o.cosmicHits + " caught), Earth's Address, the postcard from "
+                        + o.postcardFrom);
+            }
+        }
     }
 
     /**
@@ -2289,9 +3356,12 @@ public class Night {
 
     static View findLabel(String text) throws Exception {
         List<View> cs = Monkey.controls();
+        // the very label first ("Hear it" is the song's, not Earth's Address's "Hear its pulsars" above it), then one it starts
         for (View v : cs) {
-            String l = Monkey.label(v);
-            if (l.equals(text) || l.startsWith(text)) return v;
+            if (Monkey.label(v).equals(text)) return v;
+        }
+        for (View v : cs) {
+            if (Monkey.label(v).startsWith(text)) return v;
         }
         // a control with several lines of text (the result screen's "4 frames, all used. | Session report"): any of them
         for (View v : cs) {
@@ -2564,7 +3634,7 @@ public class Night {
         Monkey.app = RuntimeEnvironment.getApplication();
         Monkey.sa = Shadows.shadowOf(Monkey.app);
         Monkey.sa.grantPermissions(Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.READ_MEDIA_IMAGES);
+                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES, "android.permission.ACCESS_LOCAL_NETWORK", Manifest.permission.READ_MEDIA_IMAGES);
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
             @Override
             public void uncaughtException(Thread t, Throwable e) {

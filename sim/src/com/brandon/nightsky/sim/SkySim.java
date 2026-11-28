@@ -107,6 +107,24 @@ public final class SkySim {
     /** The meteors to draw (safe to add to while frames render). */
     public final java.util.List<Meteor> meteors = new java.util.concurrent.CopyOnWriteArrayList<Meteor>();
 
+    /**
+     * Particles through the chip (2.6, none unless added): in one frame each, the levels (electrons over
+     * {@link #electronsPerDn}) each lit pixel gets, as a cosmic ray's muon or a gamma ray's electron leaves them.
+     */
+    public static final class Particle {
+        public final int frame;
+        public final int[] pixel;
+        public final float[] levels;
+
+        public Particle(int frame, int[] pixel, float[] levels) {
+            this.frame = frame;
+            this.pixel = pixel;
+            this.levels = levels;
+        }
+    }
+
+    public final java.util.List<Particle> particles = new java.util.ArrayList<Particle>();
+
     // events
     public int satelliteFrame = -1, planeFrame = -1, meteorFrame = -1;
     /** Noise that stays the same where the picture changes (for comparing two renders of one sky). */
@@ -129,6 +147,31 @@ public final class SkySim {
      */
     public double milkyWay;
     private volatile float[] mwTint;
+    /**
+     * Glows fixed on the sky (2.4, for Deep Space Zoom's galaxies and nebulae; real sky only): each a J2000 direction, a
+     * Gaussian along and across its long axis (degrees, the long axis {@code paDeg} from north through east), its light at
+     * the middle (green ADU a second a pixel, before vignetting), its colour (linear sRGB relative to green, seen through
+     * the camera's response as the stars are) and a share of it in a core {@code coreDeg} wide.
+     */
+    public static final class Glow {
+        public final double[] dir;
+        public final double major, minor, paDeg, rate, coreDeg, coreShare;
+        public final double[] tint;
+
+        public Glow(double raDeg, double decDeg, double major, double minor, double paDeg, double rate, double[] tint, double coreDeg,
+                    double coreShare) {
+            dir = Astro.vec(Math.toRadians(raDeg), Math.toRadians(decDeg));
+            this.major = major;
+            this.minor = minor;
+            this.paDeg = paDeg;
+            this.rate = rate;
+            this.tint = tint;
+            this.coreDeg = coreDeg;
+            this.coreShare = coreShare;
+        }
+    }
+
+    public final java.util.List<Glow> glows = new java.util.ArrayList<Glow>();
     /** The Milky Way's light is worked out every MW_STEP pixels and interpolated between. */
     static final int MW_STEP = 8;
     /**
@@ -750,6 +793,7 @@ public final class SkySim {
                 }
             }
         });
+        if (!glows.isEmpty() && m0 != null) addGlows(img, i, start, exp, cfa);
         // stars, integrated over the exposure in sub-steps
         final double[] b = new double[3], p = new double[2];
         for (int s = 0; s < substeps; s++) {
@@ -804,6 +848,10 @@ public final class SkySim {
             if (i == meteorFrame) addLine(img, W * 0.55, H * 0.3, W * 0.62, H * 0.42, 0.9, 260, 0);
             for (OrbitSat o : orbitSats) drawOrbitSat(img, i, o, psfSigma, haloFrac);
             for (Meteor me : meteors) drawMeteor(img, i, me, psfSigma, haloFrac);
+            for (Particle q : particles) {
+                if (q.frame != i) continue;
+                for (int k = 0; k < q.pixel.length; k++) img[q.pixel[k]] += q.levels[k];
+            }
         }
         // the branch's lit leaves: fixed bright spots
         if (branchT != null) {
@@ -893,6 +941,66 @@ public final class SkySim {
         for (int k = 0; k < W * H; k++) fpn[k] = (float) (fpn[k] * sb + fpnSigma * gauss(r));
         for (int y = 0; y < H; y++) rowFixed[y] = (float) (rowFixedSigma * gauss(r));
         for (int x = 0; x < W; x++) colFixed[x] = (float) (colFixedSigma * gauss(r));
+    }
+
+    /** The glows ({@link #glows}) in frame i, at the middle of its exposure (they're wide: the drift doesn't matter). */
+    private void addGlows(final float[] img, final int i, double start, final double exp, final int[] cfa) {
+        double[] C = Rot.mul(Rot.mul(camera(i, 0.5), sky(start + 0.5 * exp)), m0);
+        double[] b = new double[3], p = new double[2], q = new double[2];
+        for (final Glow g : glows) {
+            Rot.apply(C, g.dir[0], g.dir[1], g.dir[2], b);
+            if (b[2] < 0.2 || !truth.project(b[0], b[1], b[2], p)) continue;
+            // its colour as the photosites see it, green's 1
+            final double[] raw = new double[3];
+            for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) raw[r] += A[r * 3 + c] * g.tint[c];
+            final double gr = raw[1];
+            for (int r = 0; r < 3; r++) raw[r] /= gr;
+            // the sky's north and east at the glow, in pixels per radian
+            double[] rd = Astro.raDec(g.dir);
+            double ra = rd[0], dec = rd[1];
+            double[] nth = {-Math.sin(dec) * Math.cos(ra), -Math.sin(dec) * Math.sin(ra), Math.cos(dec)};
+            double[] est = {-Math.sin(ra), Math.cos(ra), 0};
+            double e = 1e-3;
+            double[] jac = new double[4];
+            for (int k = 0; k < 2; k++) {
+                double[] t = k == 0 ? nth : est;
+                double[] v = {g.dir[0] + e * t[0], g.dir[1] + e * t[1], g.dir[2] + e * t[2]};
+                Rot.apply(C, v[0], v[1], v[2], b);
+                if (!truth.project(b[0], b[1], b[2], q)) return;
+                jac[k] = (q[0] - p[0]) / e;
+                jac[2 + k] = (q[1] - p[1]) / e;
+            }
+            // pixel offsets to (north, east) radians
+            double det = jac[0] * jac[3] - jac[1] * jac[2];
+            if (Math.abs(det) < 1e-9) continue;
+            final double i00 = jac[3] / det, i01 = -jac[1] / det, i10 = -jac[2] / det, i11 = jac[0] / det;
+            final double pa = Math.toRadians(g.paDeg), ca = Math.cos(pa), sa = Math.sin(pa);
+            final double sMaj = Math.toRadians(g.major), sMin = Math.toRadians(g.minor), sCore = Math.toRadians(Math.max(1e-4, g.coreDeg));
+            double reach = 4 * Math.max(sMaj, sMin) * Math.hypot(jac[0], jac[2]) * 1.5;
+            final double px = p[0], py = p[1];
+            final int x0 = Math.max(0, (int) (px - reach)), x1 = Math.min(W - 1, (int) (px + reach));
+            final int y0 = Math.max(0, (int) (py - reach)), y1 = Math.min(H - 1, (int) (py + reach));
+            if (x0 > x1 || y0 > y1) continue;
+            Parallel.forRange(y1 - y0 + 1, 16, new Parallel.Range() {
+                @Override
+                public void run(int j0, int j1) {
+                    for (int j = j0; j < j1; j++) {
+                        int y = y0 + j;
+                        for (int x = x0; x <= x1; x++) {
+                            double dx = x + 0.5 - px, dy = y + 0.5 - py;
+                            double dn = i00 * dx + i01 * dy, de = i10 * dx + i11 * dy;
+                            // along the long axis (from north through east) and across it
+                            double al = dn * ca + de * sa, ac = -dn * sa + de * ca;
+                            double f = (1 - g.coreShare) * Math.exp(-0.5 * (al * al / (sMaj * sMaj) + ac * ac / (sMin * sMin)))
+                                    + g.coreShare * Math.exp(-0.5 * (dn * dn + de * de) / (sCore * sCore));
+                            if (f < 1e-4) continue;
+                            int c = cfa[((y & 1) << 1) | (x & 1)];
+                            img[y * W + x] += (float) (g.rate * raw[c] * f * vignetting(x + 0.5, y + 0.5) * transparency(i, x) * exp);
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /** Star k's light as a spot at (px, py); {@code only}: just the photosites of that colour (0 red, 1 green, 2 blue), -1 all. */

@@ -1618,6 +1618,7 @@ public final class ReportCard {
                 if (!Double.isNaN(it.x)) j.put("x", round(it.x, 3)).put("y", round(it.y, 3));
                 if (!Double.isNaN(it.share)) j.put("share", round(it.share, 3));
                 if (!Double.isNaN(it.lx)) j.put("lx", round(it.lx, 3)).put("ly", round(it.ly, 3));
+                if (!it.note.isEmpty()) j.put("note", it.note);
                 j.end();
             }
             j.end();

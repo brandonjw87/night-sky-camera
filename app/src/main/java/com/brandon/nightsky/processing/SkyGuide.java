@@ -19,8 +19,13 @@ import java.util.Map;
 public final class SkyGuide {
     /** One thing named, and where it is. */
     public static final class Item {
-        /** "constellation", "star", "planet", "moon", "object", "milky way", or "mine" (a star named by you, 2.3). */
+        /**
+         * "constellation", "star", "planet", "moon", "object", "milky way", "mine" (a star named by you, 2.3), "spacecraft"
+         * (one of those leaving the Solar System, or L2) or "dwarf planet" (Pluto) (2.4).
+         */
         public String kind, name;
+        /** What its label adds to its name ("173 AU"), "" for nothing (2.4). */
+        public String note = "";
         /** Where in the picture, as words ("at the top left"); "" when not placed. */
         public String where = "";
         public double mag = Double.NaN;
@@ -86,6 +91,7 @@ public final class SkyGuide {
             it.share = x.num("share", Double.NaN);
             it.lx = x.num("lx", Double.NaN);
             it.ly = x.num("ly", Double.NaN);
+            it.note = x.str("note", "");
             g.items.add(it);
         }
         for (com.brandon.nightsky.remote.JsonTree.Obj x : o.objs("figures")) {
@@ -306,6 +312,8 @@ public final class SkyGuide {
             if (!near.isEmpty()) {
                 lines.add(list(near) + (near.size() == 1 ? " is" : " are") + " just outside the picture.");
             }
+            jupiterMoons(f, jdTt);
+            deepSpace(f, jdTt);
             moon(f, jdUtc, sky);
         }
 
@@ -457,6 +465,68 @@ public final class SkyGuide {
             }
         }
         return t0 <= t1;
+    }
+
+    /**
+     * Jupiter's four big moons (2.4), when Jupiter is in the picture: named in their order across it, left to right, and
+     * any in front of Jupiter or behind it said so. They aren't labelled on the photo (they're too close to Jupiter at its
+     * scale); Deep Space Zoom's close-up of Jupiter names each one where it is.
+     */
+    private void jupiterMoons(Frame f, double jdTt) {
+        double[] uj = f.near(Planets.seen(3, jdTt).dir);
+        if (uj == null || !inside(uj)) return;
+        final List<Object[]> seen = new ArrayList<Object[]>();
+        List<String> lost = new ArrayList<String>();
+        for (DeepSpace.Moon m : DeepSpace.jupiterMoons(jdTt)) {
+            double[] uv = f.uv(m.dir);
+            if (uv == null) continue;
+            if (m.onDisc()) lost.add(m.name + (m.front ? " is in front of Jupiter, lost in its glare" : " is hidden behind it"));
+            else seen.add(new Object[]{m.name, uv});
+        }
+        Collections.sort(seen, new Comparator<Object[]>() {
+            @Override
+            public int compare(Object[] a, Object[] b) {
+                return Double.compare(((double[]) a[1])[0], ((double[]) b[1])[0]);
+            }
+        });
+        List<String> names = new ArrayList<String>();
+        for (Object[] o : seen) names.add((String) o[0]);
+        String l = names.size() > 1 ? "Jupiter's big moons, left to right beside it: " + list(names) + "."
+                : names.size() == 1 ? "Jupiter's big moon " + names.get(0) + " is beside it." : "";
+        if (!lost.isEmpty()) l += (l.isEmpty() ? "" : " ") + Character.toUpperCase(lost.get(0).charAt(0)) + list(lost).substring(1) + ".";
+        if (!l.isEmpty()) lines.add(l + " Zoom in to see them: tiny stars in a line.");
+    }
+
+    /**
+     * The spacecraft leaving the Solar System, L2 (Webb's home) and Pluto (2.4), when they're in the picture: each named
+     * where it is, with how far.
+     */
+    private void deepSpace(Frame f, double jdTt) {
+        List<String> craft = new ArrayList<String>();
+        for (Probes.Seen s : Probes.all(jdTt)) {
+            double[] uv = f.near(s.dir);
+            if (uv == null || !inside(uv)) continue;
+            boolean pluto = "pluto".equals(s.kind);
+            Item it = new Item(pluto ? "dwarf planet" : "spacecraft", s.name);
+            it.x = uv[0];
+            it.y = uv[1];
+            it.where = where(uv[0], uv[1]);
+            if (pluto) it.mag = s.mag;
+            it.note = "l2".equals(s.kind) ? "1.5 million km" : String.format(Locale.US, "%.0f AU", s.distAu);
+            items.add(it);
+            if (pluto) {
+                lines.add(String.format(Locale.US, "Pluto is in the picture (%s), too faint for a phone to see (magnitude %.1f) but there, "
+                        + "%.0f times farther away than the Sun.", spot(uv[0], uv[1]), s.mag, s.distAu));
+            } else if ("l2".equals(s.kind)) {
+                lines.add("L2 is in the picture (" + spot(uv[0], uv[1]) + "): the point the Webb space telescope loops around, "
+                        + "1.5 million km away on the night side of the Earth.");
+            } else {
+                craft.add(String.format(Locale.US, "%s (%s, %.0f times farther than the Sun: a radio message takes %s)", s.name,
+                        spot(uv[0], uv[1]), s.distAu, DeepSpace.lightWords(s.lightHours())));
+            }
+        }
+        if (craft.size() == 1) lines.add(craft.get(0).replaceFirst(" \\(", " is in the picture (") + ". You can't see it, but it's there.");
+        else if (!craft.isEmpty()) lines.add("Spacecraft in the picture, too far to see but there: " + list(craft) + ".");
     }
 
     /** The Moon: in the picture, or up and where, with its phase. */

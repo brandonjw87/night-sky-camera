@@ -44,6 +44,9 @@ public final class Patches {
             new Def("planet", "Planet Hunter", "Get a planet in your picture.", "#ffa726", "planet"),
             new Def("moon", "Moonwalker", "Get the Moon in your picture.", "#bdbdbd", "moon"),
             new Def("galaxy", "Deep Space", "Get another galaxy in your picture, millions of light-years away.", "#ab47bc", "galaxy"),
+            new Def("dsn", "Deep Space Network", "Get a spacecraft that's leaving the Solar System in your picture: a Voyager, a "
+                    + "Pioneer or New Horizons.", "#26c6da", "dish"),
+            new Def("pluto", "Pluto Patrol", "Get Pluto in your picture. (It's far too faint to see. It still counts.)", "#bcaaa4", "pluto"),
             new Def("core", "Heart of the Galaxy", "Get the middle of the Milky Way in your picture.", "#ffca28", "core"),
             new Def("time-traveller", "Time Traveller", "Catch starlight that left its star more than 1,000 years ago.", "#5c6bc0", "hourglass"),
             new Def("star-counter", "Star Counter", "Find 1,000 stars in one picture.", "#fff176", "count"),
@@ -79,6 +82,9 @@ public final class Patches {
         public int stars;
         /** Constellations in the picture. */
         public final List<String> constellations = new ArrayList<String>();
+        /** Spacecraft leaving the Solar System in the picture (names), and whether Pluto is in it (2.4). */
+        public final List<String> craft = new ArrayList<String>();
+        public boolean pluto;
         /** Stars named this session, and whether Mission Control watched it. */
         public int named;
         public boolean watched;
@@ -168,6 +174,8 @@ public final class Patches {
         add(fresh, "planet", !f.planets.isEmpty(), f.planets.isEmpty() ? "" : f.planets.get(0), now);
         add(fresh, "moon", f.moon, "the Moon", now);
         add(fresh, "galaxy", !f.galaxies.isEmpty(), f.galaxies.isEmpty() ? "" : f.galaxies.get(0), now);
+        add(fresh, "dsn", !f.craft.isEmpty(), f.craft.isEmpty() ? "" : f.craft.get(0), now);
+        add(fresh, "pluto", f.pluto, "Pluto", now);
         add(fresh, "core", f.core, "the middle of the Milky Way", now);
         add(fresh, "time-traveller", f.farthestLy > 1000, f.farthestName + (f.farthestLy == f.farthestLy
                 ? String.format(java.util.Locale.US, ", %,.0f light-years away", f.farthestLy) : ""), now);

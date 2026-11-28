@@ -3,10 +3,10 @@
 #
 #   robo/setup.sh
 #
-# Everything goes in $ROBO_HOME (default ~/.cache/nightsky-robo):
-#   deps/                     Robolectric 4.17 and JUnit, from Maven Central (pom.xml)
-#   sdk/                      Robolectric's Android 16 jars: the plain one (on the classpath) and the instrumented one
-#                             it runs SDK 36 on
+# Everything goes in $ROBO_HOME (default ~/.cache/nightsky-robo17):
+#   deps/                     Robolectric 4.18.1 and JUnit, from Maven Central (pom.xml)
+#   sdk/                      Robolectric's Android 17 jars: the plain one (on the classpath) and the instrumented one
+#                             it runs SDK 37 on (3.0 needs Android 17)
 #   androidx-test-stubs.jar   stand-ins for the androidx.test classes Robolectric refers to (they're Google-Maven only)
 #
 # Needs java 17 or newer, curl, and mvn (fetched from Maven Central if missing). Behind an HTTPS proxy ($HTTPS_PROXY),
@@ -14,11 +14,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE=$(pwd)
-ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo}
+ROBO_HOME=${ROBO_HOME:-$HOME/.cache/nightsky-robo17}
 CENTRAL=https://repo1.maven.org/maven2
 # Google's copy of Maven Central: repo1 has refused the 213 MB jar with 429 (too many requests)
 MIRROR=https://maven-central.storage-download.googleapis.com/maven2
-SDK_VERSION=16-robolectric-13921718
+SDK_VERSION=${SDK_VERSION:-17-robolectric-16653203}
 mkdir -p "$ROBO_HOME/deps" "$ROBO_HOME/sdk"
 # the JVM's "Picked up JAVA_TOOL_OPTIONS" notice left out (the options themselves can hold the proxy's settings)
 quiet() {

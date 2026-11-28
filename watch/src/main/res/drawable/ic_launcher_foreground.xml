@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- star trail arcs -->
+    <path android:strokeColor="#FF5C6BC0" android:strokeWidth="2" android:fillColor="#00000000"
+        android:pathData="M30,64 A26,26 0 0,1 54,38" />
+    <path android:strokeColor="#FF7E57C2" android:strokeWidth="2" android:fillColor="#00000000"
+        android:pathData="M24,70 A34,34 0 0,1 60,34" />
+    <!-- big star -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M64,30 L67,41 L78,44 L67,47 L64,58 L61,47 L50,44 L61,41 Z" />
+    <!-- small stars -->
+    <path android:fillColor="#FFFFE0B2" android:pathData="M40,52 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path android:fillColor="#FFB3E5FC" android:pathData="M74,66 m-1.6,0 a1.6,1.6 0 1,0 3.2,0 a1.6,1.6 0 1,0 -3.2,0" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M48,72 m-1.2,0 a1.2,1.2 0 1,0 2.4,0 a1.2,1.2 0 1,0 -2.4,0" />
+    <path android:fillColor="#FFFFCDD2" android:pathData="M80,36 m-1.2,0 a1.2,1.2 0 1,0 2.4,0 a1.2,1.2 0 1,0 -2.4,0" />
+</vector>

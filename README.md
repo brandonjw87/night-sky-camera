@@ -6,9 +6,28 @@ and stacks them into one clean, deep photo. Or, in Star Trails mode, it draws ea
 Earth's turn mode, it adds a few seconds of looping video of the whole sky wheeling round the pole. And while it
 works, a laptop on the same Wi-Fi becomes **Mission Control**: a countdown, a computer voice calling the mission,
 satellites named live as they cross the picture, star cards, a 3D flight through the stars, and the sky played as
-music.
+music. When the photo is done: sharp close-ups of the galaxies, nebulae and planets in it (**Deep Space Zoom**), the
+whole night as a looping GIF in the gallery (**Mission Replay**), and where NASA's farthest spacecraft were in your
+sky (**Deep Space Network**). Since 2.5 a night can also be a **Time lapse** film, **X-Ray Vision** shows what's in
+the photo that no eye can see (neutron stars, black holes, exploded stars, stars with planets), and **Night Sky on
+your Pixel Watch** starts, follows and stops it all from your wrist, over Bluetooth or the internet. Since 2.6 the
+photo also brings the particles from space that shot through the camera while it looked up (**Cosmic Ray Hunter**),
+the map to the Sun that the Voyagers carry, redrawn for your night (**Earth's Address**), and your sky as seen from a
+planet round another star (**Postcard from Another World**); and the watch's **Sky Pointer** names whatever you point
+your arm at. Since 3.0, **the Moonshot**: the Moon from the 5x telephoto, hand-held, 150 RAW pictures stacked into
+one sharp photo with every landing site labelled where it is tonight, and the **Transit Hunter**, which catches the
+International Space Station crossing the Moon by itself, with the countdown on your watch. Since 3.1 the Moonshot's
+photo names the Moon's seas, craters and mountains where they are tonight (**Moon map**), and on a crescent it brings
+out the dark part, lit by sunlight bouncing off the Earth (**the Earth's glow**). Since 3.2, **Jupiter's moons**:
+Jupiter from the telephoto with its four big moons, each named where it is tonight, and **Galileo's notebook**, your
+nights drawn beside the ones Galileo drew in January 1610. Since 3.3, the **Sky Window**: hold the phone up and
+everything in the camera's picture is named (stars, constellations, planets, the Moon, galaxies, black holes,
+spacecraft, the space station flying over), and after dark it locks onto the stars themselves so every name sits on
+its star; **Find** turns you to anything, and hands the Moon and Jupiter to the 5x.
 
-What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
+It needs **Android 17** or newer and is made for the Pixel 10 and newer.
+
+What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 3.3.
 
 ## What it does
 
@@ -17,6 +36,13 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
   photo with far less noise than a single shot.
 - **Star trails.** Keeps the stars where they fall in each frame, so they draw arcs around the pole star. Longer
   is better: 20 or 30 minutes.
+- **Time lapse** (2.5). A deep photo, plus the whole night as a film: every frame of the night is one moment of
+  it, so the stars wheel across, clouds drift by and satellites zip through. 10 to 90 minutes (30 minutes makes
+  about 8 seconds of film, 90 about 20), with the time of night and how much faster than real life in the corner.
+  Three looks: **Sky turning** (the night as it was), **Trails growing** (each star draws its trail until the film
+  ends on a star-trails picture) and **Comet tails** (each star drags a glowing tail). Made in one look and remade
+  in the others afterwards from the same frames; any night whose frames are kept can be made into one (**Make a
+  time lapse** on its result screen). The film is an MP4 in the gallery.
 - **Earth's turn.** A deep photo, plus a 5-second clip that loops for ever: the sky turning round the pole while
   the ground stays still, made from how far the frames themselves measured the sky turning. It saves as a video
   (MP4) and as an animated picture that plays by itself like a GIF (WebP, about a third of a GIF's size), and says
@@ -47,11 +73,53 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
   stack shows. Hot pixels are taken out too, the ones that come in pairs and threes as well as single ones.
 - **The Milky Way brought out.** The sky's own detail under the grain, the Milky Way's dark lanes and star
   clouds, is made stronger, and never darker than the plain sky; **Sky detail** in the edit screen sets how much.
-  The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture.
+  The sky's glow (light pollution) is taken out evenly, even when trees or a roof fill part of the picture, and
+  since 2.4 it's told apart from the Milky Way's own glow (the app knows where the Milky Way runs through the
+  picture), so the glow goes and the Milky Way stays.
 - **Sharp stars without coloured edges.** How big the lens and the air drew the stars is measured in each photo,
   on its own stars, and part of that blur is taken back out: stars come out smaller and brighter in the middle,
   with exactly the light they had. The red and blue edges a lens gives the stars towards the corners are measured
   on the stars too, and taken out as the frames are stacked. **Star sharpness** in the edit screen sets how much.
+  Since 2.4 the purple halo a phone lens leaves round bright stars (its blue and red light focus a little apart
+  from its green) is measured on the photo's own stars and taken out too.
+- **Deep Space Zoom.** Up to three close-ups of the best things in the photo: galaxies (Andromeda!), nebulae,
+  star clusters, and Jupiter, Saturn, Uranus or Neptune. Each one is made again from the frames at twice the
+  detail (a drizzle, as the Hubble team does it), its stars drawn smaller and rounder so the galaxy or nebula
+  shows, and saved as a card with its name, how far away it is (and when its light left), how big it is, and a
+  fact. Jupiter's card shows where its four big moons were that night.
+- **Mission Replay.** The whole night as one looping GIF in `Pictures/NightSky`: the frames adding up, the photo,
+  the spacecraft in it marked, its close-up targets locked in green brackets, a zoom into each one that "enhances"
+  into its card, and MISSION COMPLETE. It plays on the result screen and loops in any message.
+- **Deep Space Network.** Where the farthest things people have made were when you took the photo: Voyager 1 and
+  2, New Horizons, Pioneer 10 and 11, L2 (where the Webb telescope loops), and Pluto. The ones in the photo are
+  marked on it (with **Names**); a card on the result screen says which were in it, which were up in your sky and
+  where, how far away each one is, and when a radio message sent as you took the photo would get there.
+- **X-Ray Vision** (2.5). The universe the photo can't show, marked where it is in it: black holes (Cygnus X-1,
+  Gaia BH3, the giant ones in the middle of the Milky Way and of M87), neutron stars and pulsars (the Crab Pulsar,
+  the first pulsar ever found), the clouds left by exploded stars (Cassiopeia A, Tycho's and Kepler's supernovae),
+  the two neutron stars whose crash was heard in gravitational waves, stars with planets (51 Pegasi, TRAPPIST-1),
+  the patches of sky NASA's telescopes stared at (the Hubble Deep Field, Kepler's field) and the messages across
+  space (the Arecibo message, the Wow! signal): 46 in all. The photo turns into X-ray film blues with a symbol for
+  each, saved in the gallery; the result screen's **X-Ray Vision** card says what each one is in a sentence or two,
+  and **Hear the pulsars** plays each pulsar as the clicks it really makes, at its own speed.
+- **Pixel Watch** (2.5). Night Sky on the watch: pick the setup with the crown, Start, see the countdown and the
+  ring fill as the frames come in, add 5 minutes, Stop or Mute from your wrist, and feel a buzz when the photo is
+  ready. Over Bluetooth when the phone is near (with the live picture), over the internet when it isn't. Steps
+  below, under **Night Sky on your Pixel Watch**.
+- **Sky Pointer** (2.6, on the watch). Point your arm at the sky and the watch names what's there (833 stars, the
+  Moon, the planets, galaxies, black holes, Voyager 1 and the other far travellers), how high and which way. Or turn
+  the crown to pick one and an arrow steers your arm to it, clicking faster as you close in, even below the horizon.
+- **Cosmic Ray Hunter** (2.6). The particles from space (muons, mostly) that went straight through the camera's chip
+  while it looked at the sky: each lit a few pixels in one frame only, so the photo never shows them. Found in the
+  frames before they're deleted (stars, satellites, planes, meteors, clouds and hot pixels left out), shown under a
+  microscope with how much energy each left and when, and a map of where they struck.
+- **Earth's Address** (2.6). The pulsar map that Pioneer 10 and 11 and both Voyagers carry, the way to the Sun for
+  whoever finds them, redrawn for the night of your photo: each pulsar's tick worked out for that date (they slow
+  down, so the map gives the date as well as the place), the ones in your photo or up in your sky picked out, your
+  photo where the Sun is. **Hear its pulsars** plays them at their real speeds.
+- **Postcard from Another World** (2.6). The night sky from a real planet round another star (one whose star is in
+  your photo, else one that was up, else Proxima b): every star moved and made brighter or fainter for being seen
+  from there, the constellations pulled out of shape, our Sun one star among the rest; and the planet writes home.
 - **HDR photos.** Photos are saved as Ultra HDR photos: on this phone's screen, in Google Photos and in the app,
   the stars shine up to four times brighter than white. Anywhere else they look exactly as before.
 - **Meteors.** Every streak is sorted out: a satellite (named when the app knows it), a plane, or a meteor
@@ -89,14 +157,16 @@ What changed in each version: [WHATS-NEW.md](WHATS-NEW.md). This is version 2.3.
   from another star you can look back home at the Sun.
 - **Hear the Stars.** The photo played as music: a line sweeps across it and each star sings as it's reached, blue
   stars high and red stars low. On the computer, and on the phone's result screen with a video to share.
-- **Mission patches.** 18 badges earned over many nights (First Light, Space Station, Meteor Hunter, Night Owl...).
+- **Mission patches.** 20 badges earned over many nights (First Light, Space Station, Meteor Hunter, Night Owl,
+  and since 2.4 Deep Space Network and Pluto Patrol...).
 - **Viewer.** Watch the photo build up from a laptop, tablet or another phone on the same Wi-Fi.
 - **Files.** JPEG with its video inside, named `.MP.jpg` (and optionally a RAW DNG) in `Pictures/NightSky`, so
   they show up in Google Photos. Logs, settings files and sky readings go in `Documents/NightSky`.
 
 ## Install it on your phone
 
-You only need the file `NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
+Night Sky needs Android 17 or newer since 3.0 (**Settings > About phone > Android version**). You only need the file
+`NightSky.apk`. It's attached in the Claude chat, and it's in this repository as
 [`dist/NightSky.apk`](dist/NightSky.apk). Updates install over the old version and keep your settings.
 
 ### From a Windows PC with a USB cable
@@ -137,6 +207,217 @@ Install it with Google's USB tool instead:
    ```
 
    It prints `Success` when it's done.
+
+## The Sky Window (3.3)
+
+Tap **Open the Sky Window**, the first card on the main screen (it also says which planets are up now). Allow the
+camera and your rough location the first time.
+
+1. **Hold the phone up like a window on the sky.** The camera's picture fills the screen with the sky drawn over it:
+   the stars (the brighter, the bigger, each in its own colour), the constellations' lines and names, the planets,
+   the Moon in tonight's phase, galaxies, nebulae and clusters, black holes, spacecraft, the space station and other
+   bright satellites as they fly over, and where tonight's meteors come from. Below the horizon the ground is drawn,
+   with the compass points along the horizon (north in coral). The middle of the screen says what's there.
+2. **After dark, hold still a moment.** The window finds the stars in the camera's own picture and locks onto them:
+   the top says **★ Star lock** and how far off the compass was, and every name moves onto its star. Without a lock
+   (by day, under cloud, in a bright town) it goes by the compass and says the labels may be a few degrees off.
+3. **Tap anything** for its card: what it is, where, how far, how old its light is, when it rises, is highest and
+   sets, and its story. **Find it** on the card turns you to it.
+4. **Find** lists what there is to find: the space station when it's up, and its next passes over you with the time,
+   how high and which way; the Moon and the planets; spacecraft; meteor showers; black holes; the best galaxies and
+   nebulae; the North Star and the brightest stars up. Tap one and follow the arrow until the ring closes on it and
+   the phone buzzes. For the Moon and Jupiter the 5x camera's frame is drawn; when it's inside,
+   **Shoot the Moon with the 5x** or **Shoot Jupiter's moons with the 5x** opens that screen. (The Moonshot and
+   Jupiter's moons have **Find the Moon in the sky** and **Find Jupiter in the sky** buttons that come here.)
+5. **Point it at the ground** to see the sky on the other side of the Earth.
+6. **Time** slides the sky up to 12 hours either way (**Now** comes back), **X-ray** marks the unseen (pulsars,
+   exploded stars, stars with planets, the messages we've sent), **Red** keeps your eyes used to the dark, and
+   **Camera** turns the camera off for the drawn sky alone. Pinch to zoom; double-tap to come back.
+
+## The Moonshot (3.0)
+
+Tap **Shoot the Moon** at the top of the main screen.
+
+1. **Point the phone at the Moon.** It uses the 5x telephoto (on a phone without one, the main camera zoomed in),
+   finds the Moon anywhere in the picture and rings it, with a close-up in the corner. The line at the top says the
+   Moon's phase, how much is lit and how high it is (or when it rises).
+2. **Wait for "Ready: hold steady and shoot".** It sets the exposure on the Moon's bright parts and focuses on its
+   craters by itself, a few seconds. **Focus again** starts the focusing over.
+3. **Shoot the Moon.** Hold the phone with both hands, elbows against your chest or a wall, for five seconds: it
+   takes 150 RAW pictures. The sharpest half are lined up and stacked, which takes a few seconds more.
+4. **Your Moon:** the photo with the sky's up at the top, and the landing sites labelled (Apollo in gold). **Tap a
+   label** for its story. **One frame** shows a single picture to compare; **Every one** labels all 36 places;
+   **Mineral colours** turns the Moon's real colours way up. It's saved in Pictures/NightSky with and without the
+   labels, and as a Moon map; **Share** sends the one on screen.
+5. **Moon map** (3.1) names the seas, craters and mountains on the lit side where they are tonight (134 of them, the
+   famous first, never on top of each other), with the craters along the line between day and night picked out:
+   their shadows make them tonight's best. **Tap a name** for its story.
+
+**The Earth's glow** (3.1): when the Moon is a crescent, the button under the shutter says **Earth's glow too: on (4
+more seconds)**. Keep holding after the first click: after the 150 pictures the phone takes 120 more, up to 400 times
+brighter, until the second click. The crescent burns white in those, but the dark part shows, lit by sunlight
+bouncing off the Earth; the app puts it into the photo's dark side. **Earth's glow** on the photo switches it off and
+on, the Moon map names what you can see there by the Earth's light alone, and the photo is saved once more without
+the glow. A thin crescent in the twilight, two to five days from new Moon, held as steady as you can, shows it best.
+Tap **Earth's glow too** before shooting to skip it.
+
+**The Transit Hunter** card below lists the times the International Space Station or Tiangong cross the Moon within
+60 km of you in the next ten days: when, how far and which way to go, and how wide the strip is where it's seen.
+**Show the nearest strip on the map** opens Maps there. When a crossing is seen right where you are within six hours,
+tap **Catch the ISS at ...**, keep the Moon in the picture, and the phone shoots by itself four seconds before (it
+beeps from ten). The photo then shows the station's silhouettes and its path: **Your Moon, with ISS crossing it**.
+Tap the button again to stop waiting.
+
+- The strips are only a few kilometres wide, so allow **Precise location** when it asks.
+- The orbits come from CelesTrak with **Satellite data** on in Settings (it's on unless you turned it off). They
+  change a little with every update: look again the day before.
+- Something else crossing the Moon while you shoot (a plane, a bird) is found too, as a **Mystery flyer**.
+- Best Moon nights: a half Moon (the craters along the line between day and night throw long shadows), high up.
+
+## Jupiter's moons (3.2)
+
+Tap **Shoot Jupiter's moons** on the main screen (the card under the Moonshot's).
+
+1. **Tonight first.** The top says where Jupiter is (how high, which way, or when it rises) and whether now is a good
+   time. The strip under it shows the four moons where the sums put them right now, east on the left, and below that
+   what happens in the next 12 hours: a moon going behind Jupiter, crossing in front of it, or into its shadow.
+2. **Point the phone at Jupiter**, the brightest "star" that doesn't twinkle. It uses the 5x telephoto, finds Jupiter
+   anywhere in the picture, sets the exposure, focuses, and checks the exposure again once Jupiter is sharp. Wait for
+   **Ready: hold steady and shoot**. **Focus again** starts the focusing over.
+3. **Shoot Jupiter.** Hold the phone with both hands, elbows against your chest or a wall, for about eleven seconds:
+   90 RAW pictures for Jupiter (3 seconds), then 240 sixteen times brighter for its moons (8 seconds), until the
+   second click. The watch's **Shoot** on its Moon screen works too while this screen is open.
+4. **Your Jupiter, with ...**: the photo with north up and east on the left, as Galileo drew it, Jupiter's glare
+   dimmed so a moon close to it shows, and each moon named where it is. A moon that isn't there says why: behind
+   Jupiter, crossing in front of it (and until when), in its shadow, lost in its glare, or in the same dot as another
+   moon (two moons are often too close together for a phone to show apart). **Tap a moon** for where it is and its
+   story (on a dot with two moons, tap again for the other). **Names** and **No names** switch the labels. It's
+   saved in Pictures/NightSky three times: plain, with the names, and the notebook page; **Share** sends the one on
+   screen.
+5. **Galileo's notebook**: his seven nights of January 1610 as he drew them (Jupiter an O, the moons little stars,
+   **Ori.** east and **Occ.** west), with what he wrote; your nights under them (the newest kept on the page, the last
+   40 in the phone); and the next five nights from the sums, in pencil, each at the best time to look. **Share the
+   notebook page** sends it.
+6. **Stories**: Jupiter, each moon, Galileo in 1610, the speed of light from Io's eclipses, the 1:2:4 dance of Io,
+   Europa and Ganymede, and how to see the moons yourself with binoculars.
+
+Best: Jupiter high in a dark sky, the phone held as steady as you can (or against a wall or a car roof). Io moves
+enough to see in an hour; the moons change sides from night to night. This season Jupiter is at its closest and
+brightest on 11 February 2027, up all night.
+
+## Night Sky on your Pixel Watch
+
+Since version 2.5 there's a second app for the watch, `NightSkyWatch.apk`, next to `NightSky.apk`. With it on the
+watch you can start a photo, follow it and stop it from your wrist: handy when the phone is lying screen-down in
+the grass and you're sitting in the car, or inside where it's warm. Since 2.6 it's also a **Sky Pointer**: point
+your arm at the sky and it says what's there.
+
+### Bluetooth or the internet: what works where
+
+- **Phone and watch near each other** (same yard, about 10 m): they talk over **Bluetooth**, straight to each
+  other. Quickest, the watch shows the phone's live picture, and it needs no Wi-Fi and no phone signal at all, so
+  it works at a dark site in the middle of nowhere.
+- **Apart** (phone out in the yard, you indoors; or the watch on its own Wi-Fi or LTE): they talk over **the
+  internet**. Both need a connection (the phone Wi-Fi or mobile data; the watch through the phone, Wi-Fi or its own
+  LTE). Every button and the ring work the same, a few seconds slower; the live picture stays Bluetooth-only
+  (pictures are too big to send through a free relay all night).
+- **It picks by itself**, both at once when both work. The top of the watch's screen says which one it's using.
+- **One rule from Android:** an app can open the camera only while it's on screen, so to **start** a photo from
+  the watch, Night Sky must be open on the phone (or have just finished a photo: it keeps listening for the watch
+  for 10 minutes after). Once a photo is running, everything works whatever the phone's screen is doing.
+- **Private:** the internet way goes through [ntfy.sh](https://ntfy.sh), a free public relay. Every message is
+  locked (AES-256) with a key that only your phone and your watch have: they made it between them when you paired
+  them, and it never leaves them. So the relay only ever sees scrambled text, and nobody else can read or send
+  Night Sky's messages, even knowing where to look.
+
+### Put it on the watch (from the Windows PC, over Wi-Fi)
+
+A watch has no USB socket, so the PC sends the app over Wi-Fi with Google's tool (the same `C:\platform-tools` as
+in **If the phone refuses to install it** above; download it first if you haven't). The watch and the PC must be
+on the same Wi-Fi: on the watch, **Settings > Connectivity > Wi-Fi**, turn it on and pick the PC's Wi-Fi.
+
+1. Download `NightSkyWatch.apk` and copy it into `C:\platform-tools`.
+2. On the watch, open **Settings > System > About > Versions** (on some watches just **Settings > System >
+   About**) and tap **Build number** seven times, until it says you're a developer.
+3. Go back to **Settings**: there's a new **Developer options** near the bottom. Open it and turn on **ADB
+   debugging**, then **Wireless debugging** (tap **Always allow on this network** when it asks).
+4. In **Wireless debugging**, tap **Pair new device**. The watch shows a **Wi-Fi pairing code** (six digits) and
+   an address like `192.168.1.42:37123`. Leave that on the screen.
+5. On the PC, open **Command Prompt** (Windows key, type `cmd`, Enter) and paste these two lines, with the address
+   from the watch instead of mine:
+
+   ```
+   cd C:\platform-tools
+   adb pair 192.168.1.42:37123
+   ```
+
+   Type the watch's pairing code when it asks. It says `Successfully paired`.
+6. Back on the watch, go back to the **Wireless debugging** screen itself (not **Pair new device**): it shows the
+   watch's **IP address** and **Port**, with a different port from step 4, like `192.168.1.42:41234`. Paste these
+   two lines with that address:
+
+   ```
+   adb connect 192.168.1.42:41234
+   adb -s 192.168.1.42:41234 install -r NightSkyWatch.apk
+   ```
+
+   It prints `Success`. Night Sky is in the watch's app list (press the crown).
+7. Turn **Wireless debugging** off again on the watch: it uses battery.
+
+Next time (an update): turn **Wireless debugging** on again and do step 6 with the address it shows then (the port
+changes each time). Steps 4 and 5 are needed only once. If `adb connect` can't reach the watch, the Wi-Fi may keep
+devices apart (some do): put the PC and the watch on the phone's hotspot instead.
+
+### Pair the watch with the phone
+
+1. Open **Night Sky** on the watch. It asks to find nearby devices (that's Bluetooth) and to send notifications
+   (to tell you the photo is ready): tap **Allow** for both. It shows six digits.
+2. On the phone, open Night Sky, scroll down the home screen to **Pixel Watch** and tap **Pair a watch**. Type the
+   six digits and tap **Pair**. If it asks about **Nearby devices**, allow it (that's the Bluetooth way).
+3. A few seconds later the watch buzzes twice and both show the same four **check digits**. If they're the same,
+   it's your watch and your phone (tap **OK** on the watch). If not, unpair on both and pair again.
+
+You pair once: from then on, opening Night Sky on the watch finds the phone by itself.
+
+### Using it
+
+- **Ready:** the setup the phone will use (a preset's name, or the mode and length). **Turn the crown** to pick
+  another of the phone's presets: the phone takes it at once. Tap **Start**, then lay the phone screen-down as
+  usual.
+- **Getting ready:** what the phone is doing (focusing, checking the sky, the countdown in big digits), with **Start
+  now** and **Cancel**.
+- **Capturing:** the ring fills as the frames come in, with the time left and the frame count. **+5 min** adds five
+  minutes, **Stop** (tap it twice: it asks "Sure?") develops what's been taken, **Mute** silences the phone's beeps
+  and voice.
+- **Lower your wrist:** the watch keeps following with its screen off and shows the time left in a notification. It
+  taps once when the first frame starts, and buzzes long-short-long when the photo is ready, with a notification
+  saying so (and what X-Ray Vision found).
+- **Done:** **Again** takes another the same way; **+5 min** adds five more minutes stacked into the same photo.
+  When the photo caught cosmic rays, it says how many.
+- **Tap the middle** of the screen for the connections and **Unpair** (while a photo is running: the Sky Pointer).
+- **Sky Pointer** (2.6): tap **Sky** (on Ready, Done, or when something failed; while a photo is running, tap the
+  middle) and hold your arm out straight at the sky. The watch names what you're pointing at, what it is, how high
+  and which way. **Find** works the other way round: turn the crown to pick something (the Moon, the planets, the
+  spacecraft, the black holes, the galaxies, Polaris and the brightest stars that are up, Pluto, the Sun), then move
+  your arm the way the arrow points (**Higher**, **To the right**, **Turn around**...). The clicks on your wrist come
+  faster as you close in, and it buzzes with **Got it!** when you're on it. Below the horizon too: then you're
+  pointing through the Earth. **What's there** goes back to naming, **Back** closes it.
+  - It needs to know where you are: the phone tells it (the place it saved, to about 10 km), so open Night Sky on
+    the phone once with the watch connected. After that it works anywhere, with no phone and no connection.
+  - The top says how sure the watch's compass is (±4° is good). **Compass unsure**: wave the watch in a figure 8 a
+    few times, away from cars and metal railings.
+  - It takes your arm's direction from the watch's crown side, toward your hand, as a watch is usually worn. If you
+    wear yours with the crown toward your elbow, tap the middle of the Sky Pointer once: it flips, and remembers.
+
+- **Moon** (3.0): tap **Moon** (on Ready, and on Done when there's room). The Moon as it looks tonight (its lit side
+  and seas turned as they are), how much is lit, how high and which way, and the next Space Station crossing near
+  you. While the Moonshot is open on the phone the watch shows it by itself: **Shoot** takes the burst without
+  touching the phone, **Catch** arms a crossing. A crossing is counted down to the second with buzzes: a long one at
+  a minute, two at ten seconds, taps at three, two and one, and a long one at now. **Back** closes it.
+
+If the watch says **Looking for the phone**, open Night Sky on the phone: the phone only listens while the app is
+open or a photo is running. If the Bluetooth way never connects, the internet way still does; check that Night Sky
+has **Nearby devices** allowed on both (Settings > Apps > Night Sky > Permissions).
 
 ## Rehearse a night (before your first one)
 
@@ -193,6 +474,25 @@ from its icon; a tap skips it) can be shown in dim red too, or turned off: **Adv
 
 Under the photo:
 
+- **Mission Replay** (2.4): the night's GIF, playing. Tap it to open it full size; **Share the GIF** sends it. It's
+  in `Pictures/NightSky` as `..._replay.gif`.
+- **Deep Space Zoom** (2.4): the close-ups side by side; tap one to open it, **Share the close-ups** sends them all.
+  They're in `Pictures/NightSky` as `..._zoom1.jpg` and so on. When a photo has none, the card says why (nothing
+  bright enough in it, or the sky wasn't recognised). Both cards come back when you open the session again from
+  **Sessions**, and stay after an edit; one you've deleted from the gallery can't be opened or shared from there.
+- **Deep Space Network** (2.4): which of the far travellers were in the photo, which were up in your sky (how
+  high, which way) and which were below your horizon, how far each one is, and how long a radio message takes:
+  "one sent when you took this photo arrives at 6:31 pm the next day". **Show all** lists the rest.
+- **Cosmic Ray Hunter** (2.6): how many particles from space went through the chip, the picture of them under the
+  microscope (tap it to open it full size), and what they are. **Share the particles** sends the picture. It's in
+  `Pictures/NightSky` as `..._cosmic.jpg`. "No particles from space this time" happens: the longer the night, the
+  more you catch.
+- **Earth's Address** (2.6): the pulsar map redrawn for your night (tap to open it), which pulsars were in your photo
+  or up in your sky, and how many of the map's digits have changed since 1971 (the blue ones). **Hear its
+  pulsars** plays each pulsar's tick at its real speed, one after another (tap again to stop); **Share the map**
+  sends it. In `Pictures/NightSky` as `..._address.jpg`.
+- **Postcard from Another World** (2.6): the postcard (tap to open it) and the planet's message home. **Send the
+  postcard** shares it. In `Pictures/NightSky` as `..._postcard.jpg`.
 - **Hear the Stars**: **Hear it** plays the photo as music where the photo is: a line sweeps across it and each
   star rings as it's reached, in its own colour, blue stars high and red stars low, the brightest loudest; the
   planets, the Moon and the stars you named say their names (tap to stop). **Share the song** makes a 27-second
@@ -382,6 +682,12 @@ The page has six tabs along the top:
   light left a star 600 years ago, you're seeing that star as it was 600 years ago. The photo is a time machine.
 - **Blue stars** are the hottest (over 10,000 degrees), **red stars** the coolest (about 3,000). That's why they
   sing high and low in Hear the Stars.
+- **Voyager 1** is the farthest thing people have ever made: in November 2026 it became the first spacecraft a
+  whole **light-day** from Earth, so a radio message to it takes 24 hours. It's still talking to us, 49 years after
+  launch, on about as much power as a fridge light. If a green diamond in your photo says Voyager 1, it's right
+  there, 26 billion km away. (In Hear the Stars, spacecraft go beep-beep-BEEP.)
+- **Jupiter's moons** are the four tiny dots in a line beside it that Galileo found in 1610. They move every night:
+  compare two nights' close-ups.
 
 A phone or tablet can scan the QR code on the phone's screen instead of typing anything. From the viewer you
 can start early, add 5 minutes, mute the beeps, stop and develop, and download the finished files. It also
@@ -406,7 +712,10 @@ tap **Stop the viewer** on the phone.
   ordinary photos: **Advanced > HDR photos**. A copy with names or satellite tracks drawn on it (**Save this
   copy**) is an ordinary photo.
 - What goes online: satellite orbits from CelesTrak (nothing is sent) and the cloud forecast from Open-Meteo
-  (your place rounded to about 10 km). Both can be turned off under Advanced. Nothing else leaves the phone.
+  (your place rounded to about 10 km). Both can be turned off under Advanced. With a watch paired, the watch's
+  messages go through ntfy.sh, locked with your phone's and watch's own key (the relay sees only scrambled text,
+  and when they talk); since 2.6 they include the phone's place to about 10 km, for the Sky Pointer. Nothing else
+  leaves the phone.
 - If something goes wrong, the session log in `Documents/NightSky` says what happened, including every choice
   the app made by itself (**Share the log** on the session report sends it, and so does the screen a session that
   couldn't run ends on).
@@ -451,6 +760,28 @@ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWIS
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+Deep Space Network (2.4) places the spacecraft from [Heavens-Above](https://www.heavens-above.com/SolarEscape.aspx)'s
+table of spacecraft leaving the Solar System (their directions, distances and speeds on 2026-11-22), checked against
+[Wikipedia's list](https://en.wikipedia.org/wiki/List_of_artificial_objects_leaving_the_Solar_System) and
+[EarthSky](https://earthsky.org/space/voyager-1-1-light-day-from-earth-november-17-18-2026/) (Voyager 1 one
+light-day from the Earth on 2026-11-18). Pluto's orbit is E. M. Standish's (JPL) mean elements for it, checked against
+[in-the-sky.org](https://in-the-sky.org/data/object.php?id=A134340); Jupiter's moons are J. Meeus's, *Astronomical
+Algorithms* (2nd ed., 1998), chapter 44. The close-ups' drizzle is A. S. Fruchter and R. N. Hook's (2002, the Hubble
+Deep Field's); the background model follows [GraXpert](https://github.com/Steffenhir/GraXpert)'s idea of a smooth
+surface through the sky's own samples, and the halo fix the purple fringe that [Siril](https://siril.org/)'s tools
+take out. No code was taken from any of them.
+
+Earth's Address (2.6) redraws the pulsar map of the Pioneer plaques and the Voyager Golden Records (F. Drake and C.
+Sagan, 1972) from Wm. Robert Johnston's reading of it ([The pulsar map](https://johnstonsarchive.net/astro/pulsarmap.html):
+its binary periods, its lines' angles and lengths), with each pulsar's period, slowdown and distance from the
+[ATNF Pulsar Catalogue](https://www.atnf.csiro.au/research/pulsar/psrcat/) (R. N. Manchester et al., 2005), and
+B0950+08's distance from W. F. Brisken et al. (2002). Postcard from Another World's planets are X-Ray Vision's
+stars with planets, named as the IAU named them where it has, checked against the
+[NASA Exoplanet Archive](https://exoplanetarchive.ipac.caltech.edu/); its stars are moved by their HYG distances.
+Cosmic Ray Hunter's muon count (about one a minute through each square centimetre at sea level) is the Particle
+Data Group's figure (*Review of Particle Physics*, "Cosmic rays"). The Sky Pointer turns the watch's compass to true
+north with Android's own model of the Earth's magnetic field (the World Magnetic Model).
+
 ## For developers
 
 ### Layout
@@ -478,7 +809,8 @@ app/src/main/java/com/brandon/nightsky/
     SkyReadings         the sky reading log
     FrameStrip          the frame strip on the report and edit screens
     ZoomImageView       pinch-zoom picture with taps, painting and overlays
-    TrackPainter        satellite tracks, star names and constellation figures drawn on the photo
+    TrackPainter        satellite tracks, star names, constellation figures, spacecraft and Pluto drawn on the photo
+    CanvasPainter       Deep Space Zoom's cards and Mission Replay's captions drawn with Canvas (2.4)
     MediaSaver          MediaStore saving (a photo with its video saved as a Motion Photo, as an HDR photo)
     HdrScreen           HDR photos on this phone's screen, and its decoder reading a saved one back
     IntroView           the opening film (res/raw/intro.mp4) over the first screen
@@ -486,6 +818,20 @@ app/src/main/java/com/brandon/nightsky/
     SongArt, SongView   Hear the Stars on the phone: the photo lit up star by star as its song plays
     SongPlayer, SongVideo  the song through the speaker (AudioTrack); the song as a video with its sound
     RemoteHost          the remote viewer and Mission Control: what the web pages show and the commands they send
+    WatchLink           the Pixel Watch's link on the phone (2.5): pairing, the status and live picture out, its commands in
+    MoonActivity        the Moonshot (3.0): the telephoto's picture, the photo and its labels, the Transit Hunter's card;
+                        the Moon map and the Earth's glow (3.1)
+    MoonCamera          the Moonshot's camera: the telephoto's RAW frames, finding the Moon, metering, the focus sweep, bursts,
+                        and the Earth's glow's brighter frames after the burst (3.1); Jupiter and its moons' two bursts (3.2)
+    JupiterActivity     Jupiter's moons (3.2): tonight, the telephoto's picture, the photo and its names, Galileo's
+                        notebook, the stories
+    SkyWindowActivity   the Sky Window (3.3): the camera's picture with the sky drawn over it, the star lock, cards,
+                        Find and the 5x's frame, time, X-ray, red, through the Earth
+    SkyCamera           the Sky Window's camera: the live picture by day, RAW frames by night, the meter, the night
+                        picture and the star lock on their own threads
+    Transits            the Transit Hunter's list, worked out from the satellite orbits for this place
+    link/               the link both apps share (plain Java): P-256 pairing by code, AES-GCM sealing, replay guard,
+                        the ntfy relay (publish, stream, ntfy.sh's limits) and Bluetooth framing
     remote/             the viewer's web server, pairing page, QR codes and JSON (plain Java)
     res/raw/mission.html  Mission Control's page (one file: its sounds, voice, 3D flight and music all made in the page)
     processing/         the engine, plain Java with no Android dependencies
@@ -533,12 +879,44 @@ app/src/main/java/com/brandon/nightsky/
         StarBrackets    the short frames: the stack's clipped star cores given their light and colour from them
         HdrGain, UltraHdr  how much brighter than white the stars may show; the Ultra HDR file that says so
         Framing         crops and north up
+        SkyBackground   the sky's glow taken out with the Milky Way kept (2.4): the band left out of the fit
+        StarHalo        purple star halos (2.4): each colour's star size measured, the colours matched
+        DeepZoom        Deep Space Zoom (2.4): the frames drizzled again at twice the resolution into close-ups
+        MissionReplay, GifWriter  Mission Replay (2.4): the night as a looping GIF; the GIF89a encoder
+        DeepSpace       Deep Space Network (2.4): the far travellers in the photo and its card, Jupiter's moons
+        Probes          where the Voyagers, Pioneers, New Horizons, L2 and Pluto are (2.4's, on its own since 2.6)
+        TimeLapse       the time lapse (2.5): every unit rendered as the photo is, in three looks, captioned, to MP4
+        XRayVision      X-Ray Vision (2.5): the invisible things in the photo, their picture, the pulsars' clicks
+        CosmicRays      Cosmic Ray Hunter (2.6): particles found in the kept frames, things that aren't taken out, the picture
+        GoldenRecord    Earth's Address (2.6): the pulsar map redrawn for a night, its picture, the pulsars' tour
+        Postcard        Postcard from Another World (2.6): the sky from another star's planet, the card, its message
+        SkyPointer      the watch's Sky Pointer (2.6): what's in the sky, what the arm points at, the way to a target
+        MoonGeo         the Moon from here (3.0): phase, libration, its north and lit side, the picture's up from the tilt
+        MoonFinder, MoonMeter  the Moon found in a RAW frame and followed; its exposure from the phase, then measured
+        MoonStack       the Moonshot's stack: the sharpest frames lined up, stacked, sharpened; crossings found in them
+        MoonLook, MoonSites  the photo enlarged and finished, its labels and captions; the landing sites and their stories
+        MoonFeatures    the Moon map's places (3.1): seas, craters, mountains, their IAU positions and sizes, their stories
+        Earthshine      the Earth's glow (3.1): the brighter frames' night side lined up, cleaned and merged into the stack
+        TransitFinder   the Transit Hunter: where the Space Station's shadow-path on the Moon crosses the ground
+        JupiterGeo      Jupiter tonight (3.2): where it is, its four moons (Meeus), their happenings, Galileo's nights
+        PointFinder, JupiterMeter  Jupiter found in a RAW frame and followed, its sharpness; its exposure and the moons'
+        JupiterStack    both bursts lined up on Jupiter, its glow taken off, the moons found and named (or why not)
+        JupiterLook     the photo, its names, tonight's line-up and Galileo's notebook page; JupiterStories the stories
+        SkyWindow       the Sky Window's sums (3.3): which way the phone points, what's in the sky and where, rising
+                        and setting, the way to something, the space station's passes, the night picture, the exposure
+        StarLock        the star lock: a night frame's stars matched to the catalogue (SkySolver) near where the
+                        sensors say the camera points, or refused
+        Painter         words and shapes on a picture, the same on the phone (Canvas) and in the tests (AWT)
         DngWriter       16-bit linear DNG
+watch/                  Night Sky on the Pixel Watch (2.5, Wear OS, no libraries): WatchActivity (the round red screen,
+                        DialView), WatchClient (Bluetooth and the relay), WatchService (following with the screen off),
+                        SkyScreen (the Sky Pointer, 2.6: the rotation sensor, the arrow and the clicks), MoonFace (the
+                        Moon screen, 3.0: the Moon drawn as tonight, the crossing's countdown and its buzzes)
 sim/                    desktop simulator and tests that drive the engine with synthetic night skies (MissionTest:
                         a night through Mission Control; MissionDemo: the page served from a simulated night)
 robo/                   Robolectric tests: the app's screens, and whole sessions with a simulated camera
 intro/                  the scripts that made the opening film (Blender, Python; see intro/README.md)
-tools/build_apk.sh      builds the APK without Gradle
+tools/build_apk.sh      builds the APK without Gradle (tools/build_watch.sh the watch's)
 tools/gate.sh           every simulator test and the regression nights in one go, on a commit
 tools/memprobe.sh       the Java heap a full-size session needs, measured under a phone-sized heap
 tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright Star Catalogue
@@ -550,7 +928,8 @@ tools/make_stars.py     builds the star table (stars.csv) from the Yale Bright S
   the existing app first if it was installed from `NightSky.apk`.
 - **Without Gradle (Linux):** `tools/build_apk.sh` builds a signed `build/NightSky.apk` using only `javac`,
   `aapt2`, `d8` (or `dx`), `zipalign` and `apksigner`. Set `KEYSTORE` to keep the same signing key across
-  builds.
+  builds. `tools/build_watch.sh` builds the watch's `build/NightSkyWatch.apk` the same way (in Android Studio it's
+  the `watch` module).
 
 The code is Java 8 with no libraries, so it builds with nothing but the Android platform.
 
@@ -587,6 +966,45 @@ named wrong, nothing made up), then a quiet night with clouds, banding, a branch
 nothing; its story, its patches and its song are checked too. `MissionDemo` serves the page from a simulated night
 (`MissionDemo app/src/main/res/raw 8765 3 2 37`: the pages' folder, the port, the clock's speed, the scale and the
 frames) for working on the page in a browser.
+The 2.4 tests each take an output folder for their pictures: `BackgroundTest` (light pollution out, the Milky Way
+kept), `PurpleTest` (purple halos), `DeepZoomTest` (the close-ups sharper than the photo, and the replay),
+`GifTest` (the GIF read back frame by frame) and `DeepSpaceTest` (the spacecraft, Pluto and Jupiter's moons against
+published positions).
+The 2.5 tests: `TimeLapseTest` (an output folder: the three looks from a simulated night, read back),
+`XRayTest` (an output folder: the catalogue against published positions, the picture, the pulsars' clicks) and
+`LinkTest` (the watch link: RFC 5869's HKDF vector, sealing and tampering, pairing with right and wrong codes and a
+stranger's keys, replays, Bluetooth frames, and the relay through `MockNtfy`, a stand-in for ntfy.sh with its
+limits, dropping out and coming back).
+The 2.6 tests: `CosmicTest` (an output folder: particles put into a simulated night with stars, a satellite, a plane,
+a meteor, clouds, a knock and hot pixels, four tracks right by or across a hot pixel, then found again, each once
+and nothing else; `-Dcosmic.seed` and `-Dcosmic.sim` pick other particles and another night), `RecordTest` (an output folder: the pulsar map against the plaque's binary periods and the
+catalogue), `PostcardTest` (an output folder: the sky from Proxima b and 51 Pegasi against hand sums, the card) and
+`PointerTest` (the Sky Pointer's sky against an independent sidereal-time sum, the arm from the sensor, pointing and
+finding, its speed).
+The 3.0 tests: `MoonGeoTest` (the Moon's phase, libration, north and lit side against published values),
+`MoonCamTest` (the Moon found in a whole frame beside a street light, the exposure settling from far off),
+`MoonshotTest` (an output folder: a simulated hand-held Moon stacked, its sharpness and geometry against the truth,
+lamps on the simulated Moon to check that every label lands where its place is), `TransitTest` (the Transit Hunter
+against an independent calculation: the strip's middle, its edges, how long a crossing lasts) and `TransitShotTest`
+(an output folder: the ISS put in front of a simulated Moon, found again in the frames where it was, nothing found
+without it). `MoonSim` is the simulated Moon they share.
+The 3.1 tests: `MoonMapTest` (the Moon map's table, lamps on the simulated Moon at four places, the layout's rules at
+four phases, taps) and `EarthshineTest` (an output folder: a simulated crescent with a real earthshine shot 66 and 400
+times brighter after the burst, the glow merged and checked against the truth: its brightness, seas and colour, no
+seam, the sunlit crescent untouched, the sky black, the glare gone, no rim round the crescent; and three ways the
+merge must say no).
+The 3.2 tests: `JupiterGeoTest` (the moons against the 2.4 card's, Galileo's seven nights against his drawings, the
+shadows, eclipses and hidings in order, rising, setting and the best time), `JupiterShotTest` (an output folder:
+simulated hand-held nights with a street light, a bright star and hot pixels in the frame: Jupiter found, metered and
+focused, both bursts stacked, every moon that shows found where it is and named, on six nights: all four out, one
+in Jupiter's shadow, one close in, two in one dot, one on another's skirt with a shakier hand, the tilt unknown) and
+`JupiterLookTest` (an output folder: the
+photo's sky black and moons clear, every moon named or its absence said, the line-up, and the notebook page with
+Galileo's nights as he drew them). `JupiterSim` is the simulated Jupiter they share.
+The 3.3 test: `WindowTest` (an output folder: where the phone points from its sensors; the star lock at 20 parts of
+the sky with the compass up to 20° out and the sensors' tilt off too, under a suburb's and a town's sky and with
+shaking hands, and the frames it must refuse; what's out there; the space station's passes over 40 days, each one
+checked; rising and setting against NOAA's; the way to things; the night picture and the exposure).
 `tools/gate.sh` runs them all, then six simulated nights whose logs `tools/gate.sh compare` sets side by side with
 another version's.
 
@@ -597,6 +1015,20 @@ desktop JVM with Robolectric, without Gradle or Google's Maven repository. `robo
 from Maven Central once; then `robo/run.sh Night base,stall` runs whole sessions through the real capture code
 with a simulated camera that renders the real stars and can stop, stall, fail or be taken away, and
 `robo/run.sh Monkey` taps every control on every screen, `robo/run.sh Intro` checks the opening film,
-`robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, and `robo/run.sh Stops` checks
-the stop recorder.
+`robo/run.sh Night rehearsal` runs a whole rehearsal from the home screen's button, `robo/run.sh Stops` checks
+the stop recorder, and `robo/run.sh Night wrist` (2.5) pairs the watch app with the phone and runs a session from
+it, over the internet alone and then over Bluetooth alone, drawing each watch screen to a picture (since 2.6 it also
+points the watch's Sky Pointer at a star and steers it to the Moon, through a simulated rotation sensor).
+`robo/run.sh Moon` (3.0) runs the Moonshot on a simulated 5x telephoto (whole 12-megapixel RAW frames of `MoonSim`'s
+Moon in a shaking hand, a lens to focus, a sensor brighter than the meter's guess): it finds, meters and focuses,
+shoots from the watch's Shoot, stacks and saves, then catches a staged ISS crossing from the watch's Catch,
+checking the watch's Moon screen and buzzes on the way, and draws every screen to a picture. Since 3.1 it also
+checks the Moon map and shoots a crescent with the Earth's glow, from the switch to the four saved photos.
+`robo/run.sh Jupiter` (3.2) does the same for Jupiter's moons: tonight's screen, finding, metering and focusing on
+`JupiterSim`'s Jupiter, both bursts from the watch's Shoot, the moons named, three photos saved, the notebook kept
+and read back, and the stories.
+`robo/run.sh Window` (3.3) holds a simulated Pixel up to a simulated sky with its compass 12° out: the window opens
+at a night exposure, the star lock finds the compass's error from the camera's frames and keeps the labels on the
+stars through a turn, a star's card, Find to Jupiter or the Moon with the 5x's frame and the hand-off, time travel,
+X-ray, red, the camera off and on, through the Earth, pause and resume, and day.
 [robo/README.md](robo/README.md) lists every scenario.

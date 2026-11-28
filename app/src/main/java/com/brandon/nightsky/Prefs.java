@@ -19,6 +19,18 @@ import java.util.Map;
  */
 final class Prefs {
     static final int[] DURATIONS_MIN = {1, 2, 3, 5, 10, 20, 30};
+    /**
+     * A time lapse's lengths (2.5): it needs at least {@code TimeLapse.MIN_UNITS} frames (10 minutes gives 37 even at the
+     * longest frames, 16 s), and longer nights make longer films.
+     */
+    static final int[] LAPSE_DURATIONS_MIN = {10, 15, 20, 30, 45, 60, 90};
+    /** The length a time lapse starts at when the one set isn't one of its own. */
+    static final int LAPSE_DEFAULT_MIN = 30;
+
+    /** The lengths offered in a mode. */
+    static int[] durations(boolean timelapse) {
+        return timelapse ? LAPSE_DURATIONS_MIN : DURATIONS_MIN;
+    }
 
     private final SharedPreferences sp;
     /** Whether this process has checked the settings' version. */
@@ -100,9 +112,24 @@ final class Prefs {
         return sp.getBoolean("earth", false) && !trails();
     }
 
-    /** The mode at once: star trails, the Earth's turn, or (both false) deep sky. */
-    void setMode(boolean trails, boolean earth) {
-        sp.edit().putBoolean("trails", trails).putBoolean("earth", earth && !trails).apply();
+    /** The time lapse mode (2.5): a deep photo and the whole night as a video. Never with trails or the Earth's turn. */
+    boolean timelapse() {
+        return sp.getBoolean("timelapse", false) && !trails() && !earth();
+    }
+
+    /** The mode at once: star trails, the Earth's turn, the time lapse, or (all false) deep sky. */
+    void setMode(boolean trails, boolean earth, boolean timelapse) {
+        sp.edit().putBoolean("trails", trails).putBoolean("earth", earth && !trails)
+                .putBoolean("timelapse", timelapse && !trails && !earth).apply();
+    }
+
+    /** How the time lapse looks (2.5): "sky", "trails" or "comet" ({@code TimeLapse.Style}). */
+    String lapseStyle() {
+        return sp.getString("lapseStyle", "sky");
+    }
+
+    void setLapseStyle(String v) {
+        sp.edit().putString("lapseStyle", v).apply();
     }
 
     /** Bright-star brackets (2.2): a short frame after every few long ones, for the brightest stars' real colour. */
@@ -306,6 +333,7 @@ final class Prefs {
         p.blend = blend();
         p.quick = quick();
         p.earth = earth();
+        p.timelapse = timelapse();
         return p;
     }
 
@@ -314,7 +342,8 @@ final class Prefs {
         sp.edit().putBoolean("trails", p.trails).putInt("durationMin", p.durationMin).putFloat("brightness", p.brightness)
                 .putBoolean("saveDng", p.saveDng).putString("rejection", p.rejection).putBoolean("keepSatellites", p.keepSatellites)
                 .putBoolean("keepMeteors", p.keepMeteors).putBoolean("collectClear", p.collectClear).putBoolean("blend", p.blend).putBoolean("quick", p.quick)
-                .putBoolean("earth", p.earth && !p.trails).putString("preset", p.id).apply();
+                .putBoolean("earth", p.earth && !p.trails).putBoolean("timelapse", p.timelapse && !p.trails && !p.earth)
+                .putString("preset", p.id).apply();
     }
 
     /** Brandon's own presets and the saved sites, as JSON lists ("" for none). */
@@ -734,5 +763,31 @@ final class Prefs {
 
     void setTileUnlocks(boolean v) {
         sp.edit().putBoolean("tileUnlocks", v).apply();
+    }
+
+    // ---- the watch (2.5) ----
+
+    /** The paired watch's link key (Base64; "" if none is paired). Only this app can read it. */
+    String watchKey() {
+        return sp.getString("watch.key", "");
+    }
+
+    /** The paired watch's name, as it gave it ("" if none). */
+    String watchName() {
+        return sp.getString("watch.name", "");
+    }
+
+    void setWatch(String key, String name) {
+        sp.edit().putString("watch.key", key).putString("watch.name", name == null ? "" : name)
+                .putLong("watch.pairedMs", System.currentTimeMillis()).apply();
+    }
+
+    void clearWatch() {
+        sp.edit().remove("watch.key").remove("watch.name").remove("watch.pairedMs").apply();
+    }
+
+    /** The relay the watch link uses over the internet (a public ntfy server). */
+    String watchRelay() {
+        return sp.getString("watch.relay", com.brandon.nightsky.link.Relay.DEFAULT);
     }
 }
