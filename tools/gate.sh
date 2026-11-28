@@ -58,8 +58,10 @@ else
     git archive "$REF" | tar -x -C "$OUT/src"
 fi
 cd "$OUT/src"
+# the watch link (2.5) when the sources have it: plain Java, shared by the phone and the watch
+LINK=$(ls app/src/main/java/com/brandon/nightsky/link/*.java 2>/dev/null || true)
 javac -source 8 -target 8 -Xlint:-options -nowarn -encoding UTF-8 -d "$OUT/classes" \
-    app/src/main/java/com/brandon/nightsky/processing/*.java app/src/main/java/com/brandon/nightsky/remote/*.java \
+    app/src/main/java/com/brandon/nightsky/processing/*.java app/src/main/java/com/brandon/nightsky/remote/*.java $LINK \
     sim/src/com/brandon/nightsky/sim/*.java 2>&1 | grep -v "^Note:" || true
 [ -f "$OUT/classes/com/brandon/nightsky/sim/SimRunner.class" ] || { echo "the sources didn't compile"; exit 1; }
 
@@ -104,7 +106,9 @@ PhotoVideoTest|{W} 2 24
 UltraHdrTest|{W}
 "
 # tests added by later versions run when the sources have them
-for extra in CaTest SharpTest RehearsalTest EarthTurnTest BracketTest; do
+for extra in CaTest SharpTest RehearsalTest EarthTurnTest BracketTest MissionTest BackgroundTest PurpleTest GifTest DeepSpaceTest DeepZoomTest \
+    TimeLapseTest XRayTest LinkTest RecordTest PostcardTest CosmicTest PointerTest MoonGeoTest MoonCamTest MoonshotTest TransitTest TransitShotTest MoonMapTest \
+    EarthshineTest JupiterGeoTest JupiterShotTest JupiterLookTest WindowTest; do
     [ -f "sim/src/com/brandon/nightsky/sim/$extra.java" ] && TESTS="$TESTS$extra|{W}
 "
 done

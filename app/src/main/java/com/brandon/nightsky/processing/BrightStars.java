@@ -12,7 +12,9 @@ import java.util.Locale;
 /**
  * The stars to about magnitude 6.5 (Yale Bright Star Catalogue, the app's {@code stars.csv} asset), brightest
  * first: J2000 directions, V magnitudes, colour temperatures, B-V colour indices and names. Used to solve the
- * frames' pointing, to say what the photo shows and to calibrate its colours (F4).
+ * frames' pointing, to say what the photo shows and to calibrate its colours (F4). Since 2.3 also how far away each
+ * star is (light-years, from Hipparcos's parallaxes via the HYG database) and its spectral type, for the viewer's star
+ * cards and its 3D flight.
  */
 public final class BrightStars {
     public final int n;
@@ -23,6 +25,9 @@ public final class BrightStars {
     /** B-V colour index (NaN where the catalogue has none). */
     public final float[] bv;
     public final String[] con, letter, name;
+    /** Distance in light-years (NaN where unknown, or too far for its parallax to say), and spectral type ("" if unknown). */
+    public final float[] ly;
+    public final String[] spect;
 
     private BrightStars(int n) {
         this.n = n;
@@ -33,6 +38,8 @@ public final class BrightStars {
         con = new String[n];
         letter = new String[n];
         name = new String[n];
+        ly = new float[n];
+        spect = new String[n];
     }
 
     public static BrightStars load(InputStream in) throws IOException {
@@ -69,6 +76,14 @@ public final class BrightStars {
                 } catch (NumberFormatException ignored) {
                 }
             }
+            s.ly[i] = Float.NaN;
+            if (p.length >= 9 && !p[8].isEmpty()) {
+                try {
+                    s.ly[i] = Float.parseFloat(p[8]);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            s.spect[i] = p.length >= 10 ? p[9] : "";
         }
         return s;
     }

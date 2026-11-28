@@ -264,6 +264,24 @@ final class MediaSaver {
                 });
     }
 
+    /** An animated GIF in Pictures/NightSky (2.4, Mission Replay), copied from {@code gif}. */
+    static Uri saveGif(Context c, final File gif, String name, Date time) throws IOException {
+        return insert(c, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name + ".gif", "image/gif",
+                PICTURES_DIR, time, new Writer() {
+                    @Override
+                    public void write(OutputStream os) throws IOException {
+                        java.io.InputStream in = new java.io.FileInputStream(gif);
+                        try {
+                            byte[] b = new byte[1 << 16];
+                            int n;
+                            while ((n = in.read(b)) > 0) os.write(b, 0, n);
+                        } finally {
+                            in.close();
+                        }
+                    }
+                });
+    }
+
     /** A file of any type in Documents/NightSky (a CSV log, a settings export). */
     static Uri saveDocument(Context c, String name, String mime, Writer w) throws IOException {
         return insert(c, MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), name, mime, DOCS_DIR, new Date(), w);

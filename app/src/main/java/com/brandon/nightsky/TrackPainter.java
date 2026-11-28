@@ -120,9 +120,44 @@ final class TrackPainter {
                 continue;
             }
             float r = 9 * unit;
+            if ("spacecraft".equals(it.kind)) {
+                // a spacecraft leaving the Solar System, or L2 (2.4): too far to see, so a target diamond where it is,
+                // in mission-control green, with how far
+                Paint dia = new Paint(ring);
+                dia.setColor(0xE07CFFB2);
+                Path p = new Path();
+                p.moveTo(x, y - r);
+                p.lineTo(x + r, y);
+                p.lineTo(x, y + r);
+                p.lineTo(x - r, y);
+                p.close();
+                c.drawPath(p, dia);
+                c.drawLine(x - 1.6f * r, y, x - 1.15f * r, y, dia);
+                c.drawLine(x + 1.15f * r, y, x + 1.6f * r, y, dia);
+                c.drawLine(x, y - 1.6f * r, x, y - 1.15f * r, dia);
+                c.drawLine(x, y + 1.15f * r, x, y + 1.6f * r, dia);
+                text.setColor(0xFF9CFFC8);
+                String n = it.note.isEmpty() ? it.name : it.name + " · " + it.note;
+                c.drawText(n, x + 1.6f * r + 3 * unit, y + size * 0.35f, text);
+                continue;
+            }
+            if ("dwarf planet".equals(it.kind)) {
+                // Pluto (2.4): a dashed ring, since it's there but too faint to show
+                Paint dash = new Paint(ring);
+                dash.setColor(0xD0FFE6B8);
+                dash.setPathEffect(new DashPathEffect(new float[]{3 * unit, 3 * unit}, 0));
+                c.drawCircle(x, y, r, dash);
+                text.setColor(0xFFFFE6B8);
+                String n = it.note.isEmpty() ? it.name : it.name + " · " + it.note;
+                c.drawText(n, x + r + 3 * unit, y + size * 0.35f, text);
+                continue;
+            }
+            boolean mine = "mine".equals(it.kind);
+            // a star named by you (2.3): in pink, with a heart
+            ring.setColor(mine ? 0xE0FF8FC6 : 0xC0B8D8FF);
             c.drawCircle(x, y, r, ring);
-            text.setColor("planet".equals(it.kind) || "moon".equals(it.kind) ? 0xFFFFE6B8 : 0xFFC8E0FF);
-            c.drawText(it.name, x + r + 3 * unit, y + size * 0.35f, text);
+            text.setColor(mine ? 0xFFFF8FC6 : "planet".equals(it.kind) || "moon".equals(it.kind) ? 0xFFFFE6B8 : 0xFFC8E0FF);
+            c.drawText(mine ? "\u2665 " + it.name : it.name, x + r + 3 * unit, y + size * 0.35f, text);
         }
     }
     /**

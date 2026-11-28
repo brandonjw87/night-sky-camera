@@ -23,7 +23,7 @@ public final class Renderer {
      * taken out with the stars set aside, 1.4; 3: the sky's detail brought out, 1.9; 4: sharper stars, 2.0). Saved with
      * every recipe (G3), so a photo rendered by an older version can be rendered again from its kept stack with this one.
      */
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
 
     public static final class Params {
         /** 0 = dark sky, 1 = bright sky; 0.5 puts the background near 12% grey. */
@@ -110,10 +110,24 @@ public final class Renderer {
         /** Star trails: the stars are arcs, which aren't sharpened as star images are (2.0). */
         public boolean trails;
         /**
+         * Purple halos taken out (2.4, {@link StarHalo}): each camera colour's own window (Gaussian sigma, px) that makes the
+         * three colours' star images the same size before their ratios are taken; null: {@link #colorSigma} for all three.
+         */
+        public float[] colorWindows;
+        /** What the stars' colours measured (2.4), or null: not measured. */
+        public StarHalo halo;
+        /**
          * 1 / clip level per channel on a CGX x CGY grid of nodes spanning the crop (lens shading raises the
          * clip level towards the corners): [(c * CGY + j) * CGX + i].
          */
         public float[] clipInv;
+        /**
+         * What the quadratic background leaves of the sky's glow (2.4, {@link SkyBackground}): a smooth surface per channel on
+         * the same grid as {@link #clipInv}, taken off with the quadratic; null when the photo isn't placed on the sky.
+         */
+        public float[] bgRes;
+        /** How the background was fitted around the Milky Way (2.4), for the log; "" for the plain quadratic. */
+        public String bgNote = "";
         /** The sky's noise, found by the first full-size render of {@link #denoised} and kept for the next ones (1.4). */
         Denoise.Result denoise;
         RgbImage denoised;
@@ -162,7 +176,7 @@ public final class Renderer {
         public String describe() {
             return String.format(Locale.US, "crop %dx%d+%d+%d noiseY=%.3f chroma=%.3f/%.3f whiteY=%.1f sky=%.2f/%.2f/%.2f masked=%.1f%% ground=%.1f%% cells=%d",
                     cw, ch, cx0, cy0, noiseY, noiseS, noiseP, whiteY, skyLevel[0], skyLevel[1], skyLevel[2], 100 * maskedFraction,
-                    100 * ground, goodCells);
+                    100 * ground, goodCells) + bgNote + (halo != null ? "; " + halo.describe() : "");
         }
     }
 
@@ -185,6 +199,14 @@ public final class Renderer {
     // ------------------------------------------------------------------------------------------------
 
     public static Analysis analyze(RgbImage img, SensorSpec spec) {
+        return analyze(img, spec, null);
+    }
+
+    /**
+     * The picture's measurements; with its plate solution {@code sol} (2.4; null: none) the background is fitted around
+     * the Milky Way and followed past what a quadratic can ({@link SkyBackground}).
+     */
+    public static Analysis analyze(RgbImage img, SensorSpec spec, SkySolver.Solution sol) {
         final Analysis a = new Analysis();
         a.m = spec.camToSrgb.clone();
         a.clip = spec.range();
@@ -266,7 +288,17 @@ public final class Renderer {
         int okCells = 0;
         for (boolean b : cok) if (b) okCells++;
         a.goodCells = okCells;
-        for (int c = 0; c < 3; c++) a.poly[c] = robustPoly2(cu, cv, cval[c], cok);
+        // the Milky Way's cells out of the fit (2.4): it isn't light pollution
+        float[] band = null;
+        if (sol != null) {
+            try {
+                band = SkyBackground.bandShare(sol, a.cx0, a.cy0, a.cw, a.ch, cu, cv, cok);
+            } catch (RuntimeException e) {
+                band = null;
+            }
+        }
+        for (int c = 0; c < 3; c++) a.poly[c] = robustPoly2(cu, cv, cval[c], cok, band);
+        if (band != null) a.bgRes = SkyBackground.residual(a.poly, cu, cv, cval, cok, band, gx, gy, CGX, CGY);
 
         // Sky level (for logs / DNG): median of the cell medians.
         for (int c = 0; c < 3; c++) {
@@ -275,6 +307,7 @@ public final class Renderer {
             for (int k = 0; k < gx * gy; k++) if (cok[k]) t[n++] = (float) cval[c][k];
             a.skyLevel[c] = n > 0 ? Stats.median(t, n) : 0f;
         }
+        if (band != null) a.bgNote = SkyBackground.describe(band, cok, a.bgRes, CGX, CGY, a.skyLevel);
 
         starLocus(a, spec.wbCct > 0 ? spec.wbCct : ColorMath.DEFAULT_CCT);
         a.clipInv = clipGrid(img, spec);
@@ -347,6 +380,19 @@ public final class Renderer {
             }
         }
         return g;
+    }
+
+    /** The inverse of a 3 x 3 matrix (row-major); the identity if it's singular. */
+    static float[] inverse3(float[] m) {
+        double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], k = m[8];
+        double A = e * k - f * h, B = -(d * k - f * g), C = d * h - e * g;
+        double det = a * A + b * B + c * C;
+        if (Math.abs(det) < 1e-12) return new float[]{1, 0, 0, 0, 1, 0, 0, 0, 1};
+        double D = -(b * k - c * h), E = a * k - c * g, F = -(a * h - b * g);
+        double G = b * f - c * e, H = -(a * f - c * d), K = a * e - b * d;
+        double s = 1 / det;
+        return new float[]{(float) (A * s), (float) (D * s), (float) (G * s), (float) (B * s), (float) (E * s), (float) (H * s),
+                (float) (C * s), (float) (F * s), (float) (K * s)};
     }
 
     private static void rgb(float[] m, float r, float g, float b, float[] out) {
@@ -542,9 +588,25 @@ public final class Renderer {
 
     /** IRLS fit of a quadratic surface; positive residuals (stars, clouds, Milky Way) are down-weighted harder. */
     static double[] robustPoly2(double[] u, double[] v, double[] val, boolean[] ok) {
+        return robustPoly2(u, v, val, ok, null);
+    }
+
+    /**
+     * The same with each cell's say cut by {@code leave} (0: all of it, 1: none; null: every cell has its say): the
+     * Milky Way's cells (2.4). The residuals' spread is measured on the cells with most of their say.
+     */
+    static double[] robustPoly2(double[] u, double[] v, double[] val, boolean[] ok, float[] leave) {
         int n = u.length;
-        double[] w = new double[n];
-        for (int i = 0; i < n; i++) w[i] = ok[i] ? 1 : 0;
+        double[] w = new double[n], prior = new double[n];
+        boolean[] spread = new boolean[n];
+        int ns = 0;
+        for (int i = 0; i < n; i++) {
+            prior[i] = ok[i] ? (leave != null ? Math.max(0, 1 - leave[i]) : 1) : 0;
+            w[i] = prior[i];
+            spread[i] = prior[i] >= 0.5;
+            if (spread[i]) ns++;
+        }
+        if (ns < 8) spread = ok;
         double[] coef = new double[6];
         double[] res = new double[n];
         for (int it = 0; it < 12; it++) {
@@ -584,17 +646,65 @@ public final class Renderer {
                 double f = 0;
                 for (int r = 0; r < 6; r++) f += coef[r] * t[r];
                 res[i] = val[i] - f;
-                ar[m++] = (float) Math.abs(res[i]);
+                if (spread[i]) ar[m++] = (float) Math.abs(res[i]);
             }
             double s = Math.max(1e-6, 1.4826 * Stats.median(ar, m));
             for (int i = 0; i < n; i++) {
                 if (!ok[i]) continue;
                 double c = res[i] > 0 ? 2.5 * s : 4.685 * s;
                 double z = res[i] / c;
-                w[i] = Math.abs(z) < 1 ? (1 - z * z) * (1 - z * z) : 0;
+                w[i] = Math.abs(z) < 1 ? prior[i] * (1 - z * z) * (1 - z * z) : 0;
             }
         }
         return coef;
+    }
+
+    /**
+     * The fitted sky background (linear sRGB, the quadratic and what follows it, 2.4) at crop point (x, y) of the
+     * analysed picture (pixel centres at + 0.5): out[0..2].
+     */
+    public static void backgroundAt(Analysis a, double x, double y, float[] out) {
+        double u = (x / a.cw) * 2 - 1, v = (y / a.ch) * 2 - 1;
+        double[] t = new double[6];
+        terms(u, v, t);
+        float[] row = a.bgRes != null ? new float[3 * CGX] : null;
+        if (row != null) residualRow(a.bgRes, y / a.ch, row);
+        float fx = (float) (x / a.cw * (CGX - 1));
+        int gi = Math.min(CGX - 2, Math.max(0, (int) fx));
+        float ft = Math.min(1f, Math.max(0f, fx - gi));
+        for (int c = 0; c < 3; c++) {
+            double f = 0;
+            for (int r = 0; r < 6; r++) f += a.poly[c][r] * t[r];
+            if (row != null) f += row[c * CGX + gi] + ft * (row[c * CGX + gi + 1] - row[c * CGX + gi]);
+            out[c] = (float) f;
+        }
+    }
+
+    /**
+     * The residual background {@code res} (2.4, {@link Analysis#bgRes}) per channel at the grid's columns along a crop row
+     * {@code t} of the way down (the row's middle over the crop's height): out[c * CGX + i].
+     */
+    static void residualRow(float[] res, double t, float[] out) {
+        float gyf = (float) (t * (CGY - 1));
+        int gj = Math.min(CGY - 2, Math.max(0, (int) gyf));
+        float gt = Math.min(1f, Math.max(0f, gyf - gj));
+        for (int c = 0; c < 3; c++) {
+            for (int i = 0; i < CGX; i++) {
+                float g0 = res[(c * CGY + gj) * CGX + i], g1 = res[(c * CGY + gj + 1) * CGX + i];
+                out[c * CGX + i] = g0 + gt * (g1 - g0);
+            }
+        }
+    }
+
+    /** The residual background's luminance along a row ({@link #residualRow}'s) {@code s} of the way across. */
+    static float residualLuma(float[] row, double s) {
+        float fx = (float) (s * (CGX - 1));
+        int gi = Math.min(CGX - 2, Math.max(0, (int) fx));
+        float t = Math.min(1f, Math.max(0f, fx - gi));
+        float r = row[gi] + t * (row[gi + 1] - row[gi]);
+        float g = row[CGX + gi] + t * (row[CGX + gi + 1] - row[CGX + gi]);
+        float b = row[2 * CGX + gi] + t * (row[2 * CGX + gi + 1] - row[2 * CGX + gi]);
+        return KR * r + KG * g + KB * b;
     }
 
     static void terms(double u, double v, double[] t) {
@@ -755,7 +865,7 @@ public final class Renderer {
         Parallel.forRange(bands, Math.max(1, bands / Parallel.threads()), new Parallel.Range() {
             @Override
             public void run(int b0, int b1) throws Exception {
-                Band band = new Band(a.cw, bandRows, a.colorSigma);
+                Band band = new Band(a.cw, bandRows, a.colorSigma, a.colorWindows);
                 int[] argb = new int[a.cw * bandRows];
                 for (int b = b0; b < b1; b++) {
                     int y0 = b * bandRows, y1 = Math.min(a.ch, y0 + bandRows);
@@ -874,7 +984,7 @@ public final class Renderer {
         StarGlow.Field glow = p.glow > 0 && nr != AS_IS ? glow(small, a, sa, 1f / factor).field(p.glow, 1f / factor, small.width, small.height) : null;
         int[] out = new int[small.width * small.height];
         int bandRows = 32;
-        Band band = new Band(small.width, bandRows, sa.colorSigma);
+        Band band = new Band(small.width, bandRows, sa.colorSigma, sa.colorWindows);
         int[] argb = new int[small.width * bandRows];
         for (int y0 = 0; y0 < small.height; y0 += bandRows) {
             int y1 = Math.min(small.height, y0 + bandRows);
@@ -906,7 +1016,7 @@ public final class Renderer {
         Parallel.forRange(bands, Math.max(1, bands / Parallel.threads()), new Parallel.Range() {
             @Override
             public void run(int b0, int b1) {
-                Band band = new Band(w, bandRows, sa.colorSigma);
+                Band band = new Band(w, bandRows, sa.colorSigma, sa.colorWindows);
                 int[] argb = new int[w * bandRows];
                 for (int b = b0; b < b1; b++) {
                     int y0 = b * bandRows, y1 = Math.min(h, y0 + bandRows);
@@ -916,6 +1026,72 @@ public final class Renderer {
             }
         });
         return out;
+    }
+
+    /**
+     * A Deep Space Zoom close-up (2.4, {@link DeepZoom}): the whole of {@code img}, analysed by {@code ra} (its own
+     * background, colour windows and clip levels; the photo's noise), with the photo's tone curve (from {@code photo}, so it
+     * looks as the photo does), {@code noiseScale} its noise against the photo's, and {@code dn} the sky's noise to take out
+     * and the stars' sharpening (null: none). No glow. Bands of rows run in parallel; the same picture gives the same pixels.
+     */
+    static int[] renderRegion(final RgbImage img, final Analysis ra, Analysis photo, final Params p, final float noiseScale,
+                              final Denoise.Result dn) {
+        final Curve curve = Curve.make(photo, p);
+        final int w = ra.cw, h = ra.ch;
+        final int[] out = new int[w * h];
+        final int bandRows = 32;
+        final int bands = (h + bandRows - 1) / bandRows;
+        Parallel.forRange(bands, Math.max(1, bands / Parallel.threads()), new Parallel.Range() {
+            @Override
+            public void run(int b0, int b1) {
+                Band band = new Band(w, bandRows, ra.colorSigma, ra.colorWindows);
+                int[] argb = new int[w * bandRows];
+                for (int b = b0; b < b1; b++) {
+                    int y0 = b * bandRows, y1 = Math.min(h, y0 + bandRows);
+                    band.process(img, ra, p, curve, y0, y1, noiseScale, dn, null, argb);
+                    System.arraycopy(argb, 0, out, y0 * w, (y1 - y0) * w);
+                }
+            }
+        });
+        return out;
+    }
+
+    /**
+     * The analysis of a picture like {@code a}'s but {@code k} times noisier (one unit of the stack it was made for, 2.3):
+     * the same background and colours, the stretch's foot and the colours' noise further out, so its noise looks like the
+     * stack's does.
+     */
+    public static Analysis noisier(Analysis a, float k) {
+        Analysis c = new Analysis();
+        c.m = a.m;
+        c.poly = a.poly;
+        c.noiseY = a.noiseY * k;
+        c.whiteY = a.whiteY;
+        c.clip = a.clip;
+        c.cx0 = a.cx0;
+        c.cy0 = a.cy0;
+        c.cw = a.cw;
+        c.ch = a.ch;
+        c.skyLevel = a.skyLevel;
+        c.maskedFraction = a.maskedFraction;
+        c.goodCells = a.goodCells;
+        c.ground = a.ground;
+        c.axisR = a.axisR;
+        c.axisB = a.axisB;
+        c.locus = a.locus;
+        c.locusS0 = a.locusS0;
+        c.locusDs = a.locusDs;
+        c.noiseS = a.noiseS * k;
+        c.noiseP = a.noiseP * k;
+        c.colorSigma = a.colorSigma;
+        c.colorWindows = a.colorWindows;
+        c.halo = a.halo;
+        c.trails = a.trails;
+        c.clipInv = a.clipInv;
+        c.bgRes = a.bgRes;
+        c.bgNote = a.bgNote;
+        c.sky = a.sky;
+        return c;
     }
 
     /** The analysis of {@code a}'s picture, for a copy of it scaled down {@code factor} times (binned, for a whole factor). */
@@ -932,8 +1108,15 @@ public final class Renderer {
         sa.locusS0 = a.locusS0;
         sa.locusDs = a.locusDs;
         sa.clipInv = a.clipInv;
+        sa.bgRes = a.bgRes;
+        sa.bgNote = a.bgNote;
         sa.sky = a.sky;
         sa.colorSigma = a.colorSigma / factor;
+        if (a.colorWindows != null) {
+            sa.colorWindows = new float[3];
+            for (int c = 0; c < 3; c++) sa.colorWindows[c] = Math.max(0.5f, a.colorWindows[c] / factor);
+        }
+        sa.halo = a.halo;
         sa.trails = a.trails;
         sa.whiteY = a.whiteY;
         sa.clip = a.clip;
@@ -951,6 +1134,9 @@ public final class Renderer {
         /** Colour window: Gaussian kernel of radius GR (a matched filter for star images). */
         final int GR;
         final float[] GK;
+        /** Each camera colour's own window when purple halos are taken out (2.4), radii RC; null: GK for all. */
+        final float[][] KC;
+        final int[] RC;
         /** Sum of the squared 2D window weights: the window's noise variance relative to one pixel's. */
         final float GK2;
         final int w, rows;
@@ -960,14 +1146,28 @@ public final class Renderer {
         final float[] DR;
         int rs, re; // crop rows held: [rs, re)
 
-        Band(int w, int bandRows, float colorSigma) {
+        Band(int w, int bandRows, float colorSigma, float[] windows) {
             float cs = Math.max(0.5f, colorSigma);
             GR = Math.max(2, (int) Math.ceil(3 * cs));
             GK = gaussKernel(GR, cs);
             float s2 = 0;
             for (float k : GK) s2 += k * k;
             GK2 = s2 * s2;
-            M = Math.max(4, GR);
+            int most = GR;
+            if (windows != null) {
+                KC = new float[3][];
+                RC = new int[3];
+                for (int c = 0; c < 3; c++) {
+                    float wc = Math.max(0.5f, windows[c]);
+                    RC[c] = Math.max(2, (int) Math.ceil(3 * wc));
+                    KC[c] = gaussKernel(RC[c], wc);
+                    most = Math.max(most, RC[c]);
+                }
+            } else {
+                KC = null;
+                RC = null;
+            }
+            M = Math.max(4, most);
             this.w = w;
             this.rows = bandRows + 2 * M;
             int n = w * rows;
@@ -1010,6 +1210,9 @@ public final class Renderer {
             boolean grad = p.removeGradient;
             double[] q = new double[9];
             float[] ic = new float[3 * CGX];
+            // what the quadratic leaves of the glow (2.4), per row at the grid's columns
+            float[] bres = grad ? a.bgRes : null;
+            float[] resRow = bres != null ? new float[3 * CGX] : null;
             float[] CN = T3; // clip badness 0..1, before T3 is needed
             byte[] flags = img.clip;
             // bright-star brackets (2.2): a core given its light from the short frames has no clip flag and may stand
@@ -1036,6 +1239,7 @@ public final class Renderer {
                         ic[c * CGX + i] = g0 + gt * (g1 - g0);
                     }
                 }
+                if (resRow != null) residualRow(bres, (y + 0.5) / a.ch, resRow);
                 float gxs = (CGX - 1f) / w;
                 for (int x = 0; x < w; x++) {
                     float cr = img.r[src + x], cg = img.g[src + x], cb = img.b[src + x];
@@ -1060,6 +1264,12 @@ public final class Renderer {
                     r -= (float) (q[0] + u * (q[1] + u * q[2]));
                     g -= (float) (q[3] + u * (q[4] + u * q[5]));
                     b -= (float) (q[6] + u * (q[7] + u * q[8]));
+                    if (resRow != null) {
+                        float[] e = resRow;
+                        r -= e[gi] + t * (e[gi + 1] - e[gi]);
+                        g -= e[CGX + gi] + t * (e[CGX + gi + 1] - e[CGX + gi]);
+                        b -= e[2 * CGX + gi] + t * (e[2 * CGX + gi + 1] - e[2 * CGX + gi]);
+                    }
                     float l = KR * r + KG * g + KB * b;
                     Y[o + x] = l;
                     CR[o + x] = r - l;
@@ -1083,9 +1293,36 @@ public final class Renderer {
             // Colour of the neighbourhood: window-weighted sums of chroma and of luminance, i.e. a star's
             // colour from its whole image. Per-pixel colour is unreliable at star scale: each CFA plane is
             // interpolated separately, so undersampled stars come out with red/blue fringes.
-            gaussBlur(CR, T1, n);
-            gaussBlur(CB, T2, n);
-            gaussBlur(YC, T3, n);
+            if (KC != null) {
+                // purple halos taken out (2.4): each camera colour (sky taken off, clipped samples without weight)
+                // through its own window, so the three colours' star images are the same size, then back to the
+                // display's colours for their ratios
+                float[] mi = inverse3(m);
+                for (int i = 0, e = n * w; i < e; i++) {
+                    float yc = YC[i], rw = CR[i] + yc, bw = CB[i] + yc;
+                    float gw = (yc - KR * rw - KB * bw) * (1f / KG);
+                    CR[i] = mi[0] * rw + mi[1] * gw + mi[2] * bw;
+                    YC[i] = mi[3] * rw + mi[4] * gw + mi[5] * bw;
+                    CB[i] = mi[6] * rw + mi[7] * gw + mi[8] * bw;
+                }
+                gaussBlur(CR, T1, n, KC[0], RC[0]);
+                gaussBlur(YC, T3, n, KC[1], RC[1]);
+                gaussBlur(CB, T2, n, KC[2], RC[2]);
+                for (int i = 0, e = n * w; i < e; i++) {
+                    float cr = T1[i], cg = T3[i], cb = T2[i];
+                    float r = m[0] * cr + m[1] * cg + m[2] * cb;
+                    float g = m[3] * cr + m[4] * cg + m[5] * cb;
+                    float b = m[6] * cr + m[7] * cg + m[8] * cb;
+                    float l = KR * r + KG * g + KB * b;
+                    T1[i] = r - l;
+                    T2[i] = b - l;
+                    T3[i] = l;
+                }
+            } else {
+                gaussBlur(CR, T1, n);
+                gaussBlur(CB, T2, n);
+                gaussBlur(YC, T3, n);
+            }
             gaussBlur(HW, TH, n);
             short[] dy = dn != null && p.lumaNr > 0 ? dn.dy : null;
             float nrAmt = p.lumaNr;
@@ -1229,8 +1466,11 @@ public final class Renderer {
 
         /** Separable Gaussian window (GK) over n rows; edges renormalize over the available pixels. */
         private void gaussBlur(float[] src, float[] dst, int n) {
-            float[] k = GK;
-            int r = GR;
+            gaussBlur(src, dst, n, GK, GR);
+        }
+
+        /** The same with the kernel k of radius r. */
+        private void gaussBlur(float[] src, float[] dst, int n, float[] k, int r) {
             for (int y = 0; y < n; y++) {
                 int o = y * w;
                 for (int x = 0; x < w; x++) {

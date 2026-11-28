@@ -29,6 +29,12 @@ final class FfmpegVideo implements VideoEncoder {
         public VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException {
             return open(out, w, h, fps);
         }
+
+        @Override
+        public VideoEncoder open(File out, int w, int h, int fps, int bitRate, short[] pcm, int rate) throws IOException {
+            opened++;
+            return new FfmpegVideo(out, w, h, fps, pcm, rate);
+        }
     };
     /** Encoders opened and videos finished, for the checks. */
     static volatile int opened, finished;
@@ -43,16 +49,33 @@ final class FfmpegVideo implements VideoEncoder {
     private long lastPts = -1;
     private final boolean real;
 
+    /** The sound track (2.3) as raw 16-bit samples for ffmpeg to read beside the pictures, or null. */
+    private File pcmFile;
+
     private FfmpegVideo(File out, int w, int h, int fps) throws IOException {
+        this(out, w, h, fps, null, 0);
+    }
+
+    private FfmpegVideo(File out, int w, int h, int fps, short[] pcm, int rate) throws IOException {
         this.out = out;
         this.w = w;
         this.h = h;
         real = haveFfmpeg();
         if (real) {
-            ProcessBuilder pb = new ProcessBuilder("ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgra",
-                    "-s", w + "x" + h, "-r", Integer.toString(fps), "-i", "-", "-vf", "scale=out_color_matrix=bt709:out_range=tv",
+            java.util.List<String> cmd = new java.util.ArrayList<String>(java.util.Arrays.asList("ffmpeg", "-y", "-loglevel", "error",
+                    "-f", "rawvideo", "-pix_fmt", "bgra", "-s", w + "x" + h, "-r", Integer.toString(fps), "-i", "-"));
+            if (pcm != null && pcm.length >= 2) {
+                pcmFile = new File(out.getPath() + ".pcm");
+                java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(pcm.length * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                bb.asShortBuffer().put(pcm);
+                java.nio.file.Files.write(pcmFile.toPath(), bb.array());
+                cmd.addAll(java.util.Arrays.asList("-f", "s16le", "-ar", Integer.toString(rate), "-ac", "2", "-i", pcmFile.getAbsolutePath(),
+                        "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "160k"));
+            }
+            cmd.addAll(java.util.Arrays.asList("-vf", "scale=out_color_matrix=bt709:out_range=tv",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_range", "tv",
-                    "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-crf", "20", out.getAbsolutePath());
+                    "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-crf", "20", out.getAbsolutePath()));
+            ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.redirectErrorStream(true);
             // what it says goes with the test's output, not in the session's folder
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(Monkey.out != null ? Monkey.out : out.getParentFile(), "ffmpeg.log")));
@@ -129,6 +152,11 @@ final class FfmpegVideo implements VideoEncoder {
                 // the pipe is gone with ffmpeg
             }
             in = null;
+        }
+        if (pcmFile != null) {
+            //noinspection ResultOfMethodCallIgnored
+            pcmFile.delete();
+            pcmFile = null;
         }
     }
 

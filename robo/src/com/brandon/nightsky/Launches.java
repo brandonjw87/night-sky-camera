@@ -28,7 +28,7 @@ import java.util.List;
  */
 @RunWith(RobolectricTestRunner.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = 36, qualifiers = "w412dp-h915dp-port-xhdpi")
+@Config(sdk = 37, qualifiers = "w412dp-h915dp-port-xhdpi")
 public class Launches {
     @Test
     public void launches() throws Exception {
@@ -38,7 +38,7 @@ public class Launches {
         Monkey.app = RuntimeEnvironment.getApplication();
         Monkey.sa = Shadows.shadowOf(Monkey.app);
         Monkey.sa.grantPermissions(Manifest.permission.CAMERA, Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES);
+                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.NEARBY_WIFI_DEVICES, "android.permission.ACCESS_LOCAL_NETWORK");
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
             @Override
             public void uncaughtException(Thread t, Throwable e) {

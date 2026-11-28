@@ -4,14 +4,14 @@ plugins {
 
 android {
     namespace 'com.brandon.nightsky'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.brandon.nightsky'
-        minSdk 31
-        targetSdk 36
-        versionCode 14
-        versionName '2.2'
+        minSdk 37
+        targetSdk 37
+        versionCode 22
+        versionName '3.3'
     }
 
     buildTypes {

@@ -51,6 +51,15 @@ public final class HotPixels {
         return false;
     }
 
+    /** The defects in rows [y0, y1), as indices (y * W + x), in order. */
+    public int[] within(int y0, int y1) {
+        int a = Arrays.binarySearch(list, Math.max(0, y0) * W);
+        if (a < 0) a = -a - 1;
+        int b = Arrays.binarySearch(list, Math.min(H, Math.max(0, y1)) * W);
+        if (b < 0) b = -b - 1;
+        return Arrays.copyOfRange(list, a, Math.max(a, b));
+    }
+
     public void add(int x, int y) {
         if (x >= 0 && y >= 0 && x < W && y < H) mask.set(y * W + x);
     }

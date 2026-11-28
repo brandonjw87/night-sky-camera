@@ -50,6 +50,8 @@ public final class CaptureService extends Service implements SessionController.H
     static final String ACTION_CANCEL_PLAN = "com.brandon.nightsky.CANCEL_PLAN";
     /** A kept session's photo shown again (EXTRA_DIR: its folder's name), and sessions merged (folder names, "|" between; G1). */
     static final String ACTION_OPEN = "com.brandon.nightsky.OPEN", ACTION_MERGE = "com.brandon.nightsky.MERGE";
+    /** Make the time lapse of the result shown (2.5), in the look EXTRA_STYLE names. */
+    static final String ACTION_LAPSE = "com.brandon.nightsky.LAPSE", EXTRA_STYLE = "style";
     /**
      * A session starts on the saved settings; these change them for that session only: a preset's settings
      * (EXTRA_PRESET, its id), then a shortcut's own (EXTRA_TRAILS, EXTRA_DURATION, EXTRA_DNG).
@@ -91,6 +93,10 @@ public final class CaptureService extends Service implements SessionController.H
     private volatile boolean keepingForViewer;
     private long endedMs;
 
+    // the Pixel Watch link (2.5), and the service kept up after a session while the watch is in use
+    private WatchLink watch;
+    private volatile boolean keepingForWatch;
+
     // night plan
     private PlanRunner plans;
     /** Why the last "Arm" didn't work, for the screen (null if it did); and when. */
@@ -110,6 +116,13 @@ public final class CaptureService extends Service implements SessionController.H
         controller = new SessionController(this, new Prefs(this), this);
         plans = new PlanRunner(this, controller);
         instance = this;
+        watch = new WatchLink(this, controller);
+        watch.start();
+    }
+
+    /** The Pixel Watch link (2.5). */
+    WatchLink watch() {
+        return watch;
     }
 
     SessionController controller() {
@@ -179,6 +192,8 @@ public final class CaptureService extends Service implements SessionController.H
             // minutes added keep their own origin (which session they add to)
             if (origin != null && cont == null) s.origin = origin;
             keepingForViewer = false;
+            keepingForWatch = false;
+            main.removeCallbacks(watchTick);
             if (!goForeground(true)) {
                 if (!plans.armed()) {
                     stopRemote();
@@ -217,6 +232,15 @@ public final class CaptureService extends Service implements SessionController.H
                 for (String d : dirs.split("\\|")) if (!d.isEmpty()) l.add(new File(root, d));
                 controller.merge(l);
             }
+        } else if (ACTION_LAPSE.equals(a)) {
+            // the time lapse of the photo shown (2.5): it reads every frame again, so it runs as developing does
+            if (controller.status().phase != SessionController.Phase.DONE || !goForeground(false)) {
+                if (sessionOver() && !plans.armed() && !foreground) stopSelf();
+                return START_NOT_STICKY;
+            }
+            keepingForViewer = false;
+            acquireLocks(false);
+            controller.timeLapse(com.brandon.nightsky.processing.TimeLapse.Style.parse(intent.getStringExtra(EXTRA_STYLE)));
         } else if (ACTION_FINISH.equals(a)) {
             controller.finishNow();
         } else if (ACTION_CANCEL.equals(a)) {
@@ -323,6 +347,11 @@ public final class CaptureService extends Service implements SessionController.H
     }
 
     private void startRemote() {
+        if (!LocalNet.allowed(this)) {
+            // Android 17: without the local network permission nobody could reach the viewer's address
+            android.util.Log.i("NightSky", "viewer: not started, no local network permission");
+            return;
+        }
         RemoteHost r = remote;
         if (r == null || !r.running()) {
             r = new RemoteHost(this, controller);
@@ -415,6 +444,147 @@ public final class CaptureService extends Service implements SessionController.H
             if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         } catch (RuntimeException ignored) {
         }
+    }
+
+    /** How long the service stays up for a watch after a session, once the watch has gone quiet. */
+    static final long WATCH_IDLE_MS = 10 * 60_000L;
+
+    /** Every 10 s while the service stays up for the watch: lets go once the watch has been quiet a while. */
+    private final Runnable watchTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!keepingForWatch) return;
+            long now = System.currentTimeMillis();
+            if (sessionOver() && !plans.armed()) {
+                long quiet = now - Math.max(watch != null ? watch.lastHeardMs() : 0, endedMs);
+                if (quiet > WATCH_IDLE_MS || now - endedMs > RemoteHost.MAX_KEEP_MS) {
+                    keepingForWatch = false;
+                    if (!keepingForViewer) finishIdle();
+                    return;
+                }
+            }
+            main.postDelayed(this, 10_000);
+        }
+    };
+
+    /** Whether the service holds the camera's foreground state (a session may start without the app on screen). */
+    boolean cameraForeground() {
+        return foreground && foregroundCamera;
+    }
+
+    /** Whether a session can start from the watch now: the app is on the phone's screen, or the service never let go. */
+    boolean canStartFromWatch() {
+        return MainActivity.visible || cameraForeground();
+    }
+
+    /** Runs {@code r} on the main thread and waits for its answer (a few seconds at most); for the watch's commands. */
+    private String onMain(final java.util.concurrent.Callable<String> r) {
+        final String[] msg = {"The phone did not answer"};
+        final CountDownLatch done = new CountDownLatch(1);
+        // whoever claims this first wins: the command runs, or the watch is told to try again (and it never runs)
+        final AtomicBoolean claimed = new AtomicBoolean();
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!claimed.compareAndSet(false, true)) return;
+                try {
+                    msg[0] = r.call();
+                } catch (Exception e) {
+                    msg[0] = "The phone couldn't do that: " + e.getMessage();
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            if (!done.await(3, TimeUnit.SECONDS)) {
+                if (claimed.compareAndSet(false, true)) return "The phone is busy, try again";
+                done.await(10, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            claimed.set(true);
+        }
+        return msg[0];
+    }
+
+    /** Start from the watch (2.5): a session with the saved settings, or preset {@code presetId} put in place first. */
+    String startFromWatch(final String presetId) {
+        return onMain(new java.util.concurrent.Callable<String>() {
+            @Override
+            public String call() {
+                if (!sessionOver()) return "A session is already running";
+                Prefs prefs = new Prefs(CaptureService.this);
+                if (presetId != null && !presetId.isEmpty() && !presetId.equals(prefs.preset())) {
+                    com.brandon.nightsky.processing.Preset p = Presets.find(prefs, presetId);
+                    if (p == null) return "That preset isn't on the phone any more";
+                    Presets.pick(prefs, p, true);
+                    watchSettings++;
+                }
+                if (MainActivity.visible) {
+                    // the app is on screen, so the camera service may start, as if Start had been tapped there
+                    Intent i = new Intent(CaptureService.this, CaptureService.class).setAction(ACTION_START)
+                            .putExtra(EXTRA_VIEWER, prefs.remoteViewer()).putExtra(EXTRA_ORIGIN, "the watch");
+                    startForegroundService(i);
+                    return "Starting. Lay the phone screen-down, camera to the sky: it begins once it's still.";
+                }
+                if (!cameraForeground()) return "Open Night Sky on the phone, then tap Start on the watch";
+                SessionController.Settings st = Presets.session(prefs, null);
+                st.origin = "the watch";
+                keepingForViewer = false;
+                keepingForWatch = false;
+                main.removeCallbacks(watchTick);
+                acquireLocks(true);
+                controller.start(st);
+                return "Starting. Lay the phone screen-down, camera to the sky: it begins once it's still.";
+            }
+        });
+    }
+
+    /** Counts the settings the watch changed (a preset picked with its crown): the home screen shows them anew. */
+    volatile int watchSettings;
+
+    /** "+5 minutes" from the watch after a session ended: 5 more minutes, stacked with the photo just made. */
+    String addAfterFromWatch() {
+        return onMain(new java.util.concurrent.Callable<String>() {
+            @Override
+            public String call() throws IOException {
+                SessionController.Status st = controller.status();
+                if (!controller.canAddAfter() || st.result == null) {
+                    return "Minutes can be added only to a deep-sky photo whose frames are kept, within half an hour";
+                }
+                if (!cameraForeground() && !MainActivity.visible) return "Open Night Sky on the phone to add minutes";
+                SessionController.Settings s = SessionController.continuation(new Prefs(CaptureService.this),
+                        SessionController.sessionsRoot(CaptureService.this), st.result.session, 5 * 60);
+                if (!cameraForeground()) {
+                    startForegroundService(new Intent(CaptureService.this, CaptureService.class).setAction(ACTION_START)
+                            .putExtra(EXTRA_CONTINUE, st.result.session).putExtra(EXTRA_DURATION, 5 * 60));
+                } else {
+                    keepingForViewer = false;
+                    keepingForWatch = false;
+                    main.removeCallbacks(watchTick);
+                    acquireLocks(true);
+                    controller.start(s);
+                }
+                return "Adding 5 minutes: put the phone back as it was, screen-down. They're stacked with the photo when done.";
+            }
+        });
+    }
+
+    /** A preset picked on the watch: its settings put in place on the phone, as a tap on it there would. */
+    String presetFromWatch(final String id) {
+        return onMain(new java.util.concurrent.Callable<String>() {
+            @Override
+            public String call() {
+                if (!sessionOver()) return "Not while a session runs";
+                Prefs prefs = new Prefs(CaptureService.this);
+                com.brandon.nightsky.processing.Preset p = Presets.find(prefs, id);
+                if (p == null) return "That preset isn't on the phone any more";
+                Presets.pick(prefs, p, true);
+                watchSettings++;
+                return p.name + ": " + p.describe();
+            }
+        });
     }
 
     /** True if "Take another" from the viewer can open the camera (the service never left the foreground). */
@@ -813,6 +983,16 @@ public final class CaptureService extends Service implements SessionController.H
                     return;
                 }
                 stopRemote();
+                if (watch != null && watch.watching() && foreground && foregroundCamera) {
+                    // the watch is in use (2.5): stay up so it can take another, until it has been quiet a while
+                    keepingForWatch = true;
+                    endedMs = System.currentTimeMillis();
+                    releaseLocks();
+                    nm.notify(NOTIF_ID, build("Your watch is connected", "Take another photo from your wrist, or open the app", -1, false));
+                    main.removeCallbacks(watchTick);
+                    main.postDelayed(watchTick, 10_000);
+                    return;
+                }
                 finishIdle();
             }
         });
@@ -821,6 +1001,8 @@ public final class CaptureService extends Service implements SessionController.H
     /** Nothing runs any more: let go of the locks and the foreground state (not while a plan is armed). */
     private void finishIdle() {
         keepingForViewer = false;
+        keepingForWatch = false;
+        main.removeCallbacks(watchTick);
         releaseLocks();
         if (plans.armed()) return;
         if (foreground) {
@@ -884,6 +1066,8 @@ public final class CaptureService extends Service implements SessionController.H
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        main.removeCallbacks(watchTick);
+        if (watch != null) watch.stop();
         if (keySession != null) {
             keySession.release();
             keySession = null;

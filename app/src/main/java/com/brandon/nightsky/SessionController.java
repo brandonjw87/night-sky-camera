@@ -34,6 +34,13 @@ import com.brandon.nightsky.processing.SkyTurn;
 import com.brandon.nightsky.processing.CameraFacts;
 import com.brandon.nightsky.processing.CancelledException;
 import com.brandon.nightsky.processing.ClearSky;
+import com.brandon.nightsky.processing.DeepZoom;
+import com.brandon.nightsky.processing.XRayVision;
+import com.brandon.nightsky.processing.CosmicRays;
+import com.brandon.nightsky.processing.FrameStore;
+import com.brandon.nightsky.processing.GoldenRecord;
+import com.brandon.nightsky.processing.Painter;
+import com.brandon.nightsky.processing.Postcard;
 import com.brandon.nightsky.processing.DngWriter;
 import com.brandon.nightsky.processing.EdgeMask;
 import com.brandon.nightsky.processing.FocusMeter;
@@ -46,6 +53,9 @@ import com.brandon.nightsky.processing.LiveStats;
 import com.brandon.nightsky.processing.Master;
 import com.brandon.nightsky.processing.MergeProcessor;
 import com.brandon.nightsky.processing.MeteorLog;
+import com.brandon.nightsky.processing.MissionReplay;
+import com.brandon.nightsky.processing.MissionControl;
+import com.brandon.nightsky.processing.PreviewAccumulator;
 import com.brandon.nightsky.processing.NightPlan;
 import com.brandon.nightsky.processing.PhotoVideo;
 import com.brandon.nightsky.processing.PostProcessor;
@@ -71,8 +81,11 @@ import com.brandon.nightsky.processing.Site;
 import com.brandon.nightsky.processing.SkyGuide;
 import com.brandon.nightsky.processing.SkyReading;
 import com.brandon.nightsky.processing.SkySolver;
+import com.brandon.nightsky.processing.SkyMap;
+import com.brandon.nightsky.processing.StarSong;
 import com.brandon.nightsky.processing.StarGlow;
 import com.brandon.nightsky.processing.Stats;
+import com.brandon.nightsky.processing.TimeLapse;
 import com.brandon.nightsky.processing.Tonight;
 import com.brandon.nightsky.processing.UnitProcessor;
 import com.brandon.nightsky.processing.UnitRecord;
@@ -207,6 +220,12 @@ final class SessionController {
          * looping clip of the Earth turning under it (an MP4 and an animated WebP), with the turn's axis and speed.
          */
         boolean earth;
+        /**
+         * The time lapse (2.5, {@link TimeLapse}): a deep photo, and the whole night as a video, every unit a moment of it
+         * in the order they were taken, in the look {@link #lapseStyle} says ("sky", "trails" or "comet").
+         */
+        boolean timelapse;
+        String lapseStyle = "sky";
     }
 
     /** What the screen and the notification show. Immutable once published. */
@@ -296,6 +315,84 @@ final class SessionController {
         File earth;
         Uri earthVideo, earthWebp;
         String earthWords = "";
+        /**
+         * Deep Space Zoom (2.4): the close-ups made of the galaxies, nebulae, clusters and planets in the photo (none if
+         * nothing stood out enough, or the photo wasn't placed on the sky), and what to say when there are none.
+         */
+        final List<ZoomShot> zooms = new ArrayList<ZoomShot>();
+        String zoomWords = "";
+        /** Mission Replay (2.4): the night as a looping GIF, kept in the session's folder and saved in the gallery (null: none). */
+        File replay;
+        Uri replayGif;
+        String replayWords = "";
+        /**
+         * The time lapse (2.5): its MP4 in the session's folder (null if none), its copy in the gallery, the look it was made
+         * in (a {@link TimeLapse.Style} id, "" for none) and what it is in words ("" for none).
+         */
+        File lapse;
+        Uri lapseVideo;
+        String lapseStyle = "", lapseWords = "";
+        /**
+         * How the session's frames are read for a time lapse, kept while the result is shown so it can be made (again, in
+         * another look) without reading the session again; null when it wasn't kept (the session opened from the sessions
+         * page: made from the frames then, while they're kept).
+         */
+        volatile TimeLapse.Source lapseSource;
+        /** A session opened again whose frames are kept, enough for a time lapse; and a time lapse made just now (plays once). */
+        boolean lapseFrames;
+        volatile boolean lapseFresh;
+        /**
+         * X-Ray Vision (2.5): the photo as an X-ray film with the black holes, neutron stars, exploded stars and planet
+         * hosts in it marked and named, kept in the session's folder (null: none, as when nothing on its list is in the
+         * photo) and saved in the gallery; what's marked on it in words ("" for none).
+         */
+        File xray;
+        Uri xrayUri;
+        String xrayWords = "";
+        /**
+         * Cosmic Ray Hunter (2.6): the particles from space that went through the chip while it looked at the sky, the
+         * brightest under the microscope in a picture kept in the session's folder (null: none made) and saved in the
+         * gallery; how many were caught (-1: not searched), and in words.
+         */
+        File cosmic;
+        Uri cosmicUri;
+        int cosmicHits = -1;
+        String cosmicWords = "";
+        /** Earth's Address (2.6): the Voyagers' pulsar map redrawn for the night round the photo (null: none), in words. */
+        File address;
+        Uri addressUri;
+        String addressWords = "";
+        /** Postcard from Another World (2.6): the photo's sky from a planet round another star (null: none), which, and its message. */
+        File postcard;
+        Uri postcardUri;
+        String postcardFrom = "", postcardWords = "";
+        /**
+         * Hear the Stars (2.3): where the photo points, for its song (null for star trails, or a sky not found); the song
+         * as last made, with the version of the named stars it was made with; its video, once saved to the gallery.
+         */
+        SongSource songFrom;
+        volatile List<StarSong.Note> song;
+        volatile int songNamed = -1;
+        volatile Uri songVideo;
+    }
+
+    /** A Deep Space Zoom close-up (2.4): what it shows, the picture in the gallery, and a small copy for the result screen. */
+    static final class ZoomShot {
+        String title = "", what = "", line = "";
+        Uri uri;
+        File small;
+        /** For Mission Replay, until it's made: the close-up shrunk, and its box in the stack (middle and side, pixels). */
+        int[] replay;
+        int replaySide;
+        double x, y, side;
+    }
+
+    /** Where a photo points and its crop (its stack's pixels), for its song. */
+    static final class SongSource {
+        SkySolver.Solution sol;
+        double jdUtc;
+        SessionSky sky;
+        int[] crop;
     }
 
     /** What to draw over a saved photo. */
@@ -365,14 +462,14 @@ final class SessionController {
     private volatile Status status = new Status();
     private volatile Bitmap preview;
     /** The result's preview without the tracks and names drawn on it, before its crop and turn ({@link #previewFraming}). */
-    private Bitmap previewBase;
+    private volatile Bitmap previewBase;
     /** How the preview is cut and turned (G3), or null for as it is. */
     private Framing previewFraming;
     private int previewVersion;
     private long statusVersion;
 
     // session
-    private Settings settings;
+    private volatile Settings settings;
     private MotionMonitor motion;
     private Sounds sounds;
     private CameraRig rig;
@@ -396,7 +493,7 @@ final class SessionController {
     private int startToken;
 
     // countdown and test frame
-    private int countdownLeft;
+    private volatile int countdownLeft;
     private long nextBeepMs;
     private boolean probeSent, probeDone;
     private int probeRetries;
@@ -564,6 +661,186 @@ final class SessionController {
         thread.start();
         h = new Handler(thread.getLooper());
         root = sessionsRoot(ctx);
+        mission = newMission(prefs);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Mission Control (2.3): the story a computer on the same Wi-Fi tells while the phone lies outside
+    // ------------------------------------------------------------------------------------------------
+
+    private final MissionControl mission;
+
+    MissionControl mission() {
+        return mission;
+    }
+
+    private MissionControl newMission(final Prefs p) {
+        MissionControl m = new MissionControl(p.namedStars(), p.missionPatches(), new MissionControl.Jpeg() {
+            @Override
+            public byte[] encode(int[] argb, int w, int hh, int quality) {
+                try {
+                    Bitmap b = Bitmap.createBitmap(argb, w, hh, Bitmap.Config.ARGB_8888);
+                    try {
+                        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(64 * 1024);
+                        return HdrScreen.compressPlain(b, quality, bo) ? bo.toByteArray() : null;
+                    } finally {
+                        b.recycle();
+                    }
+                } catch (RuntimeException | OutOfMemoryError e) {
+                    return null;
+                }
+            }
+        }, new MissionControl.Keep() {
+            @Override
+            public void namedStars(String json) {
+                p.setNamedStars(json);
+            }
+
+            @Override
+            public void patches(String json) {
+                p.setMissionPatches(json);
+            }
+        });
+        m.setLogger(new MissionControl.Logger() {
+            @Override
+            public void log(final String line) {
+                // into the session's log, from the session's own thread
+                h.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        SessionController.this.log(line);
+                    }
+                });
+            }
+        });
+        m.setStatus(new MissionControl.Status() {
+            @Override
+            public String state() {
+                return RemoteHost.stateOf(status.phase);
+            }
+
+            @Override
+            public String detail() {
+                return status.detail;
+            }
+
+            @Override
+            public long elapsedMs() {
+                return Math.max(0, status.elapsedMs);
+            }
+
+            @Override
+            public long remainingMs() {
+                return Math.max(0, status.remainingMs);
+            }
+
+            @Override
+            public double countdownLeftS() {
+                int c = countdownLeft;
+                return status.phase == Phase.COUNTDOWN && c > 0 ? c : Double.NaN;
+            }
+
+            @Override
+            public Renderer.Analysis analysis() {
+                return liveAnalysis;
+            }
+
+            @Override
+            public float brightness() {
+                Settings st = settings;
+                return st != null ? st.brightness : 1f;
+            }
+        });
+        return m;
+    }
+
+    /** The star catalogue for Mission Control's live sky (read on a thread of its own: it takes a moment the first time). */
+    private void missionCatalogue() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                BrightStars c = SkyCatalog.get(ctx);
+                if (c != null) mission.setCatalogue(c);
+            }
+        }, "catalogue").start();
+    }
+
+    /**
+     * Mission Control's end of the story, or a photo opened again (2.3): the photo as shown (plain), where it points, its
+     * small copy (its stars counted), and for a session just taken what it caught. Nothing here can hold the photo up.
+     */
+    private void missionPhoto(PostProcessor.Output o, SkySolver.Solution sol, double jdUtc, SessionSky sk, RgbImage sm, int f, Bitmap bmp,
+                              ReportCard card, Properties props, boolean fresh, SessionStore st, boolean rehearsal) {
+        try {
+            if (o == null || o.analysis == null || sm == null || bmp == null || bmp.isRecycled()) return;
+            MissionControl.Photo p = new MissionControl.Photo();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(512 * 1024);
+            if (!HdrScreen.compressPlain(bmp, 90, bo)) return;
+            p.jpeg = bo.toByteArray();
+            p.width = bmp.getWidth();
+            p.height = bmp.getHeight();
+            p.sol = sol;
+            p.jdUtc = jdUtc;
+            p.crop = new int[]{o.analysis.cx0, o.analysis.cy0, sm.cropWidth() * f, sm.cropHeight() * f};
+            p.small = sm;
+            p.streaks = o.streaks;
+            p.meteors = o.meteors != null ? o.meteors.size() : 0;
+            p.startMs = props != null ? parseLong(props.getProperty("capture.startWallMs")) : 0;
+            p.endMs = System.currentTimeMillis();
+            p.seconds = o.integrationSeconds;
+            p.fresh = fresh;
+            p.rehearsal = rehearsal;
+            if (card != null && card.sky != null && card.sky.placed) {
+                for (SkyGuide.Item it : card.sky.items) if ("constellation".equals(it.kind)) p.constellations.add(it.name);
+            }
+            BrightStars c = SkyCatalog.get(ctx);
+            if (c != null) mission.setCatalogue(c);
+            mission.setPhotoSky(sk);
+            mission.photo(p);
+        } catch (RuntimeException | OutOfMemoryError e) {
+            if (st != null) st.log("mission control: the photo wasn't handed over: " + e);
+        }
+    }
+
+    /** Where a photo points, for its song (2.3): null for star trails (its stars are arcs) or a sky not found. */
+    private static SongSource songSource(boolean trails, SkySolver.Solution sol, double jdUtc, SessionSky sk, PostProcessor.Output o,
+                                         RgbImage sm, int f) {
+        if (trails || sol == null || o == null || o.analysis == null || sm == null) return null;
+        SongSource src = new SongSource();
+        src.sol = sol;
+        src.jdUtc = jdUtc;
+        src.sky = sk;
+        src.crop = new int[]{o.analysis.cx0, o.analysis.cy0, sm.cropWidth() * f, sm.cropHeight() * f};
+        return src;
+    }
+
+    /**
+     * Hear the Stars (2.3, any thread): the song of result {@code r}'s photo, made once and again when stars have been
+     * named since (each named one sparkles); null if it has none. Its notes' places are shares of the photo shown.
+     */
+    List<StarSong.Note> song(Result r) {
+        if (r == null || r.songFrom == null) return null;
+        try {
+            int v = mission.named().version();
+            List<StarSong.Note> notes = r.song;
+            if (notes != null && r.songNamed == v) return notes;
+            BrightStars c = SkyCatalog.get(ctx);
+            if (c == null) return null;
+            SongSource src = r.songFrom;
+            notes = StarSong.of(new SkyMap(src.sol, src.jdUtc, src.sky, c, "photo"), src.crop, mission.named().all());
+            if (notes.isEmpty()) return null;
+            r.song = notes;
+            r.songNamed = v;
+            return notes;
+        } catch (RuntimeException e) {
+            android.util.Log.w("NightSky", "no song for the photo: " + e);
+            return null;
+        }
+    }
+
+    /** The photo as the song plays over it (2.3): as developed, nothing drawn on it, not turned; null if none is shown. */
+    Bitmap songPicture() {
+        return previewBase;
     }
 
     static File sessionsRoot(Context c) {
@@ -836,6 +1113,11 @@ final class SessionController {
             Opened op = open(st, props, sp, rc, l);
             st.log("opened from master " + l.meta.key + (rc != null ? String.format(Locale.US, " (render r%03d)", rc.number) : ""));
             show(op, headline, detail);
+            // shown on Mission Control's page too (2.3): its map, its song, its stars to name
+            if (!l.meta.trails) {
+                missionPhoto(op.o, l.meta.solution(), l.meta.solutionJd, SessionSky.fromProperties(props), op.small, op.factor, op.bmp,
+                        op.r.report, props, false, null, op.r.fromRehearsal);
+            }
         } catch (final Throwable t) {
             st.log("opening failed: " + t);
             h.post(new Runnable() {
@@ -879,6 +1161,16 @@ final class SessionController {
         if (video.isFile()) r.video = video;
         File earth = earthFile(st.dir, r.name);
         if (earth.isFile()) r.earth = earth;
+        readExtras(st, r);
+        // a time lapse can be made (again) from one session's frames while they're kept (2.5)
+        if (l.meta.sessions.size() <= 1 && framesKept(st)) {
+            try {
+                int n = 0;
+                for (UnitRecord u : st.readUnits()) if (!u.disturbed) n++;
+                r.lapseFrames = n >= TimeLapse.MIN_UNITS;
+            } catch (IOException | RuntimeException ignored) {
+            }
+        }
         r.motion = rc != null && rc.motion;
         r.jpegFactor = rc != null && rc.quick ? 2 : 1;
         r.canAdjust = true;
@@ -902,6 +1194,8 @@ final class SessionController {
         r.repeatOf = props.getProperty("repeatOf", "");
         r.rehearsal = RehearsalCheck.fromProperties(props);
         r.fromRehearsal = isRehearsal(props);
+        r.songFrom = songSource(l.meta.trails, l.meta.solution(), l.meta.solutionJd, SessionSky.fromProperties(props), o, sm, f);
+        song(r);
         Opened op = new Opened();
         op.o = o;
         op.spec = sp;
@@ -934,7 +1228,7 @@ final class SessionController {
         o.image = l.image;
         SensorSpec cs = Master.colourSpec(sp, l.meta);
         if (l.meta.colourFromStars) o.colourSpec = cs;
-        o.analysis = Master.analyze(l.image, cs, l.meta.trails);
+        o.analysis = Master.analyze(l.image, cs, l.meta.trails, l.meta.solution());
         o.summary = l.meta.summary;
         o.integrationSeconds = l.meta.integrationSeconds;
         o.unitsUsed = l.meta.unitsUsed;
@@ -1525,6 +1819,28 @@ final class SessionController {
         r.merge = was.merge;
         r.rehearsal = was.rehearsal;
         r.fromRehearsal = was.fromRehearsal;
+        // the same stack and crop: the same song
+        r.songFrom = was.songFrom;
+        r.song = was.song;
+        r.songNamed = was.songNamed;
+        // the close-ups and the replay are the night's, made from its frames, whatever the edit (2.4)
+        r.zooms.addAll(was.zooms);
+        r.zoomWords = was.zoomWords;
+        r.replay = was.replay;
+        r.replayGif = was.replayGif;
+        r.replayWords = was.replayWords;
+        // and so are the time lapse and X-Ray Vision (2.5)
+        r.lapse = was.lapse;
+        r.lapseVideo = was.lapseVideo;
+        r.lapseStyle = was.lapseStyle;
+        r.lapseWords = was.lapseWords;
+        r.lapseSource = was.lapseSource;
+        r.lapseFrames = was.lapseFrames;
+        r.xray = was.xray;
+        r.xrayUri = was.xrayUri;
+        r.xrayWords = was.xrayWords;
+        // and the cosmic rays, Earth's Address and the postcard (2.6)
+        copyExtras26(was, r);
         return r;
     }
 
@@ -1670,6 +1986,11 @@ final class SessionController {
 
     /** Skip waiting for the phone to lie screen-down and the countdown. */
     String remoteStartNow() {
+        return remoteStartNow("the viewer");
+    }
+
+    /** "Start now" from {@code who} ("the viewer", "the watch"). */
+    String remoteStartNow(final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
@@ -1681,7 +2002,7 @@ final class SessionController {
                     case PREFLIGHT:
                     case COUNTDOWN:
                         forced = true;
-                        log("start now: asked from the viewer");
+                        log("start now: asked from " + who);
                         if (phase == Phase.COUNTDOWN && countdownLeft > 0) {
                             countdownLeft = 0;
                             nextBeepMs = SystemClock.elapsedRealtime();
@@ -1695,11 +2016,16 @@ final class SessionController {
     }
 
     String remoteStop() {
+        return remoteStop("the viewer");
+    }
+
+    /** Stop (develop what's taken) from {@code who} ("the viewer", "the watch"). */
+    String remoteStop(final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
                 if (phase == Phase.CAPTURING || phase == Phase.PAUSED) {
-                    finishCapture("you", "stopped from the viewer");
+                    finishCapture("you", "stopped from " + who);
                     return "Stopped. Developing the frames taken so far.";
                 }
                 return "It is not capturing";
@@ -1722,10 +2048,14 @@ final class SessionController {
     }
 
     String remoteAddTime(final int seconds) {
+        return remoteAddTime(seconds, "the viewer");
+    }
+
+    String remoteAddTime(final int seconds, final String who) {
         return onSession(new Callable<String>() {
             @Override
             public String call() {
-                return remoteAddTimeNow(seconds, "the viewer");
+                return remoteAddTimeNow(seconds, who);
             }
         });
     }
@@ -1938,6 +2268,14 @@ final class SessionController {
             satCatalog = null;
             satDataLog = "";
             if (!s.trails && !s.readingOnly) loadSatellites(tk);
+            if (s.readingOnly) {
+                mission.standBy();
+            } else {
+                // a new mission: its story starts now (the sky solved and the streaks looked for while a viewer may watch)
+                int units = Math.max(1, (plan.frames + plan.framesPerUnit - 1) / plan.framesPerUnit);
+                mission.newSession(sky, null, null, spec.width, spec.height, units, remoteWanted && !s.trails);
+                if (!s.trails && remoteWanted) missionCatalogue();
+            }
             motion = new MotionMonitor(ctx);
             // a rehearsal lies screen-up, its camera against the table: taken as turned over, as on a night
             motion.setScreenUp(s.rehearsal);
@@ -2036,7 +2374,10 @@ final class SessionController {
             @Override
             public void run() {
                 if (tk != token) return;
-                if (cat != null) satCatalog = cat;
+                if (cat != null) {
+                    satCatalog = cat;
+                    mission.satellites(cat);
+                }
                 satDataLog = satDataLog.isEmpty() ? line : satDataLog + "\n" + line;
                 android.util.Log.i("NightSky", line);
             }
@@ -3882,6 +4223,7 @@ final class SessionController {
         phase = Phase.CAPTURING;
         captureStartMs = SystemClock.elapsedRealtime();
         captureStartWallMs = System.currentTimeMillis();
+        mission.captureStarted(captureStartWallMs);
         lastProgressMs = captureStartMs;
         publishCapture();
         submitNext();
@@ -4038,6 +4380,8 @@ final class SessionController {
         bracketEvery = Math.max(StarBrackets.EVERY, (plan.frames + StarBrackets.MAX_FRAMES - 1) / StarBrackets.MAX_FRAMES);
         p.setProperty("brackets", Long.toString(bracketNs));
         p.setProperty("earth", Boolean.toString(settings.earth && !settings.trails));
+        p.setProperty("timelapse", Boolean.toString(settings.timelapse && !settings.trails && !settings.earth));
+        p.setProperty("lapseStyle", TimeLapse.Style.parse(settings.lapseStyle).id);
         if (settings.brackets && !settings.trails) {
             store.log(bracketNs > 0 ? String.format(Locale.US, "bright stars: a %.2f s frame after every %d long ones, for the brightest stars' cores",
                     bracketNs / 1e9, bracketEvery) : "bright stars: the frames are too short to bracket");
@@ -4045,6 +4389,8 @@ final class SessionController {
         store.writeSettings(p);
         up = new UnitProcessor(store, spec, plan.framesPerUnit, 3, unitListener);
         up.setKeepLatest(remoteWanted);
+        // Mission Control's streak watch (2.3): only while a viewer may watch, and never for star trails
+        if (remoteWanted && !settings.trails) up.setWatcher(mission.watcher(up, Math.max(1, (plan.frames + plan.framesPerUnit - 1) / plan.framesPerUnit)));
         liveSpec = spec;
         if (rsk != null) up.setHook(rehearsalHook);
     }
@@ -4652,6 +4998,7 @@ final class SessionController {
             liveStars = rec.stars;
             liveAligned = live.ok;
             LiveStats.Unit lu = liveStats.add(rec, live, System.currentTimeMillis());
+            mission.unit(rec, live, unitsDone);
             final double ut = rec.t;
             final float uh = lu.hfr, utr = lu.transparency;
             final boolean uok = lu.ok && !lu.disturbed;
@@ -4675,6 +5022,8 @@ final class SessionController {
                         preview = Bitmap.createBitmap(px, img.cropWidth(), img.cropHeight(), Bitmap.Config.ARGB_8888);
                         liveAnalysis = a;
                         previewVersion++;
+                        int f = PreviewAccumulator.FACTOR;
+                        mission.livePicture(img, new int[]{img.x0 * f, img.y0 * f, img.cropWidth() * f, img.cropHeight() * f}, previewVersion);
                     }
                 } catch (Throwable ignored) {
                 }
@@ -5223,6 +5572,7 @@ final class SessionController {
         Recipe recipe;
         File video = null;
         boolean motion = false;
+        MissionReplay.Recorder replayRec = null;
         if (same) {
             jpeg = m.again.uri.isEmpty() ? null : Uri.parse(m.again.uri);
             recipe = m.again;
@@ -5248,6 +5598,8 @@ final class SessionController {
             if (mo != null) {
                 if (mo.complete) video = mo.mp4;
                 motion = mo.saved;
+                replayRec = mo.replay;
+                mo.replay = null;
             }
             m.recipe.motion = motion;
             recipe = saveRecipe(home, m.recipe, master, o, name, jpeg, hash[0]);
@@ -5259,6 +5611,24 @@ final class SessionController {
         if (earthWanted && o.video != null) {
             turn = SkyTurn.fit(o.video.plans());
             turnGround = o.video.ground();
+        }
+        // Deep Space Zoom (2.4): close-ups drizzled from the frames, while they can still be read as the stack read them
+        List<ZoomShot> zooms = new ArrayList<ZoomShot>();
+        String zoomWords = "";
+        if (!m.trails && m.merge == null && !m.edit && m.again == null) {
+            zoomWords = deepZoom(home, o, sp, params, m.recipe != null && m.recipe.northUp && north != null, name,
+                    parseLong(m.props.getProperty("capture.startWallMs")), zooms);
+        }
+        // the time lapse (2.5): how the frames are read for it, as developing read them (kept with the result, small)
+        final boolean plain = m.merge == null && !m.edit && m.again == null;
+        TimeLapse.Source lapseSrc = null;
+        if (plain) {
+            try {
+                lapseSrc = TimeLapse.Source.of(sp, st.frames(sp.width, sp.height), o.video, st.readUnits(), o.analysis, params,
+                        parseLong(m.props.getProperty("capture.startWallMs")));
+            } catch (IOException | RuntimeException e) {
+                st.log("time lapse: the frames couldn't be listed: " + e);
+            }
         }
         o.video = null; // how the frames were read for it: let go
         logNoise(home, o, params);
@@ -5305,14 +5675,57 @@ final class SessionController {
                 }
             }
         }
+        // the time lapse of a time lapse session (2.5), while its frames are certainly still there
+        Lapse lapse = null;
+        if (plain && "true".equals(m.props.getProperty("timelapse"))) {
+            post(Phase.DEVELOPING, "Saving", "The time lapse", 0f);
+            lapse = makeTimeLapse(st, lapseSrc, TimeLapse.Style.parse(m.props.getProperty("lapseStyle")), name, "Saving");
+        }
+        // Cosmic Ray Hunter (2.6): the particles that went through the chip, looked for in the frames while they're here
+        CosmicRays.Result rays = null;
+        if (!m.trails && plain) rays = huntCosmicRays(st, o, sp);
         // the photo is saved: the frames stay for editing and merging while the budget allows (an edit leaves them be)
         if (!m.edit && (m.merge == null || home != st)) keepOrDeleteFrames(st, home);
+        // another look can be made from the frames only while they're kept
+        if (lapseSrc != null && (!lapseSrc.enough() || !framesKept(st))) lapseSrc = null;
         // on-screen copy, about 1600 pixels wide, kept with the stack for brightness changes and edits
         int f = Math.max(1, (int) Math.ceil(o.analysis.cw / 1600.0));
         RgbImage sm = o.image.binned(f);
         final Bitmap bmp = previewBitmap(sm, o.analysis, params, f);
         final Framing pf = frameFor(m.recipe, north, sm.cropWidth(), sm.cropHeight());
-        saveThumb(home, frame(bmp, pf));
+        Bitmap framed = frame(bmp, pf);
+        saveThumb(home, framed);
+        // Mission Replay (2.4): the night as one looping GIF in the gallery
+        File replay = null;
+        Uri replayGif = null;
+        String replayWords = "";
+        if (m.merge == null && !m.edit && m.again == null) {
+            Object[] rp = makeReplay(home, o, replayRec, framed, f, pf, zooms, card != null ? card.sky : null, m, name);
+            replay = (File) rp[0];
+            replayGif = (Uri) rp[1];
+            replayWords = (String) rp[2];
+        }
+        replayRec = null;
+        for (ZoomShot z : zooms) z.replay = null;
+        // X-Ray Vision (2.5): the invisible things in the photo, marked on it as on an X-ray film
+        Object[] xray = {null, null, ""};
+        if (!m.trails && m.merge == null && !m.edit && m.again == null) {
+            xray = makeXRay(home, o, sp, framed, f, pf, sm, m.sky, parseLong(m.props.getProperty("capture.startWallMs")), name);
+        }
+        // the 2.6 extras: the pulsar map round the photo, the postcard from another world, the particles caught
+        Object[] address = {null, null, ""}, postcard = {null, null, "", ""}, cosmic = {null, null, ""};
+        if (!m.trails && plain) {
+            long started = parseLong(m.props.getProperty("capture.startWallMs"));
+            address = makeAddress(home, o, sp, framed, f, sm, m.sky, started, name);
+            postcard = makePostcard(home, o, sp, framed, f, sm, m.sky, started, name);
+            if (rays != null) cosmic = makeCosmic(home, sp, rays, started, name);
+        }
+        if (framed != bmp) framed.recycle();
+        framed = null;
+        // Mission Control's end of the story (2.3): a capture's photo ends its mission; an edit or a merge of nights is
+        // shown there as a photo opened again
+        boolean captured = !m.edit && m.again == null && !m.nights;
+        missionPhoto(o, o.solution, o.solutionJd, m.sky, sm, f, bmp, card, m.props, captured, st, isRehearsal(m.props));
         final Result r = new Result();
         if (earthWanted) {
             if (turn == null) {
@@ -5323,6 +5736,36 @@ final class SessionController {
             }
             turnGround = null;
         }
+        r.zooms.addAll(zooms);
+        r.zoomWords = zoomWords;
+        r.replay = replay;
+        r.replayGif = replayGif;
+        r.replayWords = replayWords;
+        r.xray = (File) xray[0];
+        r.xrayUri = (Uri) xray[1];
+        r.xrayWords = (String) xray[2];
+        r.address = (File) address[0];
+        r.addressUri = (Uri) address[1];
+        r.addressWords = (String) address[2];
+        r.postcard = (File) postcard[0];
+        r.postcardUri = (Uri) postcard[1];
+        r.postcardFrom = (String) postcard[2];
+        r.postcardWords = (String) postcard[3];
+        if (rays != null) {
+            r.cosmicHits = rays.hits.size();
+            r.cosmic = (File) cosmic[0];
+            r.cosmicUri = (Uri) cosmic[1];
+            r.cosmicWords = (String) cosmic[2];
+        }
+        if (lapse != null) {
+            r.lapse = lapse.mp4;
+            r.lapseVideo = lapse.uri;
+            r.lapseStyle = lapse.style.id;
+            r.lapseWords = lapse.words;
+            r.lapseFresh = true;
+        }
+        r.lapseSource = lapseSrc;
+        if (m.merge == null && !m.edit && m.again == null) saveExtras(home, r);
         r.summary = o.summary;
         r.name = same && !m.again.name.isEmpty() ? m.again.name : name;
         r.session = home.dir.getName();
@@ -5351,6 +5794,8 @@ final class SessionController {
         r.north = north;
         r.repeatOf = m.merge == null && !m.edit ? m.props.getProperty("repeatOf", "") : "";
         r.rehearsal = check != null ? check : RehearsalCheck.fromProperties(m.props);
+        r.songFrom = songSource(m.trails, o.solution, o.solutionJd, m.sky, o, sm, f);
+        song(r);
         r.fromRehearsal = m.merge == null && isRehearsal(m.props);
         if (jpeg != null) prefs.setLastResultUri(jpeg.toString());
         // what's said: an edit by its render's number, a render made again by how it came out
@@ -5372,7 +5817,7 @@ final class SessionController {
             detail = check.headline;
         } else {
             headline = m.merge != null ? (m.nights ? "The merged photo is ready" : "The longer photo is ready")
-                    : m.trails ? "Your star trails are ready" : "Your photo is ready";
+                    : m.trails ? "Your star trails are ready" : lapse != null ? "Your time lapse is ready" : "Your photo is ready";
             detail = r.summary;
         }
         final RgbImage smf = sm;
@@ -5470,6 +5915,7 @@ final class SessionController {
             in.props = props;
             in.zone = TimeZone.getDefault();
             in.catalog = sk.catalog;
+            in.named = mission.named().all();
             ReportCard card = ReportCard.build(in);
             st.log("report:\n" + card.describe());
             if (!own) return card;
@@ -5704,6 +6150,8 @@ final class SessionController {
         PhotoVideo pv;
         VideoEncoder enc;
         File mp4;
+        /** Mission Replay's copy of the frames adding up (2.4; null: none). */
+        MissionReplay.Recorder replay;
         /** The video's file is whole; it was saved inside the photo. */
         boolean complete, saved;
     }
@@ -5769,7 +6217,15 @@ final class SessionController {
         mo.mp4 = videoFile(st.dir, name);
         try {
             mo.enc = Mp4Writer.factory.open(mo.mp4, pv.width(), pv.height(), PhotoVideo.FPS);
-            pv.build(mo.enc, new Progress() {
+            // Mission Replay (2.4) keeps a few of the frames adding up as they go by, when there's room for them
+            long rneed = MissionReplay.Recorder.heapNeeded(pv.width(), pv.height()) + REPLAY_SPARE, rfree = heapFree(false);
+            if (rfree >= rneed + pv.heapNeeded()) {
+                mo.replay = new MissionReplay.Recorder(mo.enc, pv.width(), pv.height(), pv.buildFrames());
+            } else {
+                st.log(String.format(Locale.US, "decision: Mission Replay without the frames adding up: not enough memory to keep them "
+                        + "(%d MB needed, %d MB free)", (rneed + pv.heapNeeded()) >> 20, rfree >> 20));
+            }
+            pv.build(mo.replay != null ? mo.replay : mo.enc, new Progress() {
                 long last;
 
                 @Override
@@ -5805,6 +6261,835 @@ final class SessionController {
 
     /** Spare heap the Earth's turn leaves beyond its own needs (bytes): the encoder's and the WebPs' buffers. */
     private static final long EARTH_SPARE = 48L << 20;
+    /** Spare heap the time lapse leaves beyond its own needs (bytes): the encoder's buffers and the caption's bitmap. */
+    private static final long LAPSE_SPARE = 40L << 20;
+    /** The time lapse's long sides tried in turn (2.5): the full size, then smaller while the memory or the encoder can't take it. */
+    private static final int[] LAPSE_SIDES = {TimeLapse.MAX_SIDE, TimeLapse.SMALL_SIDE, 1080};
+
+    /** The time lapse's video in a session's folder (2.5): one, the latest made. */
+    static File lapseFile(File dir, String name) {
+        return new File(dir, name + "_timelapse.mp4");
+    }
+    /** Spare heap a close-up leaves beyond its own needs (bytes): its bitmap, its card, the JPEG's encoding. */
+    private static final long ZOOM_SPARE = 24L << 20;
+    /** Spare heap Mission Replay leaves beyond its own needs (bytes). */
+    private static final long REPLAY_SPARE = 16L << 20;
+
+    /** Mission Replay's GIF in a session's folder. */
+    static File replayFile(File dir, String name) {
+        return new File(dir, name + "_replay.gif");
+    }
+
+    /** A session folder's note of the close-ups and the replay its develop step made (2.4), for opening it again. */
+    static final String EXTRAS = "closeups.properties";
+
+    /**
+     * Notes in the session's folder what the develop step made beside the photo (2.4's close-ups, with their words, and
+     * the replay), so the result screen shows them again when the session is opened from the sessions page.
+     */
+    private static void saveExtras(SessionStore st, Result r) {
+        Properties p = new Properties();
+        p.setProperty("zoom.words", r.zoomWords);
+        p.setProperty("zooms", Integer.toString(r.zooms.size()));
+        for (int i = 0; i < r.zooms.size(); i++) {
+            ZoomShot z = r.zooms.get(i);
+            String k = "zoom." + (i + 1) + ".";
+            p.setProperty(k + "title", z.title);
+            p.setProperty(k + "what", z.what);
+            p.setProperty(k + "line", z.line);
+            if (z.uri != null) p.setProperty(k + "uri", z.uri.toString());
+            if (z.small != null) p.setProperty(k + "small", z.small.getName());
+        }
+        if (r.replay != null) p.setProperty("replay", r.replay.getName());
+        if (r.replayGif != null) p.setProperty("replay.uri", r.replayGif.toString());
+        p.setProperty("replay.words", r.replayWords);
+        if (r.xray != null) p.setProperty("xray", r.xray.getName());
+        if (r.xrayUri != null) p.setProperty("xray.uri", r.xrayUri.toString());
+        p.setProperty("xray.words", r.xrayWords);
+        extrasNote26(p, r);
+        lapseNote(p, r);
+        try {
+            java.io.StringWriter w = new java.io.StringWriter();
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5), Cosmic Ray Hunter, Earth's "
+                    + "Address and the postcard (2.6)");
+            st.writeText(EXTRAS, w.toString());
+        } catch (IOException | RuntimeException e) {
+            st.log("the close-ups and the replay not noted for opening the session again: " + e);
+        }
+    }
+
+    /**
+     * What {@link #saveExtras} noted, into {@code r}: the copies still in the session's folder, and their gallery
+     * copies while the gallery still has them (one deleted there isn't offered for opening or sharing).
+     */
+    private void readExtras(SessionStore st, Result r) {
+        String text = st.readText(EXTRAS);
+        if (text == null) return;
+        Properties p = new Properties();
+        try {
+            p.load(new java.io.StringReader(text));
+        } catch (IOException | IllegalArgumentException e) {
+            return;
+        }
+        r.zoomWords = p.getProperty("zoom.words", "");
+        int n = (int) Math.min(9, parseLong(p.getProperty("zooms")));
+        for (int i = 1; i <= n; i++) {
+            String k = "zoom." + i + ".";
+            ZoomShot z = new ZoomShot();
+            z.title = p.getProperty(k + "title", "");
+            z.what = p.getProperty(k + "what", "");
+            z.line = p.getProperty(k + "line", "");
+            z.uri = inGallery(p.getProperty(k + "uri"));
+            String small = p.getProperty(k + "small");
+            File f = small != null ? new File(st.dir, small) : null;
+            if (f != null && f.isFile()) z.small = f;
+            if (z.uri != null || z.small != null) r.zooms.add(z);
+        }
+        String replay = p.getProperty("replay");
+        File gif = replay != null ? new File(st.dir, replay) : null;
+        if (gif != null && gif.isFile()) {
+            r.replay = gif;
+            r.replayGif = inGallery(p.getProperty("replay.uri"));
+        }
+        r.replayWords = p.getProperty("replay.words", "");
+        String xray = p.getProperty("xray");
+        File xf = xray != null ? new File(st.dir, xray) : null;
+        if (xf != null && xf.isFile()) {
+            r.xray = xf;
+            r.xrayUri = inGallery(p.getProperty("xray.uri"));
+            r.xrayWords = p.getProperty("xray.words", "");
+        }
+        readExtras26(st, p, r);
+        String lapse = p.getProperty("lapse");
+        File mp4 = lapse != null ? new File(st.dir, lapse) : null;
+        if (mp4 != null && mp4.isFile()) {
+            r.lapse = mp4;
+            r.lapseVideo = inGallery(p.getProperty("lapse.uri"));
+            r.lapseStyle = p.getProperty("lapse.style", "");
+            r.lapseWords = p.getProperty("lapse.words", "");
+        }
+    }
+
+    /** The 2.6 extras' lines in a session's note of its extras. */
+    private static void extrasNote26(Properties p, Result r) {
+        if (r.cosmicHits >= 0) {
+            p.setProperty("cosmic.hits", Integer.toString(r.cosmicHits));
+            p.setProperty("cosmic.words", r.cosmicWords);
+            if (r.cosmic != null) p.setProperty("cosmic", r.cosmic.getName());
+            if (r.cosmicUri != null) p.setProperty("cosmic.uri", r.cosmicUri.toString());
+        }
+        if (r.address != null) {
+            p.setProperty("address", r.address.getName());
+            if (r.addressUri != null) p.setProperty("address.uri", r.addressUri.toString());
+            p.setProperty("address.words", r.addressWords);
+        }
+        if (r.postcard != null) {
+            p.setProperty("postcard", r.postcard.getName());
+            if (r.postcardUri != null) p.setProperty("postcard.uri", r.postcardUri.toString());
+            p.setProperty("postcard.from", r.postcardFrom);
+            p.setProperty("postcard.words", r.postcardWords);
+        }
+    }
+
+    /** What {@link #extrasNote26} noted, into {@code r}: the pictures still in the session's folder. */
+    private void readExtras26(SessionStore st, Properties p, Result r) {
+        String hits = p.getProperty("cosmic.hits");
+        r.cosmicHits = hits != null ? (int) Math.max(0, Math.min(100000, parseLong(hits))) : -1;
+        if (r.cosmicHits >= 0) {
+            r.cosmicWords = p.getProperty("cosmic.words", "");
+            String c = p.getProperty("cosmic");
+            File cf = c != null ? new File(st.dir, c) : null;
+            if (cf != null && cf.isFile()) {
+                r.cosmic = cf;
+                r.cosmicUri = inGallery(p.getProperty("cosmic.uri"));
+            }
+        }
+        String a = p.getProperty("address");
+        File af = a != null ? new File(st.dir, a) : null;
+        if (af != null && af.isFile()) {
+            r.address = af;
+            r.addressUri = inGallery(p.getProperty("address.uri"));
+            r.addressWords = p.getProperty("address.words", "");
+        }
+        String pc = p.getProperty("postcard");
+        File pf = pc != null ? new File(st.dir, pc) : null;
+        if (pf != null && pf.isFile()) {
+            r.postcard = pf;
+            r.postcardUri = inGallery(p.getProperty("postcard.uri"));
+            r.postcardFrom = p.getProperty("postcard.from", "");
+            r.postcardWords = p.getProperty("postcard.words", "");
+        }
+    }
+
+    /** An edit's result keeps the night's 2.6 extras: made from its frames and its sky, whatever the edit. */
+    private static void copyExtras26(Result was, Result r) {
+        r.cosmic = was.cosmic;
+        r.cosmicUri = was.cosmicUri;
+        r.cosmicHits = was.cosmicHits;
+        r.cosmicWords = was.cosmicWords;
+        r.address = was.address;
+        r.addressUri = was.addressUri;
+        r.addressWords = was.addressWords;
+        r.postcard = was.postcard;
+        r.postcardUri = was.postcardUri;
+        r.postcardFrom = was.postcardFrom;
+        r.postcardWords = was.postcardWords;
+    }
+
+    /** The time lapse's lines in a session's note of its extras (2.5). */
+    private static void lapseNote(Properties p, Result r) {
+        if (r.lapse == null) return;
+        p.setProperty("lapse", r.lapse.getName());
+        if (r.lapseVideo != null) p.setProperty("lapse.uri", r.lapseVideo.toString());
+        p.setProperty("lapse.style", r.lapseStyle);
+        p.setProperty("lapse.words", r.lapseWords);
+    }
+
+    /** Notes a time lapse made after developing (2.5) with the session's other extras, leaving theirs as they were. */
+    private static void saveLapseNote(SessionStore st, Result r) {
+        Properties p = new Properties();
+        String text = st.readText(EXTRAS);
+        try {
+            if (text != null) p.load(new java.io.StringReader(text));
+            lapseNote(p, r);
+            java.io.StringWriter w = new java.io.StringWriter();
+            p.store(w, "Deep Space Zoom, Mission Replay (Night Sky 2.4), the time lapse and X-Ray Vision (2.5), Cosmic Ray Hunter, Earth's "
+                    + "Address and the postcard (2.6)");
+            st.writeText(EXTRAS, w.toString());
+        } catch (IOException | RuntimeException e) {
+            st.log("the time lapse not noted for opening the session again: " + e);
+        }
+    }
+
+    /** {@code s} as a Uri while the gallery still has it (null: none, or deleted there); kept when the gallery can't say. */
+    private Uri inGallery(String s) {
+        if (s == null || s.isEmpty()) return null;
+        Uri u = Uri.parse(s);
+        android.database.Cursor c = null;
+        try {
+            c = ctx.getContentResolver().query(u, new String[]{android.provider.MediaStore.MediaColumns._ID}, null, null, null);
+            return c == null || c.moveToFirst() ? u : null;
+        } catch (RuntimeException e) {
+            return u;
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    /**
+     * Mission Replay (2.4): the frames adding up ({@code rec}, kept from the photo's video; null: none), the photo as
+     * saved ({@code framed}: the stack's crop binned {@code f} times, framed by {@code pf}), the close-ups' zooms and
+     * the mission's numbers, as one looping GIF kept in the session's folder and saved in the gallery. Returns {the
+     * file, its gallery Uri, words}, nulls when it wasn't made (the log says why).
+     */
+    private Object[] makeReplay(SessionStore st, PostProcessor.Output o, MissionReplay.Recorder rec, Bitmap framed, int f, Framing pf,
+                                List<ZoomShot> zooms, SkyGuide sky, Made m, String name) {
+        Object[] none = {null, null, ""};
+        int pw = framed.getWidth(), ph = framed.getHeight();
+        long need = (long) pw * ph * 4 * 2 + (long) MissionReplay.SIDE * MissionReplay.SIDE * 4 * (8 + zooms.size()) + REPLAY_SPARE;
+        long free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no Mission Replay: not enough memory (%d MB needed, %d MB free)", need >> 20, free >> 20));
+            return none;
+        }
+        File gif = replayFile(st.dir, name);
+        try {
+            int[] photo = new int[pw * ph];
+            framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+            List<MissionReplay.Shot> shots = new ArrayList<MissionReplay.Shot>();
+            Renderer.Analysis a = o.analysis;
+            for (ZoomShot z : zooms) {
+                if (z.replay == null) continue;
+                double u = (z.x - a.cx0) / f, v = (z.y - a.cy0) / f;
+                double[] at = pf != null ? pf.forward(u, v) : new double[]{u, v};
+                MissionReplay.Shot sh = new MissionReplay.Shot();
+                sh.x = at[0];
+                sh.y = at[1];
+                sh.side = z.side / f;
+                sh.argb = z.replay;
+                sh.size = z.replaySide;
+                sh.title = z.title;
+                sh.line = z.line;
+                shots.add(sh);
+            }
+            // the spacecraft (and Pluto) in it, for the Deep Space Network frame (2.4): the sky guide's places are shares of the crop
+            List<MissionReplay.Tag> tags = new ArrayList<MissionReplay.Tag>();
+            List<String> far = new ArrayList<String>();
+            if (sky != null) {
+                for (SkyGuide.Item it : sky.items) {
+                    if (!("spacecraft".equals(it.kind) || "dwarf planet".equals(it.kind)) || Double.isNaN(it.x)) continue;
+                    double u = it.x * a.cw / f, v = it.y * a.ch / f;
+                    double[] at = pf != null ? pf.forward(u, v) : new double[]{u, v};
+                    if (at[0] < 0 || at[1] < 0 || at[0] >= pw || at[1] >= ph) continue;
+                    MissionReplay.Tag t = new MissionReplay.Tag();
+                    t.x = at[0];
+                    t.y = at[1];
+                    t.name = it.name;
+                    t.line = it.note.isEmpty() ? "" : it.note + " away";
+                    tags.add(t);
+                    far.add(it.name);
+                }
+            }
+            long started = parseLong(m.props.getProperty("capture.startWallMs"));
+            String when = new java.text.SimpleDateFormat("d MMM yyyy", Locale.US).format(new Date(started > 0 ? started : System.currentTimeMillis()));
+            String light = o.integrationSeconds > 0 ? durationWords((int) Math.round(o.integrationSeconds)) + " of light" : "";
+            List<String> lines = new ArrayList<String>();
+            lines.add("MISSION COMPLETE");
+            lines.add(m.trails ? "Star trails" + (light.isEmpty() ? "" : ", " + light) : light.isEmpty() ? "The night's photo" : light);
+            if (!shots.isEmpty()) {
+                StringBuilder sb = new StringBuilder(shots.size() == 1 ? "Close-up: " : shots.size() + " close-ups: ");
+                for (int i = 0; i < shots.size(); i++) {
+                    if (i > 0) sb.append(i == shots.size() - 1 ? " and " : ", ");
+                    sb.append(shots.get(i).title);
+                }
+                lines.add(sb.toString());
+            }
+            if (!far.isEmpty()) {
+                StringBuilder sb = new StringBuilder("Also in it: ");
+                for (int i = 0; i < far.size(); i++) sb.append(i == 0 ? "" : i == far.size() - 1 ? " and " : ", ").append(far.get(i));
+                lines.add(sb.toString());
+            }
+            lines.add("Night Sky \u00b7 " + when);
+            String note;
+            java.io.OutputStream os = new java.io.BufferedOutputStream(new java.io.FileOutputStream(gif), 1 << 16);
+            try {
+                note = MissionReplay.make(rec, photo, pw, ph, shots, tags, lines.toArray(new String[0]), new CanvasDraw(), os, new Progress() {
+                    long last;
+
+                    @Override
+                    public void update(String stage, float fraction) {
+                        long now = SystemClock.elapsedRealtime();
+                        if (now - last < 300 && fraction < 1f) return;
+                        last = now;
+                        post(Phase.DEVELOPING, "Saving", stage, fraction);
+                    }
+
+                    @Override
+                    public boolean cancelled() {
+                        return cancelDevelop;
+                    }
+                });
+            } finally {
+                os.close();
+            }
+            Uri uri = MediaSaver.saveGif(ctx, gif, name + "_replay", new Date(started > 0 ? started : System.currentTimeMillis()));
+            st.log("mission replay: " + note + "; in the gallery as " + name + "_replay.gif");
+            return new Object[]{gif, uri, ""};
+        } catch (CancelledException e) {
+            st.log("decision: no Mission Replay: cancelled while it was being made");
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no Mission Replay: making it failed: " + e);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        gif.delete();
+        return none;
+    }
+
+    /** "3 min 12 s", "48 s", "1 h 05 min": how long, for the replay's end card. */
+    static String durationWords(int s) {
+        if (s >= 3600) return String.format(Locale.US, "%d h %02d min", s / 3600, (s % 3600) / 60);
+        if (s >= 60) return s % 60 == 0 ? (s / 60) + " min" : String.format(Locale.US, "%d min %d s", s / 60, s % 60);
+        return s + " s";
+    }
+
+    /** Mission Replay's captions drawn with Canvas on one reused bitmap. */
+    private static final class CanvasDraw implements MissionReplay.Draw {
+        private Bitmap b;
+        private int w, h;
+
+        @Override
+        public com.brandon.nightsky.processing.Painter on(int[] argb, int w, int h) {
+            if (b == null || this.w != w || this.h != h) {
+                if (b != null) b.recycle();
+                b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                this.w = w;
+                this.h = h;
+            }
+            b.setPixels(argb, 0, w, 0, 0, w, h);
+            return new CanvasPainter(b);
+        }
+
+        @Override
+        public void off(int[] argb) {
+            b.getPixels(argb, 0, w, 0, 0, w, h);
+        }
+    }
+    /** Heap kept free beside X-Ray Vision's picture (its pixels twice over are counted besides). */
+    private static final long XRAY_SPARE = 24L << 20;
+
+    /**
+     * X-Ray Vision (2.5): the photo as saved ({@code framed}: the stack's crop binned {@code f} times into {@code sm},
+     * framed by {@code pf}) turned into an X-ray film, with what NASA's X-ray, radio and planet-hunting telescopes see in
+     * it marked and named (black holes, neutron stars, exploded stars, stars with planets...); kept in the session's
+     * folder for the result screen and saved in the gallery. Returns {the file, its gallery Uri, what's marked in
+     * words}, nulls and "" when it wasn't made (the log says why).
+     */
+    private Object[] makeXRay(SessionStore st, PostProcessor.Output o, SensorSpec sp, Bitmap framed, int f, final Framing pf,
+                              RgbImage sm, SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, ""};
+        if (o.solution == null || o.analysis == null) {
+            st.log("decision: no X-Ray Vision: the photo wasn't placed on the sky, so what's in it isn't known");
+            return none;
+        }
+        long t0 = SystemClock.elapsedRealtime();
+        Renderer.Analysis a = o.analysis;
+        final double cw = sm.cropWidth(), ch = sm.cropHeight();
+        List<XRayVision.Spot> spots;
+        try {
+            spots = XRayVision.find(o.solution, o.solutionJd, sky, a.cx0, a.cy0, sm.cropWidth() * f, sm.cropHeight() * f,
+                    java.util.TimeZone.getDefault());
+        } catch (RuntimeException e) {
+            st.log("decision: no X-Ray Vision: finding what's in the photo failed: " + e);
+            return none;
+        }
+        int in = XRayVision.inPhoto(spots);
+        if (in == 0) {
+            st.log(String.format(Locale.US, "x-ray vision: nothing on its list in the photo (%d of them up in the sky, for aiming at "
+                    + "next time)", spots.size()));
+            return none;
+        }
+        int pw = framed.getWidth(), ph = framed.getHeight();
+        long need = (long) pw * ph * 4 * 2 + XRAY_SPARE, free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no X-Ray Vision: not enough memory (%d MB needed, %d MB free)", need >> 20, free >> 20));
+            return none;
+        }
+        post(Phase.DEVELOPING, "Saving", "X-Ray Vision", -1f);
+        File file = new File(st.dir, name + "_xray.jpg");
+        Bitmap b = null;
+        try {
+            int[] px = new int[pw * ph];
+            framed.getPixels(px, 0, pw, 0, 0, pw, ph);
+            XRayVision.tint(px);
+            b = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888);
+            b.setPixels(px, 0, pw, 0, 0, pw, ph);
+            //noinspection UnusedAssignment
+            px = null;
+            XRayVision.Drawn d = XRayVision.paint(new CanvasPainter(b), pw, ph, spots, new XRayVision.Place() {
+                @Override
+                public double[] at(double u, double v) {
+                    return pf != null ? pf.forward(u * cw, v * ch) : new double[]{u * cw, v * ch};
+                }
+            });
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(file);
+            try {
+                b.compress(Bitmap.CompressFormat.JPEG, 90, fo);
+            } finally {
+                fo.close();
+            }
+            String words = XRayVision.summary(spots);
+            MediaSaver.Exif ex = new MediaSaver.Exif();
+            ex.make = sp.deviceMake;
+            ex.model = sp.deviceModel;
+            ex.description = "X-Ray Vision: " + words;
+            ex.time = startedMs > 0 ? new Date(startedMs) : new Date();
+            ex.width = pw;
+            ex.height = ph;
+            Uri uri = null;
+            try {
+                uri = MediaSaver.saveJpeg(ctx, b, name + "_xray", ex);
+            } catch (IOException | RuntimeException e) {
+                st.log("x-ray vision: not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "x-ray vision: %s; %d marks, %d named, %dx%d%s (%d ms)", words, d.marks, d.labels, pw, ph,
+                    uri != null ? ", in the gallery as " + name + "_xray.jpg" : "", SystemClock.elapsedRealtime() - t0));
+            return new Object[]{file, uri, words};
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no X-Ray Vision: making it failed: " + e);
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            return none;
+        } finally {
+            if (b != null) b.recycle();
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The 2.6 extras: Cosmic Ray Hunter, Earth's Address, Postcard from Another World
+
+    /** Heap kept free beside a 2.6 extra's picture (its pixels twice over are counted besides). */
+    private static final long EXTRA_SPARE = 24L << 20;
+    /** The pictures' sizes: the pulsar map square, the postcard a card, the particles under the microscope square. */
+    private static final int ADDRESS_SIDE = 1600, POSTCARD_W = 1800, POSTCARD_H = 1200, COSMIC_SIDE = 1600;
+
+    /** One of the 2.6 extras' pictures: its background's pixels, then the lines and words drawn over them. */
+    private interface Drawing {
+        int[] background();
+
+        /** Draws it; returns what to log of it. */
+        String paint(Painter p);
+    }
+
+    /**
+     * A 2.6 extra's picture ({@code what}): {@code d} drawn w x h, kept in the session's folder as name_suffix.jpg for the
+     * result screen and saved in the gallery so, with {@code words} as its description. Returns {the file, its gallery
+     * Uri}: nulls when it couldn't be made, a null Uri when only the gallery wouldn't take it (the log says why).
+     */
+    private Object[] extraPicture(SessionStore st, SensorSpec sp, String what, String suffix, String name, int w, int h, long startedMs,
+                                  String words, Drawing d) {
+        Object[] none = {null, null};
+        long need = (long) w * h * 4 * 2 + EXTRA_SPARE, free = heapFree(false);
+        if (free < need) free = heapFree(true);
+        if (free < need) {
+            st.log(String.format(Locale.US, "decision: no %s: not enough memory (%d MB needed, %d MB free)", what, need >> 20, free >> 20));
+            return none;
+        }
+        long t0 = SystemClock.elapsedRealtime();
+        File file = new File(st.dir, name + "_" + suffix + ".jpg");
+        Bitmap b = null;
+        try {
+            int[] px = d.background();
+            b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            b.setPixels(px, 0, w, 0, 0, w, h);
+            //noinspection UnusedAssignment
+            px = null;
+            String note = d.paint(new CanvasPainter(b));
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(file);
+            try {
+                b.compress(Bitmap.CompressFormat.JPEG, 92, fo);
+            } finally {
+                fo.close();
+            }
+            MediaSaver.Exif ex = new MediaSaver.Exif();
+            ex.make = sp.deviceMake;
+            ex.model = sp.deviceModel;
+            ex.description = what + ": " + words;
+            ex.time = startedMs > 0 ? new Date(startedMs) : new Date();
+            ex.width = w;
+            ex.height = h;
+            Uri uri = null;
+            try {
+                uri = MediaSaver.saveJpeg(ctx, b, name + "_" + suffix, ex);
+            } catch (IOException | RuntimeException e) {
+                st.log(what + ": not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "%s: %s; %dx%d%s (%d ms)", what, note, w, h,
+                    uri != null ? ", in the gallery as " + name + "_" + suffix + ".jpg" : "", SystemClock.elapsedRealtime() - t0));
+            return new Object[]{file, uri};
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no " + what + ": making it failed: " + e);
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+            return none;
+        } finally {
+            if (b != null) b.recycle();
+        }
+    }
+
+    /** The photo's moment (Julian date, UTC): when it was placed on the sky, else when the session started. */
+    private static double photoJd(PostProcessor.Output o, long startedMs) {
+        if (o.solution != null && !Double.isNaN(o.solutionJd) && o.solutionJd > 0) return o.solutionJd;
+        return Astro.jdUtc(startedMs > 0 ? startedMs : System.currentTimeMillis());
+    }
+
+    /**
+     * Cosmic Ray Hunter (2.6): the particles from space that went through the chip while it looked at the sky, looked for
+     * in session {@code st}'s frames (still kept now): light in one frame only, sharper than any star, and not on the
+     * stars, satellites, planes and meteors the stack found. Null when there was no searching them (the log says why).
+     */
+    private CosmicRays.Result huntCosmicRays(SessionStore st, PostProcessor.Output o, SensorSpec sp) {
+        long t0 = SystemClock.elapsedRealtime();
+        try {
+            final FrameStore fs = st.frames(sp.width, sp.height);
+            List<CosmicRays.Unit> units = CosmicRays.units(st, st.readUnits(), o);
+            CosmicRays.Result r = CosmicRays.find(new CosmicRays.Frames() {
+                @Override
+                public void readBand(int index, int y0, int y1, short[] out) throws IOException {
+                    fs.readBand(index, y0, y1, out);
+                }
+            }, sp.width, sp.height, sp.cfa, units, o.hot, CosmicRays.Stack.of(o), electronsPerLevel(sp),
+                    CosmicRays.area(sp.width, sp.height, sp.pixelPitchUm), new Progress() {
+                        long last;
+
+                        @Override
+                        public void update(String stage, float fraction) {
+                            long now = SystemClock.elapsedRealtime();
+                            if (now - last < 300 && fraction < 1f) return;
+                            last = now;
+                            post(Phase.DEVELOPING, "Saving", "Cosmic Ray Hunter: looking for particles", fraction);
+                        }
+
+                        @Override
+                        public boolean cancelled() {
+                            return cancelDevelop;
+                        }
+                    });
+            if (!r.why.isEmpty()) {
+                st.log("decision: no Cosmic Ray Hunter: " + r.why);
+                return null;
+            }
+            st.log(String.format(Locale.US, "cosmic ray hunter: %s (%d ms)", r.summary(), SystemClock.elapsedRealtime() - t0));
+            for (CosmicRays.Hit h : r.hits) {
+                st.log(String.format(Locale.US, "cosmic ray hunter: frame %d at (%.0f, %.0f): %s, %d pixels, %.0f long, %.1f sigma, %.0f levels%s",
+                        h.unit, h.x, h.y, h.kind.one, h.pixels, h.length, h.sigma, h.levels,
+                        Double.isNaN(h.keV) ? "" : String.format(Locale.US, ", %.0f electrons (%.1f keV)", h.electrons, h.keV)));
+            }
+            return r;
+        } catch (CancelledException e) {
+            st.log("decision: Cosmic Ray Hunter stopped: cancelled");
+            return null;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            st.log("decision: no Cosmic Ray Hunter: the search failed: " + e);
+            return null;
+        }
+    }
+
+    /** Electrons per raw level, from the camera's noise profile (its green planes' shot-noise term); NaN when it has none. */
+    static double electronsPerLevel(SensorSpec sp) {
+        if (sp.noiseS == null) return Double.NaN;
+        double s = 0;
+        int n = 0;
+        for (int q = 0; q < sp.noiseS.length && q < sp.cfa.length; q++) {
+            if (sp.cfa[q] != 1 || !(sp.noiseS[q] > 0)) continue;
+            s += sp.noiseS[q];
+            n++;
+        }
+        double range = sp.range();
+        return n > 0 && range > 0 ? 1 / (s / n * range) : Double.NaN;
+    }
+
+    /** "3 particles from space caught while it looked at the sky for 5 minutes (about 4 muons expected): 2 tracks and a spot". */
+    static String cosmicWords(CosmicRays.Result r) {
+        int n = r.hits.size();
+        String s = (n == 0 ? "No particles from space caught" : n == 1 ? "1 particle from space caught" : n + " particles from space caught")
+                + " " + CosmicRays.expectedWords(r);
+        return n > 0 ? s + ": " + r.words() : s;
+    }
+
+    /** The particles caught (2.6), the brightest under the microscope: {file, gallery Uri, words}. */
+    private Object[] makeCosmic(SessionStore st, final SensorSpec sp, final CosmicRays.Result rays, final long startedMs, String name) {
+        final String words = cosmicWords(rays);
+        final CosmicRays.Layout l = CosmicRays.layout(COSMIC_SIDE, COSMIC_SIDE, rays, sp.width, sp.height);
+        post(Phase.DEVELOPING, "Saving", "Cosmic Ray Hunter", -1f);
+        Object[] pic = extraPicture(st, sp, "Cosmic Ray Hunter", "cosmic", name, l.w, l.h, startedMs, words, new Drawing() {
+            @Override
+            public int[] background() {
+                return CosmicRays.background(l, rays, sp.width, sp.height);
+            }
+
+            @Override
+            public String paint(Painter p) {
+                CosmicRays.paint(p, l, rays, sp.width, sp.height, startedMs, java.util.TimeZone.getDefault());
+                return words + (rays.hits.size() > l.shown ? "; " + l.shown + " shown" : "");
+            }
+        });
+        return new Object[]{pic[0], pic[1], words};
+    }
+
+    /**
+     * Earth's Address (2.6): the pulsar map the Pioneers and Voyagers carry, redrawn for the photo's night round the photo
+     * ({@code framed}: the stack's crop binned {@code f} times into {@code sm}, framed), the pulsars that were in the photo
+     * or up in the sky picked out: {file, gallery Uri, words}.
+     */
+    private Object[] makeAddress(SessionStore st, PostProcessor.Output o, SensorSpec sp, final Bitmap framed, int f, RgbImage sm,
+                                 SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, ""};
+        final double jd = photoJd(o, startedMs);
+        final List<GoldenRecord.Mark> marks;
+        try {
+            Renderer.Analysis a = o.analysis;
+            marks = GoldenRecord.marks(o.solution, jd, sky, a != null ? a.cx0 : 0, a != null ? a.cy0 : 0, sm.cropWidth() * f, sm.cropHeight() * f);
+        } catch (RuntimeException e) {
+            st.log("decision: no Earth's Address: the map couldn't be worked out: " + e);
+            return none;
+        }
+        final String words = GoldenRecord.summary(marks);
+        final int pw = framed.getWidth(), ph = framed.getHeight();
+        final GoldenRecord.Layout l = GoldenRecord.layout(ADDRESS_SIDE, ADDRESS_SIDE);
+        post(Phase.DEVELOPING, "Saving", "Earth's Address", -1f);
+        Object[] pic = extraPicture(st, sp, "Earth's Address", "address", name, l.w, l.h, startedMs, words, new Drawing() {
+            @Override
+            public int[] background() {
+                int[] photo = new int[pw * ph];
+                framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+                return GoldenRecord.background(l, photo, pw, ph);
+            }
+
+            @Override
+            public String paint(Painter p) {
+                GoldenRecord.Drawn d = GoldenRecord.paint(p, l, marks, jd, java.util.TimeZone.getDefault());
+                return String.format(Locale.US, "%s; %d lines, %d named, %d digits in blue", words, d.lines, d.labels, d.newDigits);
+            }
+        });
+        return new Object[]{pic[0], pic[1], pic[0] != null ? words : ""};
+    }
+
+    /**
+     * Postcard from Another World (2.6): the photo's sky as seen from a planet round another star (one whose star is in
+     * the photo, else the highest up that night, else Proxima b), with the message it sends home: {file, gallery Uri,
+     * the planet's name, the message}.
+     */
+    private Object[] makePostcard(SessionStore st, PostProcessor.Output o, SensorSpec sp, final Bitmap framed, int f, RgbImage sm,
+                                  SessionSky sky, long startedMs, String name) {
+        Object[] none = {null, null, "", ""};
+        final BrightStars cat = SkyCatalog.get(ctx);
+        if (cat == null) {
+            st.log("decision: no Postcard from Another World: the star catalogue couldn't be read");
+            return none;
+        }
+        final double jd = photoJd(o, startedMs);
+        List<XRayVision.Spot> spots = null;
+        try {
+            Renderer.Analysis a = o.analysis;
+            if (a != null) {
+                spots = XRayVision.find(o.solution, jd, sky, a.cx0, a.cy0, sm.cropWidth() * f, sm.cropHeight() * f, java.util.TimeZone.getDefault());
+            }
+        } catch (RuntimeException e) {
+            st.log("postcard: what's in the photo couldn't be worked out (" + e + "), so it comes from the nearest planet");
+        }
+        Postcard.Why[] why = new Postcard.Why[1];
+        final Postcard.Dest to = Postcard.choose(spots, why);
+        final Postcard.View view;
+        try {
+            view = Postcard.view(to, cat);
+        } catch (RuntimeException e) {
+            st.log("decision: no Postcard from Another World: the sky from " + to.planet + " couldn't be worked out: " + e);
+            return none;
+        }
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(startedMs > 0 ? startedMs : System.currentTimeMillis());
+        final String message = Postcard.message(view, cat, c.get(java.util.Calendar.YEAR));
+        final String because = why[0] == Postcard.Why.IN_PHOTO ? "Its star is in your photo!"
+                : why[0] == Postcard.Why.UP ? "Its star was up in your sky that night" : "The nearest planet to the Solar System";
+        final int pw = framed.getWidth(), ph = framed.getHeight();
+        final Postcard.Layout l = Postcard.layout(POSTCARD_W, POSTCARD_H);
+        post(Phase.DEVELOPING, "Saving", "Postcard from Another World", -1f);
+        Object[] pic = extraPicture(st, sp, "Postcard from Another World", "postcard", name, l.w, l.h, startedMs, to.planet + ": " + message,
+                new Drawing() {
+                    @Override
+                    public int[] background() {
+                        int[] photo = new int[pw * ph];
+                        framed.getPixels(photo, 0, pw, 0, 0, pw, ph);
+                        return Postcard.background(l, photo, pw, ph);
+                    }
+
+                    @Override
+                    public String paint(Painter p) {
+                        Postcard.Drawn d = Postcard.paint(p, l, view, cat, jd, java.util.TimeZone.getDefault(), because);
+                        return String.format(Locale.US, "from %s (%s; %s): %d stars, %d constellations", to.planet, to.star, why0(because), d.stars,
+                                d.figures);
+                    }
+                });
+        return new Object[]{pic[0], pic[1], pic[0] != null ? to.planet : "", pic[0] != null ? message : ""};
+    }
+
+    private static String why0(String because) {
+        return because.endsWith("!") ? because.substring(0, because.length() - 1).toLowerCase(Locale.US) : because.toLowerCase(Locale.US);
+    }
+
+    /** The result screen's copy of a close-up: this many pixels a side. */
+    private static final int ZOOM_SMALL = 360;
+
+    /**
+     * Deep Space Zoom (2.4): the close-ups {@link DeepZoom#plan} picks in the photo, drizzled from the frames
+     * ({@code o.video}) and developed as the photo was ({@code params}), north up when the photo is; each with its card
+     * drawn on, saved in the gallery as name_zoomN.jpg, and a small copy kept in the session's folder for the result
+     * screen. Into {@code out}; returns what to say when there are none. Anything that fails is logged and the rest go on.
+     */
+    private String deepZoom(SessionStore st, PostProcessor.Output o, SensorSpec sp, Renderer.Params params, boolean northUp, String name,
+                            long startedMs, List<ZoomShot> out) {
+        if (o.video == null || o.solution == null) {
+            st.log("decision: no Deep Space Zoom: " + (o.solution == null ? "the photo wasn't placed on the sky, so what's in it isn't known"
+                    : "the frames can't be read again"));
+            return o.solution == null ? "No close-ups: the photo couldn't be matched to the sky's map." : "";
+        }
+        List<String> notes = new ArrayList<String>();
+        List<DeepZoom.Target> plan;
+        try {
+            plan = DeepZoom.plan(o.solution, o.solutionJd, o.image, o.analysis, o.video.ground(), northUp, notes);
+        } catch (RuntimeException e) {
+            st.log("decision: no Deep Space Zoom: planning it failed: " + e);
+            return "";
+        }
+        for (String s : notes) st.log("deep space zoom: no close-up of " + s);
+        if (plan.isEmpty()) {
+            st.log("decision: no Deep Space Zoom: no galaxy, nebula, cluster or planet in the photo stands out enough for a close-up");
+            return "No close-ups this time: no galaxy, nebula, cluster or planet in the photo stood out enough.";
+        }
+        Date when = startedMs > 0 ? new Date(startedMs) : new Date();
+        Progress pr = new Progress() {
+            long last;
+
+            @Override
+            public void update(String stage, float fraction) {
+                long now = SystemClock.elapsedRealtime();
+                if (now - last < 300 && fraction < 1f) return;
+                last = now;
+                post(Phase.DEVELOPING, "Saving", stage, fraction);
+            }
+
+            @Override
+            public boolean cancelled() {
+                return cancelDevelop;
+            }
+        };
+        int k = 0;
+        for (DeepZoom.Target t : plan) {
+            k++;
+            String file = name + "_zoom" + k;
+            long need = DeepZoom.heapNeeded(t, sp.width) + ZOOM_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                st.log(String.format(Locale.US, "decision: no close-up of %s: not enough memory (%d MB needed, %d MB free)", t.name, need >> 20,
+                        free >> 20));
+                continue;
+            }
+            post(Phase.DEVELOPING, "Saving", "Deep Space Zoom: " + t.name, -1f);
+            try {
+                DeepZoom.CloseUp cu = DeepZoom.make(t, o.video, o.image, o.analysis, params, pr);
+                Bitmap b = Bitmap.createBitmap(cu.size, cu.size, Bitmap.Config.ARGB_8888);
+                b.setPixels(cu.argb, 0, cu.size, 0, 0, cu.size, cu.size);
+                // Mission Replay's copy, without the card
+                int rs = Math.min(cu.size, MissionReplay.SIDE);
+                int[] forReplay = MissionReplay.shrink(cu.argb, cu.size, cu.size, rs, rs);
+                cu.argb = null;
+                DeepZoom.card(cu, new CanvasPainter(b));
+                MediaSaver.Exif ex = new MediaSaver.Exif();
+                ex.make = sp.deviceMake;
+                ex.model = sp.deviceModel;
+                ex.description = cu.title + ": " + cu.how;
+                ex.time = when;
+                ex.width = cu.size;
+                ex.height = cu.size;
+                ZoomShot z = new ZoomShot();
+                z.replay = forReplay;
+                z.replaySide = rs;
+                z.title = cu.title;
+                z.what = cu.what;
+                z.line = cu.distance;
+                z.x = t.px;
+                z.y = t.py;
+                z.side = t.side();
+                z.uri = MediaSaver.saveJpeg(ctx, b, file, ex);
+                File small = new File(st.dir, file + ".jpg");
+                try {
+                    Bitmap sb = Bitmap.createScaledBitmap(b, ZOOM_SMALL, ZOOM_SMALL, true);
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(small);
+                    try {
+                        sb.compress(Bitmap.CompressFormat.JPEG, 88, fo);
+                    } finally {
+                        fo.close();
+                    }
+                    sb.recycle();
+                    z.small = small;
+                } catch (IOException | RuntimeException e) {
+                    st.log("deep space zoom: its small copy for the result screen wasn't kept: " + e);
+                }
+                b.recycle();
+                out.add(z);
+                st.log("deep space zoom: " + cu.note + "; in the gallery as " + file + ".jpg" + (ex.failed != null ? " (without its EXIF: "
+                        + ex.failed + ")" : ""));
+            } catch (CancelledException e) {
+                st.log("decision: Deep Space Zoom stopped: cancelled while " + t.name + " was being made");
+                break;
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                st.log("decision: no close-up of " + t.name + ": making it failed: " + e);
+            }
+        }
+        return out.isEmpty() ? "No close-ups this time: they couldn't be made (the log says why)." : "";
+    }
 
     /**
      * The Earth's turn (2.2): the photo ({@code bmp}, one pixel every {@code f} of the stack's) turned as the frames
@@ -5940,6 +7225,245 @@ final class SessionController {
             c.drawText(String.format(Locale.US, "%s   %.1f\u00b0", time, degrees), pad, h - pad, big);
             b.getPixels(argb, 0, w, 0, 0, w, h);
         }
+    }
+
+    /** A time lapse made (2.5): its video in the session's folder, its copy in the gallery, its look and what it is in words. */
+    private static final class Lapse {
+        File mp4;
+        Uri uri;
+        TimeLapse.Style style;
+        String words = "";
+    }
+
+    /** Why the last time lapse wasn't made, in words for the screen ("" when it was). */
+    private volatile String lapseWhy = "";
+
+    /**
+     * The time lapse (2.5) of {@code src} in {@code style}: an MP4 kept in the session's folder (the latest only: a new look
+     * replaces it, and only once it's whole) and saved in the gallery. At the full size when the memory and the phone's
+     * encoder allow it, else smaller; null when it can't be made at all ({@link #lapseWhy} and the log say why). The
+     * progress shows under {@code verb}; a cancel stops it with nothing kept.
+     */
+    private Lapse makeTimeLapse(SessionStore st, TimeLapse.Source src, TimeLapse.Style style, String name, final String verb) {
+        lapseWhy = "";
+        if (src == null || !src.enough()) {
+            int n = src == null ? 0 : src.frames.size();
+            lapseWhy = String.format(Locale.US, "a time lapse needs at least %d frames, and this session has %d", TimeLapse.MIN_UNITS, n);
+            st.log("decision: no time lapse: " + lapseWhy);
+            return null;
+        }
+        TimeLapse tl = null;
+        String why = "";
+        for (int side : LAPSE_SIDES) {
+            TimeLapse t = TimeLapse.of(src, style, side);
+            if (t == null) {
+                why = "the picture is too small for a video";
+                break;
+            }
+            long need = t.heapNeeded() + LAPSE_SPARE, free = heapFree(false);
+            if (free < need) free = heapFree(true);
+            if (free < need) {
+                why = String.format(Locale.US, "not enough memory (%d MB needed at %dx%d, %d MB free)", need >> 20, t.width(), t.height(), free >> 20);
+                continue;
+            }
+            if (!Mp4Writer.factory.supports(t.width(), t.height())) {
+                why = "the phone has no video encoder for " + t.width() + "x" + t.height();
+                continue;
+            }
+            if (side != LAPSE_SIDES[0]) st.log("time lapse: made smaller than it might be: " + why);
+            tl = t;
+            break;
+        }
+        if (tl == null) {
+            lapseWhy = why;
+            st.log("decision: no time lapse: " + why);
+            return null;
+        }
+        int w = tl.width(), hh = tl.height();
+        File mp4 = lapseFile(st.dir, name);
+        // made beside the one kept, which it replaces only once it's whole
+        File part = new File(st.dir, name + "_timelapse.part.mp4");
+        VideoEncoder enc = null;
+        long t0 = SystemClock.elapsedRealtime();
+        try {
+            enc = Mp4Writer.factory.open(part, w, hh, TimeLapse.FPS, TimeLapse.bitRate(w, hh));
+            tl.build(enc, new LapseCaption(), new Progress() {
+                long last;
+
+                @Override
+                public void update(String stage, float fraction) {
+                    noteHeap();
+                    long now = SystemClock.elapsedRealtime();
+                    if (now - last < 300 && fraction < 1f) return;
+                    last = now;
+                    post(Phase.DEVELOPING, verb, stage, fraction);
+                }
+
+                @Override
+                public boolean cancelled() {
+                    return cancelDevelop;
+                }
+            });
+            enc.finish();
+            enc = null;
+            //noinspection ResultOfMethodCallIgnored
+            mp4.delete();
+            if (!part.renameTo(mp4)) throw new IOException("the finished video couldn't be put in place");
+            Lapse l = new Lapse();
+            l.mp4 = mp4;
+            l.style = style;
+            l.words = lapseWords(tl, src);
+            Date when = src.startWallMs > 0 ? new Date(src.startWallMs) : new Date();
+            try {
+                l.uri = MediaSaver.saveVideo(ctx, mp4, name + "_timelapse_" + style.id, when);
+            } catch (IOException | RuntimeException e) {
+                st.log("time lapse: not saved in the gallery: " + e);
+            }
+            st.log(String.format(Locale.US, "time lapse (%s): %dx%d, %d frames of the night, %.1f s at %d fps, %.0f times faster than the sky, "
+                            + "%d KB%s, made in %.1f s; %s", style.id, w, hh, src.frames.size(), tl.durationMs() / 1000.0, TimeLapse.FPS,
+                    tl.speedUp(), mp4.length() >> 10, l.uri != null ? " in the gallery as " + name + "_timelapse_" + style.id + ".mp4" : "",
+                    (SystemClock.elapsedRealtime() - t0) / 1000.0, tl.note()));
+            return l;
+        } catch (CancelledException e) {
+            lapseWhy = "it was cancelled";
+            st.log("decision: no time lapse: cancelled while it was being made");
+            return null;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            lapseWhy = "making it failed (" + (e instanceof OutOfMemoryError ? "out of memory" : e.getMessage()) + ")";
+            st.log("decision: no time lapse: making it failed: " + e);
+            return null;
+        } finally {
+            if (enc != null) enc.close();
+            //noinspection ResultOfMethodCallIgnored
+            part.delete();
+        }
+    }
+
+    /** What a time lapse is, in words: "47 minutes of sky in 12 seconds, 240 times faster than real life: comet tails." */
+    static String lapseWords(TimeLapse tl, TimeLapse.Source src) {
+        double min = src.spanSeconds() / 60.0;
+        String span = min >= 90 ? String.format(Locale.US, "%.1f hours", min / 60) : Math.max(1, Math.round(min)) + " minutes";
+        long secs = Math.max(1, Math.round(tl.durationMs() / 1000.0));
+        return String.format(Locale.US, "%s of sky in %d seconds, %d times faster than real life: %s.", span, secs,
+                Math.round(tl.speedUp()), tl.style().label.toLowerCase(Locale.US));
+    }
+
+    /** The time lapse's caption (2.5): the time of night each picture shows, and how much faster than the sky it plays (bottom left). */
+    private final class LapseCaption implements TimeLapse.Overlay {
+        private Bitmap b;
+        private Canvas c;
+        private final Paint big = new Paint(Paint.ANTI_ALIAS_FLAG), small = new Paint(Paint.ANTI_ALIAS_FLAG);
+        /** The phone's own clock format (12 or 24 hours, as its settings say). */
+        private final java.text.DateFormat clock = android.text.format.DateFormat.getTimeFormat(ctx);
+
+        @Override
+        public void draw(int[] argb, int w, int h, long wallMs, double minutes, double speedUp) {
+            if (b == null) {
+                b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                c = new Canvas(b);
+                float size = Math.max(14f, h / 17f);
+                big.setTextSize(size);
+                big.setColor(0xFFF2F4FF);
+                big.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+                big.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+                small.setTextSize(size * 0.62f);
+                small.setColor(0xFFC8CEE8);
+                small.setShadowLayer(size / 6f, 0, 0, 0xC0000000);
+            }
+            b.setPixels(argb, 0, w, 0, 0, w, h);
+            float pad = big.getTextSize() * 0.6f;
+            String time;
+            if (wallMs > 0) {
+                time = clock.format(new Date(wallMs));
+            } else {
+                int mins = (int) Math.round(minutes);
+                time = mins >= 60 ? String.format(Locale.US, "+%d h %02d min", mins / 60, mins % 60) : String.format(Locale.US, "+%d min", mins);
+            }
+            String top = speedUp >= 1.5 ? String.format(Locale.US, "TIME LAPSE \u00b7 %d\u00d7 FASTER", Math.round(speedUp)) : "TIME LAPSE";
+            c.drawText(top, pad, h - pad - big.getTextSize() * 1.15f, small);
+            c.drawText(time, pad, h - pad, big);
+            b.getPixels(argb, 0, w, 0, 0, w, h);
+        }
+    }
+
+    /**
+     * Whether the result shown can have a time lapse made (2.5): it was just developed (how its frames were read is kept),
+     * or it's a session opened again whose frames are still kept, enough of them.
+     */
+    boolean canTimeLapse() {
+        Status s = status;
+        Result r = s.result;
+        return s.phase == Phase.DONE && r != null && (r.lapseSource != null || r.lapseFrames);
+    }
+
+    /**
+     * Makes the time lapse of the result shown (2.5) in {@code style}: from how developing read the frames when it was just
+     * developed, else from the frames as they're kept (their defective pixels found again). Shown like developing, then the
+     * result again with the time lapse on it; the photo is untouched either way.
+     */
+    void timeLapse(final TimeLapse.Style style) {
+        h.post(new Runnable() {
+            @Override
+            public void run() {
+                if (output == null || result == null || phase != Phase.DONE) {
+                    host.onIdle();
+                    return;
+                }
+                final Result r = result;
+                final PostProcessor.Output o = output;
+                final SensorSpec sp = outSpec;
+                phase = Phase.DEVELOPING;
+                cancelDevelop = false;
+                publish("Making the time lapse", style.label, -1);
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final SessionStore st = new SessionStore(new File(root, r.session));
+                        Lapse made = null;
+                        String why;
+                        try {
+                            // the look shown now: the brightness as it's set on the result screen
+                            Renderer.Params params = paramsOf(r.recipe, r.brightness);
+                            TimeLapse.Source src = r.lapseSource;
+                            if (src == null) {
+                                post(Phase.DEVELOPING, "Making the time lapse", "Finding the sensor's defective pixels", -1f);
+                                src = TimeLapse.Source.reread(sp, st.frames(sp.width, sp.height), PostProcessor.storedHotPixels(st, sp),
+                                        st.readUnits(), o.analysis, params, r.startedMs);
+                            } else {
+                                src = new TimeLapse.Source(src.spec, src.store, src.hot, src.frames, o.analysis, params, src.startWallMs);
+                            }
+                            made = makeTimeLapse(st, src, style, r.name, "Making the time lapse");
+                            if (made != null) r.lapseSource = src;
+                            why = lapseWhy;
+                        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                            why = "the frames couldn't be read (" + (e instanceof OutOfMemoryError ? "out of memory" : e.getMessage()) + ")";
+                            st.log("decision: no time lapse: " + e);
+                        }
+                        final Lapse l = made;
+                        final String w = why;
+                        h.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (l != null) {
+                                    r.lapse = l.mp4;
+                                    r.lapseVideo = l.uri;
+                                    r.lapseStyle = l.style.id;
+                                    r.lapseWords = l.words;
+                                    r.lapseFresh = true;
+                                    saveLapseNote(st, r);
+                                }
+                                phase = Phase.DONE;
+                                boolean cancelled = l == null && cancelDevelop;
+                                cancelDevelop = false;
+                                publish(l != null ? "Your time lapse is ready" : cancelled ? "Cancelled" : "No time lapse",
+                                        l != null ? l.words : cancelled ? "The photo is as it was." : "It couldn't be made: " + w + ".", -1);
+                                host.onIdle();
+                            }
+                        });
+                    }
+                }, "timelapse").start();
+            }
+        });
     }
 
     /** Ends the photo's video on the photo itself, {@code bmp} as it's saved; false (and the log says why) if it can't. */

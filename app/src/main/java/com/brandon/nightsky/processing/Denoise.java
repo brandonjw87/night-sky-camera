@@ -24,6 +24,10 @@ import java.util.Locale;
  * <p>
  * A copy binned smaller (Quick look's half-size photo) is matched with its own, smaller star images.
  * <p>
+ * An enlarged picture (a Deep Space Zoom close-up, 2.4; {@link #enlarged}) is matched with its own, bigger star images,
+ * and its stars' discs lose their noise too, all but the star's own light: enlarged, the grain a disc keeps would show
+ * as a fuzz around every star.
+ * <p>
  * Sharper stars (2.0): the same pass over the picture knows which light is the stars', so it also works out how to
  * draw each star's light back in towards its middle ({@link Result#ds}, {@link #SHARP_ITER}).
  * <p>
@@ -113,6 +117,17 @@ public final class Denoise {
     static final float PSF_FROM = 0.4f, PSF_STEP = 0.02f;
     /** The finest layer's noise (the picture less its 1 px B3 smooth) against a pixel's own. */
     private static final float FINEST_OF_PIXEL = 0.8908f;
+    /**
+     * An enlarged picture ({@link #enlarged}): a star disc's pixel keeps its noise only as far as the star's own light
+     * there, smoothed at 1 px, stands SOFT_LO to SOFT_HI times that smooth's noise over the filled-in sky.
+     */
+    static final float SOFT_LO = 2f, SOFT_HI = 4f;
+    /**
+     * An enlarged picture's stars are found at DETECT_SOFT times the matched filter's noise (its clear stars were drawn
+     * again clean; fainter specks are as much grain as star, and enlarged they'd show as squiggles), all the fine layers'
+     * noise is taken out (FINE_SOFT) and BRIGHT_KEEP_SOFT less of it where the sky is bright (a galaxy's middle).
+     */
+    static final float DETECT_SOFT = 4f, FINE_SOFT = 1f, BRIGHT_KEEP_SOFT = 0.2f;
     /** Fine layers; the coarse ones, on every QF-th pixel of the 8 px smooth. */
     public static final int LEVELS = 3, QF = 4, QLEVELS = 5;
     /** Tiles of work, and cells of the noise map (a tile holds 2 x 2 cells, so each cell is one tile's). */
@@ -300,10 +315,28 @@ public final class Denoise {
 
     /** {@link #run} in tiles of another size (a multiple of {@link #CELL}): the same result, for the tests. */
     public static Result run(RgbImage img, Renderer.Analysis a, float noiseScale, int tile) {
+        return run(img, a, noiseScale, tile, 0f);
+    }
+
+    /**
+     * {@link #run} for an enlarged picture (2.4: a Deep Space Zoom close-up, drizzled or enlarged from the stack) whose
+     * star images have sigma {@code psf} (its pixels): matched with stars that size, and the noise taken out of the
+     * stars' discs as well, except where a star's own light stands clear of it ({@link #SOFT_LO}), and nowhere it's
+     * {@code glow} (per crop pixel, row after row; null: none): light that isn't a star's, a galaxy's middle.
+     */
+    public static Result enlarged(RgbImage img, Renderer.Analysis a, float noiseScale, float psf, byte[] glow) {
+        return run(img, a, noiseScale, TILE, Math.max(MF_SIGMA, psf), glow);
+    }
+
+    private static Result run(RgbImage img, Renderer.Analysis a, float noiseScale, int tile, float psf) {
+        return run(img, a, noiseScale, tile, psf, null);
+    }
+
+    private static Result run(RgbImage img, Renderer.Analysis a, float noiseScale, int tile, float psf, byte[] glow) {
         if (a.cw < MIN_SIZE || a.ch < MIN_SIZE) return null;
         if (tile % CELL != 0) throw new IllegalArgumentException("tiles of " + tile + " px don't hold whole cells");
         long t0 = System.currentTimeMillis();
-        Job j = new Job(img, a, noiseScale, tile);
+        Job j = new Job(img, a, noiseScale, tile, psf, glow);
         // a first guess of the matched filter's noise
         float s1 = j.guess();
         if (!(s1 > 0)) return null;
@@ -366,19 +399,32 @@ public final class Denoise {
         final double gain;
         final float[] mfK;
         final int mfR;
-        /** How many full-size pixels each pixel of this picture stands for, each way (1 / noiseScale). */
+        /** How many full-size pixels each pixel of this picture stands for, each way (1 / noiseScale; 1 enlarged). */
         final float bin;
+        /** An enlarged picture ({@link #enlarged}): the stars' discs lose their noise too, all but the stars' own light. */
+        final boolean soft;
+        /** An enlarged picture's light that isn't a star's (per crop pixel; null: none). */
+        final byte[] glow;
+        /** A star's matched filter over its noise; the fine layers' share taken out, and how much less where it's bright. */
+        final float detect, fine, brightKeep;
 
-        Job(RgbImage img, Renderer.Analysis a, float noiseScale, int tile) {
-            bin = noiseScale >= 1f ? 1f : 1f / noiseScale;
-            if (noiseScale >= 1f) {
+        /** {@code starPsf}: an enlarged picture's star images' sigma (px), 0 for a full-size picture or a smaller copy. */
+        Job(RgbImage img, Renderer.Analysis a, float noiseScale, int tile, float starPsf, byte[] glow) {
+            soft = starPsf > 0f;
+            this.glow = soft ? glow : null;
+            detect = soft ? DETECT_SOFT : DETECT;
+            fine = soft ? FINE_SOFT : FINE;
+            brightKeep = soft ? BRIGHT_KEEP_SOFT : BRIGHT_KEEP;
+            bin = soft || noiseScale >= 1f ? 1f : 1f / noiseScale;
+            if (!soft && noiseScale >= 1f) {
                 psf = MF_SIGMA;
                 mfR = MF_R;
                 mfK = MF_K;
                 gain = MF_GAIN;
                 ratio0 = MF_RATIO0;
             } else {
-                psf = (float) Math.sqrt(MF_SIGMA * noiseScale * MF_SIGMA * noiseScale + (1 - noiseScale * noiseScale) / 12f);
+                psf = soft ? starPsf
+                        : (float) Math.sqrt(MF_SIGMA * noiseScale * MF_SIGMA * noiseScale + (1 - noiseScale * noiseScale) / 12f);
                 mfR = Math.max(2, (int) Math.ceil(3.3f * psf));
                 mfK = gauss(mfR, psf);
                 double g = 0;
@@ -998,8 +1044,10 @@ public final class Denoise {
         float[] background() {
             float[] bg = new float[q.length];
             double[][] P = a.poly;
+            float[] rb = a.bgRes != null ? new float[3 * Renderer.CGX] : null;
             for (int j = 0; j < qh; j++) {
                 double v = ((j * QF + QF / 2 + 0.5) / ch) * 2 - 1;
+                if (rb != null) Renderer.residualRow(a.bgRes, (j * QF + QF / 2 + 0.5) / ch, rb);
                 double p0 = 0, p1 = 0, p2 = 0;
                 for (int c = 0; c < 3; c++) {
                     double[] k = P[c];
@@ -1010,7 +1058,8 @@ public final class Denoise {
                 }
                 for (int i = 0; i < qw; i++) {
                     double u = ((i * QF + QF / 2 + 0.5) / cw) * 2 - 1;
-                    bg[j * qw + i] = (float) (p0 + u * (p1 + u * p2));
+                    bg[j * qw + i] = (float) (p0 + u * (p1 + u * p2))
+                            + (rb != null ? Renderer.residualLuma(rb, (i * QF + QF / 2 + 0.5) / cw) : 0f);
                 }
             }
             return bg;
@@ -1025,13 +1074,19 @@ public final class Denoise {
                     Work w = work();
                     float[] nrow = new float[ncx];
                     double[][] P = a.poly;
+                    float[] rb = a.bgRes != null ? new float[3 * Renderer.CGX] : null;
                     float s0 = res.sigma[0], s1 = res.sigma[1], s2 = res.sigma[2];
                     float bright = 1f / s0;
+                    // an enlarged picture's: the noise of the 1 px smooth (the 2-4 and 4-8 px layers' together)
+                    float invSmooth = soft ? 1f / Math.max(1e-6f, (float) Math.sqrt(s1 * s1 + s2 * s2)) : 0f;
+                    float[] brow = soft ? new float[ncx] : null;
                     for (int t = t0; t < t1; t++) {
                         w.at(t % ntx, t / ntx, R_LAYERS + R_FILL);
                         w.load(true);
                         w.fill();
-                        w.layers(w.BG);
+                        // what's smoothed: the starless sky, or enlarged, the stars' discs keeping only their own light
+                        float[] base = soft ? w.soften(invSmooth, brow) : w.BG;
+                        w.layers(base);
                         for (int y = w.y0; y < w.y1; y++) {
                             int o = (y - w.by0) * w.bw - w.bx0;
                             mapRow(y, nrow);
@@ -1045,6 +1100,7 @@ public final class Denoise {
                                 p1 += wt * (k[1] + k[4] * v);
                                 p2 += wt * k[3];
                             }
+                            if (rb != null) Renderer.residualRow(a.bgRes, (y + 0.5) / ch, rb);
                             // the coarse correction's rows either side of this one
                             float qv = Math.min(qh - 1f, Math.max(0f, (y - QF / 2) / (float) QF));
                             int j0 = Math.min(qh - 2, (int) qv);
@@ -1053,12 +1109,14 @@ public final class Denoise {
                             for (int x = w.x0; x < w.x1; x++) {
                                 int i = o + x;
                                 float n = cellAt(nrow, x);
-                                float bg = w.BG[i], c1 = w.C1[i], c2 = w.C2[i], c3 = w.C3[i];
+                                float bg = base[i], c1 = w.C1[i], c2 = w.C2[i], c3 = w.C3[i];
                                 float w1 = bg - c1, w2 = c1 - c2, w3 = c2 - c3;
                                 float d = garrote(w1, K * s0 * n) - w1 + garrote(w2, K * s1 * n) - w2 + garrote(w3, K * s2 * n) - w3;
                                 double u = ((x + 0.5) / cw) * 2 - 1;
-                                float above = (float) (c3 - (p0 + u * (p1 + u * p2))) * bright;
-                                float amt = FINE * (1f - BRIGHT_KEEP * smooth(above, BRIGHT_LO, BRIGHT_HI));
+                                float fit = (float) (p0 + u * (p1 + u * p2));
+                                if (rb != null) fit += Renderer.residualLuma(rb, (x + 0.5) / cw);
+                                float above = (c3 - fit) * bright;
+                                float amt = fine * (1f - brightKeep * smooth(above, BRIGHT_LO, BRIGHT_HI));
                                 float qu = Math.min(qw - 1f, Math.max(0f, (x - QF / 2) / (float) QF));
                                 int i0 = Math.min(qw - 2, (int) qu);
                                 float tu = Math.min(1f, qu - i0);
@@ -1326,6 +1384,33 @@ public final class Denoise {
         }
 
         /**
+         * After {@link #fill}, for an enlarged picture: in CW, the starless sky with each star pixel's own light (Y over
+         * the filled-in sky) added back in as far as it stands clear of the noise ({@link #SOFT_LO}), smoothed at 1 px
+         * against {@code invSmooth} (one over that smooth's noise) times the noise map. Returns CW.
+         */
+        float[] soften(float invSmooth, float[] row) {
+            int n = bw * bh;
+            for (int i = 0; i < n; i++) CW[i] = F[i] ? Y[i] - BG[i] : 0f;
+            b3(CW, CV, 1);
+            byte[] gl = j.glow;
+            for (int y = 0; y < bh; y++) {
+                int o = y * bw;
+                int go = ys[y] * j.cw;
+                j.mapRow(ys[y], row);
+                for (int x = 0; x < bw; x++) {
+                    int i = o + x;
+                    if (!F[i] || (gl != null && gl[go + xs[x]] != 0)) {
+                        CW[i] = Y[i];
+                        continue;
+                    }
+                    float own = smooth(CV[i] * invSmooth / j.cellAt(row, xs[x]), SOFT_LO, SOFT_HI);
+                    CW[i] = BG[i] + (1f - own) * (Y[i] - BG[i]);
+                }
+            }
+            return CW;
+        }
+
+        /**
          * Marks the core's star pixels (a disc around every pixel of the core and of R_DISC around it whose matched
          * filter, over the 8 px smooth, is {@link #DETECT} times the noise: {@code invNoise} is 1 / that noise), then
          * adds up its blocks' sky. Returns how many star pixels the core has.
@@ -1340,7 +1425,7 @@ public final class Denoise {
                 for (int x = xa; x < xb; x++) {
                     int i = o + x;
                     float s = (MF[i] - C3[i]) * invNoise;
-                    if (!(s > DETECT)) continue;
+                    if (!(s > j.detect)) continue;
                     // out to where a star this bright falls to half the noise
                     float r = Math.min(R_DISC, 1f + j.psf * (float) Math.sqrt(2 * Math.log(Math.max(1.0, 2 * s / j.gain))));
                     int ri = (int) r;

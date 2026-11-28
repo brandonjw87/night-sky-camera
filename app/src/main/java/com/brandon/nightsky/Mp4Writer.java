@@ -35,12 +35,17 @@ final class Mp4Writer implements VideoEncoder {
 
         @Override
         public VideoEncoder open(File out, int w, int h, int fps) throws IOException {
-            return new Mp4Writer(out, w, h, fps, bitRate(w, h, fps));
+            return new Mp4Writer(out, w, h, fps, bitRate(w, h, fps), null, 0);
         }
 
         @Override
         public VideoEncoder open(File out, int w, int h, int fps, int bitRate) throws IOException {
-            return new Mp4Writer(out, w, h, fps, bitRate);
+            return new Mp4Writer(out, w, h, fps, bitRate, null, 0);
+        }
+
+        @Override
+        public VideoEncoder open(File out, int w, int h, int fps, int bitRate, short[] pcm, int rate) throws IOException {
+            return new Mp4Writer(out, w, h, fps, bitRate, pcm, rate);
         }
     };
 
@@ -58,11 +63,27 @@ final class Mp4Writer implements VideoEncoder {
     private final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     private long lastPts = -1, bytes;
     private int frames;
+    /**
+     * The sound track (2.3), if any: encoded to AAC before the first picture, its format and its samples kept, each
+     * written into the file just before the first picture at or after its time (the file's tracks interleaved).
+     */
+    private MediaFormat audioFormat;
+    private final java.util.ArrayDeque<AudioSample> audio = new java.util.ArrayDeque<AudioSample>();
+    private final MediaCodec.BufferInfo audioInfo = new MediaCodec.BufferInfo();
+    private int audioTrack = -1;
+    private long audioBytes;
 
-    private Mp4Writer(File out, int w, int h, int fps, int bitRate) throws IOException {
+    private static final class AudioSample {
+        byte[] data;
+        long ptsUs;
+        int flags;
+    }
+
+    private Mp4Writer(File out, int w, int h, int fps, int bitRate, short[] pcm, int rate) throws IOException {
         if ((w & 1) != 0 || (h & 1) != 0 || w < 16 || h < 16) throw new IOException("a " + w + "x" + h + " video can't be made");
         this.w = w;
         this.h = h;
+        if (pcm != null && pcm.length >= 2) encodeAudio(pcm, rate);
         MediaFormat f = format(w, h, fps, true, bitRate);
         String name = new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(f);
         boolean high = name != null;
@@ -87,6 +108,97 @@ final class Mp4Writer implements VideoEncoder {
         } catch (IOException | RuntimeException e) {
             close();
             throw new IOException("the video encoder (" + name + ") wouldn't start: " + e, e);
+        }
+    }
+
+    /** Bits a second of the sound track. */
+    private static final int AUDIO_BIT_RATE = 160_000;
+    /** Longest the sound may take to encode (ms): 27 seconds of it takes well under one. */
+    private static final long AUDIO_MS = 60_000;
+
+    /** The whole sound track into AAC-LC samples (kept in {@link #audio}), and its format. */
+    private void encodeAudio(short[] pcm, int rate) throws IOException {
+        MediaFormat f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, rate, 2);
+        f.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+        f.setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE);
+        f.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+        String name = new MediaCodecList(MediaCodecList.REGULAR_CODECS).findEncoderForFormat(f);
+        if (name == null) throw new IOException("the phone has no AAC encoder for the sound");
+        MediaCodec a = null;
+        try {
+            a = MediaCodec.createByCodecName(name);
+            a.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            a.start();
+            MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
+            int total = pcm.length / 2, pos = 0;
+            boolean inEnd = false;
+            long t0 = System.currentTimeMillis();
+            while (true) {
+                if (System.currentTimeMillis() - t0 > AUDIO_MS) throw new IOException("the sound encoder didn't finish");
+                if (!inEnd) {
+                    int ix = a.dequeueInputBuffer(WAIT_US);
+                    if (ix >= 0) {
+                        ByteBuffer in = a.getInputBuffer(ix);
+                        if (in == null) throw new IOException("the sound encoder gave no buffer");
+                        in.clear();
+                        int n = Math.min(in.remaining() / 4, total - pos);
+                        long pts = pos * 1_000_000L / rate;
+                        if (n <= 0) {
+                            a.queueInputBuffer(ix, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            inEnd = true;
+                        } else {
+                            // 16-bit PCM is in the phone's own byte order
+                            in.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer().put(pcm, 2 * pos, 2 * n);
+                            a.queueInputBuffer(ix, 0, 4 * n, pts, 0);
+                            pos += n;
+                        }
+                    }
+                }
+                int ox = a.dequeueOutputBuffer(bi, WAIT_US);
+                if (ox == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    audioFormat = a.getOutputFormat();
+                    continue;
+                }
+                if (ox < 0) continue;
+                ByteBuffer out = a.getOutputBuffer(ox);
+                boolean end = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                if ((bi.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && bi.size > 0 && out != null) {
+                    AudioSample s = new AudioSample();
+                    s.data = new byte[bi.size];
+                    out.position(bi.offset);
+                    out.get(s.data, 0, bi.size);
+                    s.ptsUs = bi.presentationTimeUs;
+                    s.flags = bi.flags & ~MediaCodec.BUFFER_FLAG_END_OF_STREAM;
+                    audio.add(s);
+                }
+                a.releaseOutputBuffer(ox, false);
+                if (end) break;
+            }
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new IOException("the sound encoder (" + name + ") failed: " + e, e);
+        } finally {
+            if (a != null) {
+                try {
+                    a.stop();
+                } catch (RuntimeException ignored) {
+                }
+                try {
+                    a.release();
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }
+        if (audioFormat == null || audio.isEmpty()) throw new IOException("the sound encoder gave nothing");
+    }
+
+    /** The sound track's samples up to {@code ptsUs} (all of them: Long.MAX_VALUE) into the file. */
+    private void writeAudio(long ptsUs) {
+        if (audioTrack < 0) return;
+        while (!audio.isEmpty() && audio.peekFirst().ptsUs <= ptsUs) {
+            AudioSample s = audio.pollFirst();
+            audioInfo.set(0, s.data.length, s.ptsUs, s.flags);
+            muxer.writeSampleData(audioTrack, ByteBuffer.wrap(s.data), audioInfo);
+            audioBytes += s.data.length;
         }
     }
 
@@ -126,7 +238,8 @@ final class Mp4Writer implements VideoEncoder {
     /** What was made, for the log: the encoder, frames and size. */
     @Override
     public String note() {
-        return String.format(java.util.Locale.US, "%s, %d frames, %.1f MB", codecName, frames, bytes / 1e6);
+        return String.format(java.util.Locale.US, "%s, %d frames, %.1f MB%s", codecName, frames, bytes / 1e6,
+                audioFormat != null ? String.format(java.util.Locale.US, ", sound %.0f kB", audioBytes / 1e3) : "");
     }
 
     @Override
@@ -168,6 +281,7 @@ final class Mp4Writer implements VideoEncoder {
             codec.queueInputBuffer(ix, 0, 0, Math.max(0, lastPts), MediaCodec.BUFFER_FLAG_END_OF_STREAM);
             drain(true);
             if (!muxing || bytes == 0) throw new IOException("the video encoder gave nothing");
+            writeAudio(Long.MAX_VALUE);
             muxer.stop();
             muxing = false;
         } catch (IllegalStateException e) {
@@ -190,6 +304,7 @@ final class Mp4Writer implements VideoEncoder {
             if (ox == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 if (muxing) throw new IOException("the video's format changed part of the way");
                 track = muxer.addTrack(codec.getOutputFormat());
+                if (audioFormat != null) audioTrack = muxer.addTrack(audioFormat);
                 muxer.start();
                 muxing = true;
                 continue;
@@ -204,6 +319,7 @@ final class Mp4Writer implements VideoEncoder {
                     codec.releaseOutputBuffer(ox, false);
                     throw new IOException("video before its format");
                 }
+                writeAudio(info.presentationTimeUs);
                 out.position(info.offset);
                 out.limit(info.offset + info.size);
                 muxer.writeSampleData(track, out, info);

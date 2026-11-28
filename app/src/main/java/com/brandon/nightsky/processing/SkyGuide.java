@@ -19,8 +19,13 @@ import java.util.Map;
 public final class SkyGuide {
     /** One thing named, and where it is. */
     public static final class Item {
-        /** "constellation", "star", "planet", "moon", "object" or "milky way". */
+        /**
+         * "constellation", "star", "planet", "moon", "object", "milky way", "mine" (a star named by you, 2.3), "spacecraft"
+         * (one of those leaving the Solar System, or L2) or "dwarf planet" (Pluto) (2.4).
+         */
         public String kind, name;
+        /** What its label adds to its name ("173 AU"), "" for nothing (2.4). */
+        public String note = "";
         /** Where in the picture, as words ("at the top left"); "" when not placed. */
         public String where = "";
         public double mag = Double.NaN;
@@ -86,6 +91,7 @@ public final class SkyGuide {
             it.share = x.num("share", Double.NaN);
             it.lx = x.num("lx", Double.NaN);
             it.ly = x.num("ly", Double.NaN);
+            it.note = x.str("note", "");
             g.items.add(it);
         }
         for (com.brandon.nightsky.remote.JsonTree.Obj x : o.objs("figures")) {
@@ -125,46 +131,47 @@ public final class SkyGuide {
     }
 
     // name, RA (deg), Dec (deg), V magnitude, kind: g galaxy, o open cluster, c globular cluster, n nebula, s star
-    // cloud; the best known first (the picture lists the first three it holds)
-    private static final Object[][] OBJECTS = {
-            {"the Andromeda Galaxy (M31)", 10.685, 41.269, 3.4, 'g'},
-            {"the Triangulum Galaxy (M33)", 23.462, 30.660, 5.7, 'g'},
-            {"the Pleiades (M45)", 56.85, 24.117, 1.6, 'o'},
-            {"the Hyades", 66.75, 15.87, 0.5, 'o'},
-            {"the Orion Nebula (M42)", 83.822, -5.391, 4.0, 'n'},
-            {"the Double Cluster", 35.1, 57.13, 4.3, 'o'},
-            {"the Alpha Persei Cluster", 51.75, 49.87, 1.2, 'o'},
-            {"the Beehive Cluster (M44)", 130.1, 19.67, 3.7, 'o'},
-            {"M35", 92.225, 24.333, 5.3, 'o'},
-            {"M41", 101.5, -20.73, 4.5, 'o'},
-            {"M47", 114.15, -14.48, 4.2, 'o'},
-            {"the Rosette Nebula", 98.0, 4.95, 4.8, 'n'},
-            {"the California Nebula", 60.8, 36.4, 6.0, 'n'},
-            {"the Heart Nebula", 38.3, 61.45, 6.5, 'n'},
-            {"Bode's Galaxy (M81)", 148.888, 69.065, 6.9, 'g'},
-            {"the Whirlpool Galaxy (M51)", 202.47, 47.195, 8.4, 'g'},
-            {"the Pinwheel Galaxy (M101)", 210.8, 54.35, 7.9, 'g'},
-            {"the Coma Star Cluster", 186.25, 26.0, 1.8, 'o'},
-            {"M3", 205.548, 28.377, 6.2, 'c'},
-            {"M5", 229.638, 2.08, 5.6, 'c'},
-            {"M4", 245.897, -26.526, 5.6, 'c'},
-            {"the Hercules Cluster (M13)", 250.423, 36.46, 5.8, 'c'},
-            {"M92", 259.28, 43.136, 6.4, 'c'},
-            {"the Butterfly Cluster (M6)", 265.08, -32.25, 4.2, 'o'},
-            {"the Ptolemy Cluster (M7)", 268.46, -34.79, 3.3, 'o'},
-            {"the Lagoon Nebula (M8)", 270.904, -24.38, 6.0, 'n'},
-            {"the Sagittarius Star Cloud (M24)", 274.2, -18.48, 4.6, 's'},
-            {"M22", 279.1, -23.9, 5.1, 'c'},
-            {"the Wild Duck Cluster (M11)", 282.77, -6.27, 5.8, 'o'},
-            {"the Coathanger", 291.35, 20.18, 3.6, 'o'},
-            {"the Dumbbell Nebula (M27)", 299.9, 22.72, 7.5, 'n'},
-            {"the North America Nebula", 314.82, 44.52, 4.0, 'n'},
-            {"M39", 322.9, 48.43, 4.6, 'o'},
-            {"Omega Centauri", 201.697, -47.48, 3.9, 'c'},
-            {"47 Tucanae", 6.024, -72.08, 4.1, 'c'},
-            {"the Large Magellanic Cloud", 80.89, -69.756, 0.9, 'g'},
-            {"the Small Magellanic Cloud", 13.187, -72.83, 2.7, 'g'},
-            {"the Carina Nebula", 161.265, -59.87, 1.0, 'n'},
+    // cloud, and (2.3, for the viewer's star cards) about how far away it is in light-years; the best known first (the
+    // picture lists the first three it holds)
+    static final Object[][] OBJECTS = {
+            {"the Andromeda Galaxy (M31)", 10.685, 41.269, 3.4, 'g', 2.5e6},
+            {"the Triangulum Galaxy (M33)", 23.462, 30.660, 5.7, 'g', 2.7e6},
+            {"the Pleiades (M45)", 56.85, 24.117, 1.6, 'o', 444.0},
+            {"the Hyades", 66.75, 15.87, 0.5, 'o', 153.0},
+            {"the Orion Nebula (M42)", 83.822, -5.391, 4.0, 'n', 1344.0},
+            {"the Double Cluster", 35.1, 57.13, 4.3, 'o', 7500.0},
+            {"the Alpha Persei Cluster", 51.75, 49.87, 1.2, 'o', 560.0},
+            {"the Beehive Cluster (M44)", 130.1, 19.67, 3.7, 'o', 577.0},
+            {"M35", 92.225, 24.333, 5.3, 'o', 2800.0},
+            {"M41", 101.5, -20.73, 4.5, 'o', 2300.0},
+            {"M47", 114.15, -14.48, 4.2, 'o', 1600.0},
+            {"the Rosette Nebula", 98.0, 4.95, 4.8, 'n', 5200.0},
+            {"the California Nebula", 60.8, 36.4, 6.0, 'n', 1000.0},
+            {"the Heart Nebula", 38.3, 61.45, 6.5, 'n', 7500.0},
+            {"Bode's Galaxy (M81)", 148.888, 69.065, 6.9, 'g', 1.2e7},
+            {"the Whirlpool Galaxy (M51)", 202.47, 47.195, 8.4, 'g', 2.3e7},
+            {"the Pinwheel Galaxy (M101)", 210.8, 54.35, 7.9, 'g', 2.1e7},
+            {"the Coma Star Cluster", 186.25, 26.0, 1.8, 'o', 280.0},
+            {"M3", 205.548, 28.377, 6.2, 'c', 33900.0},
+            {"M5", 229.638, 2.08, 5.6, 'c', 24500.0},
+            {"M4", 245.897, -26.526, 5.6, 'c', 7200.0},
+            {"the Hercules Cluster (M13)", 250.423, 36.46, 5.8, 'c', 22200.0},
+            {"M92", 259.28, 43.136, 6.4, 'c', 26700.0},
+            {"the Butterfly Cluster (M6)", 265.08, -32.25, 4.2, 'o', 1600.0},
+            {"the Ptolemy Cluster (M7)", 268.46, -34.79, 3.3, 'o', 980.0},
+            {"the Lagoon Nebula (M8)", 270.904, -24.38, 6.0, 'n', 4100.0},
+            {"the Sagittarius Star Cloud (M24)", 274.2, -18.48, 4.6, 's', 10000.0},
+            {"M22", 279.1, -23.9, 5.1, 'c', 10600.0},
+            {"the Wild Duck Cluster (M11)", 282.77, -6.27, 5.8, 'o', 6200.0},
+            {"the Coathanger", 291.35, 20.18, 3.6, 'o', 420.0},
+            {"the Dumbbell Nebula (M27)", 299.9, 22.72, 7.5, 'n', 1360.0},
+            {"the North America Nebula", 314.82, 44.52, 4.0, 'n', 2600.0},
+            {"M39", 322.9, 48.43, 4.6, 'o', 1000.0},
+            {"Omega Centauri", 201.697, -47.48, 3.9, 'c', 17000.0},
+            {"47 Tucanae", 6.024, -72.08, 4.1, 'c', 13000.0},
+            {"the Large Magellanic Cloud", 80.89, -69.756, 0.9, 'g', 160000.0},
+            {"the Small Magellanic Cloud", 13.187, -72.83, 2.7, 'g', 200000.0},
+            {"the Carina Nebula", 161.265, -59.87, 1.0, 'n', 8500.0},
     };
 
     private static String looks(char kind) {
@@ -305,6 +312,8 @@ public final class SkyGuide {
             if (!near.isEmpty()) {
                 lines.add(list(near) + (near.size() == 1 ? " is" : " are") + " just outside the picture.");
             }
+            jupiterMoons(f, jdTt);
+            deepSpace(f, jdTt);
             moon(f, jdUtc, sky);
         }
 
@@ -456,6 +465,68 @@ public final class SkyGuide {
             }
         }
         return t0 <= t1;
+    }
+
+    /**
+     * Jupiter's four big moons (2.4), when Jupiter is in the picture: named in their order across it, left to right, and
+     * any in front of Jupiter or behind it said so. They aren't labelled on the photo (they're too close to Jupiter at its
+     * scale); Deep Space Zoom's close-up of Jupiter names each one where it is.
+     */
+    private void jupiterMoons(Frame f, double jdTt) {
+        double[] uj = f.near(Planets.seen(3, jdTt).dir);
+        if (uj == null || !inside(uj)) return;
+        final List<Object[]> seen = new ArrayList<Object[]>();
+        List<String> lost = new ArrayList<String>();
+        for (DeepSpace.Moon m : DeepSpace.jupiterMoons(jdTt)) {
+            double[] uv = f.uv(m.dir);
+            if (uv == null) continue;
+            if (m.onDisc()) lost.add(m.name + (m.front ? " is in front of Jupiter, lost in its glare" : " is hidden behind it"));
+            else seen.add(new Object[]{m.name, uv});
+        }
+        Collections.sort(seen, new Comparator<Object[]>() {
+            @Override
+            public int compare(Object[] a, Object[] b) {
+                return Double.compare(((double[]) a[1])[0], ((double[]) b[1])[0]);
+            }
+        });
+        List<String> names = new ArrayList<String>();
+        for (Object[] o : seen) names.add((String) o[0]);
+        String l = names.size() > 1 ? "Jupiter's big moons, left to right beside it: " + list(names) + "."
+                : names.size() == 1 ? "Jupiter's big moon " + names.get(0) + " is beside it." : "";
+        if (!lost.isEmpty()) l += (l.isEmpty() ? "" : " ") + Character.toUpperCase(lost.get(0).charAt(0)) + list(lost).substring(1) + ".";
+        if (!l.isEmpty()) lines.add(l + " Zoom in to see them: tiny stars in a line.");
+    }
+
+    /**
+     * The spacecraft leaving the Solar System, L2 (Webb's home) and Pluto (2.4), when they're in the picture: each named
+     * where it is, with how far.
+     */
+    private void deepSpace(Frame f, double jdTt) {
+        List<String> craft = new ArrayList<String>();
+        for (Probes.Seen s : Probes.all(jdTt)) {
+            double[] uv = f.near(s.dir);
+            if (uv == null || !inside(uv)) continue;
+            boolean pluto = "pluto".equals(s.kind);
+            Item it = new Item(pluto ? "dwarf planet" : "spacecraft", s.name);
+            it.x = uv[0];
+            it.y = uv[1];
+            it.where = where(uv[0], uv[1]);
+            if (pluto) it.mag = s.mag;
+            it.note = "l2".equals(s.kind) ? "1.5 million km" : String.format(Locale.US, "%.0f AU", s.distAu);
+            items.add(it);
+            if (pluto) {
+                lines.add(String.format(Locale.US, "Pluto is in the picture (%s), too faint for a phone to see (magnitude %.1f) but there, "
+                        + "%.0f times farther away than the Sun.", spot(uv[0], uv[1]), s.mag, s.distAu));
+            } else if ("l2".equals(s.kind)) {
+                lines.add("L2 is in the picture (" + spot(uv[0], uv[1]) + "): the point the Webb space telescope loops around, "
+                        + "1.5 million km away on the night side of the Earth.");
+            } else {
+                craft.add(String.format(Locale.US, "%s (%s, %.0f times farther than the Sun: a radio message takes %s)", s.name,
+                        spot(uv[0], uv[1]), s.distAu, DeepSpace.lightWords(s.lightHours())));
+            }
+        }
+        if (craft.size() == 1) lines.add(craft.get(0).replaceFirst(" \\(", " is in the picture (") + ". You can't see it, but it's there.");
+        else if (!craft.isEmpty()) lines.add("Spacecraft in the picture, too far to see but there: " + list(craft) + ".");
     }
 
     /** The Moon: in the picture, or up and where, with its phase. */
@@ -665,6 +736,29 @@ public final class SkyGuide {
             double[] p = sol.pixel(j2000);
             if (p == null) return null;
             return new double[]{(p[0] - x0) / w, (p[1] - y0) / h};
+        }
+    }
+
+    /**
+     * The stars named by you in the picture (2.3), as items of kind "mine", placed as the catalogue's stars are; where the
+     * catalogue names the same star, its label gives way to yours.
+     */
+    public void addNamed(List<NamedStars.Star> named, SkySolver.Solution sol, int x0, int y0, int w, int h) {
+        if (named == null || named.isEmpty() || sol == null || sol.model == null || w <= 0 || h <= 0) return;
+        Frame f = new Frame(sol, x0, y0, w, h);
+        for (NamedStars.Star s : named) {
+            double[] uv = f.near(s.dir());
+            if (uv == null || !inside(uv)) continue;
+            for (java.util.Iterator<Item> i = items.iterator(); i.hasNext(); ) {
+                Item o = i.next();
+                if (("star".equals(o.kind) || "mine".equals(o.kind)) && Math.hypot(o.x - uv[0], (o.y - uv[1]) * h / (double) w) < 0.01) i.remove();
+            }
+            Item it = new Item("mine", s.name);
+            it.mag = s.mag;
+            it.x = uv[0];
+            it.y = uv[1];
+            it.where = where(uv[0], uv[1]);
+            items.add(it);
         }
     }
 

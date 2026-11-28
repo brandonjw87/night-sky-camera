@@ -14,7 +14,7 @@ public final class Planets {
     private static final int[] ROW = {0, 1, 3, 4, 5, 6, 7};
     private static final int EARTH = 2;
     /** Obliquity of the ecliptic at J2000 (IAU 1976: 84381.448"). */
-    private static final double EPS = 84381.448 * Astro.ARCSEC;
+    static final double EPS = 84381.448 * Astro.ARCSEC;
     /** Light time per AU, days. */
     private static final double LIGHT_DAYS_PER_AU = 499.004784 / 86400;
     /** Saturn's north pole (J2000): its rings' tilt toward the Earth changes its brightness. */
@@ -38,7 +38,12 @@ public final class Planets {
                     -0.00196176, -0.00004397, -0.00242939, 428.48202785, 0.40805281, 0.04240589},
             {30.06992276, 0.00859048, 1.77004347, -55.12002969, 44.96476227, 131.78422574,
                     0.00026291, 0.00005105, 0.00035372, 218.45945325, -0.32241464, -0.00508664},
+            // Pluto (2.4): not one of the planets any more, but in the same table
+            {39.48211675, 0.24882730, 17.14001206, 238.92903833, 224.06891629, 110.30393684,
+                    -0.00031596, 0.00005170, 0.00004818, 145.20780515, -0.04062942, -0.01183482},
     };
+    /** Pluto's row of {@link #EL}. */
+    private static final int PLUTO = 8;
 
     /** A planet as seen from the Earth. */
     public static final class Seen {
@@ -51,14 +56,32 @@ public final class Planets {
 
     /** Planet k of {@link #NAMES} at a TT Julian date. */
     public static Seen seen(int k, double jdTt) {
+        Seen s = seenRow(ROW[k], jdTt);
+        s.name = NAMES[k];
+        s.mag = magnitude(k, s);
+        return s;
+    }
+
+    /**
+     * Pluto (2.4) at a TT Julian date, its brightness from its absolute magnitude (-0.7; it barely changes with the phase,
+     * which from the Earth is never more than 2 degrees).
+     */
+    public static Seen pluto(double jdTt) {
+        Seen s = seenRow(PLUTO, jdTt);
+        s.name = "Pluto";
+        s.mag = -0.7 + 5 * Math.log10(s.sunAu * s.distAu) + 0.03 * s.phaseDeg;
+        return s;
+    }
+
+    /** Element row {@code row} seen from the Earth at a TT Julian date (its name and magnitude not set). */
+    private static Seen seenRow(int row, double jdTt) {
         double[] e = helio(EARTH, jdTt);
-        double[] p = helio(ROW[k], jdTt);
+        double[] p = helio(row, jdTt);
         double d = dist(p, e);
         // where the planet was when the light left it
-        p = helio(ROW[k], jdTt - d * LIGHT_DAYS_PER_AU);
+        p = helio(row, jdTt - d * LIGHT_DAYS_PER_AU);
         double[] g = {p[0] - e[0], p[1] - e[1], p[2] - e[2]};
         Seen s = new Seen();
-        s.name = NAMES[k];
         s.distAu = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
         s.sunAu = Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
         double R = Math.sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
@@ -67,7 +90,6 @@ public final class Planets {
         // ecliptic to equatorial (J2000)
         double ce = Math.cos(EPS), se = Math.sin(EPS);
         s.dir = new double[]{g[0] / s.distAu, (ce * g[1] - se * g[2]) / s.distAu, (se * g[1] + ce * g[2]) / s.distAu};
-        s.mag = magnitude(k, s);
         return s;
     }
 

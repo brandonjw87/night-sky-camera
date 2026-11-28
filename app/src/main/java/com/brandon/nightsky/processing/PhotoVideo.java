@@ -37,9 +37,9 @@ public final class PhotoVideo {
      * there (stars vary a little from frame to frame), is an outlier the stack left out: a plane, a cosmic ray.
      */
     static final float CLIP_K = 6f, CLIP_SHARE = 0.5f;
-    private static final int STEP = SharpStacker.STEP;
+    static final int STEP = SharpStacker.STEP;
     /** Per warp node: scale, weight, transparency, offset per channel, and the green noise after scaling. */
-    private static final int N_SC = 0, N_W = 1, N_T = 2, N_OFF = 3, N_SG = 6, NV = 7;
+    static final int N_SC = 0, N_W = 1, N_T = 2, N_OFF = 3, N_SG = 6, NV = 7;
     private static final float KR = 0.2126f, KG = 0.7152f, KB = 0.0722f;
     /** Grid rows read and added up at a time. */
     private static final int BAND = 48;
@@ -62,6 +62,8 @@ public final class PhotoVideo {
         final float minTransparency;
         final GroundMap ground;
         final List<TrailsStacker.Unit> units;
+        /** The lens's colour fringes the stack took out (2.0), for Deep Space Zoom's drizzle (2.4); null: none. */
+        ChromaShift.Model chroma;
 
         private Source(SensorSpec spec, CameraModel model, FrameStore store, HotPixels hot, List<SharpStacker.Plan> plans,
                        BackgroundGrid target, float minTransparency, GroundMap ground, List<TrailsStacker.Unit> units) {
@@ -96,6 +98,12 @@ public final class PhotoVideo {
 
         public boolean trails() {
             return units != null;
+        }
+
+        /** The lens's colour fringes the stack took out (2.4: Deep Space Zoom reads the frames as the stack did). */
+        public Source withChroma(ChromaShift.Model m) {
+            chroma = m;
+            return this;
         }
 
         /** A deep-sky stack's plans, in the order the frames were taken (null for star trails): the Earth's turn (2.2). */
@@ -206,6 +214,11 @@ public final class PhotoVideo {
         if (!src.trails() && (stack == null || src.model == null)) return null;
         PhotoVideo v = new PhotoVideo(src, stack, a, p, crop, north, maxSide);
         return v.vw >= 16 && v.vh >= 16 ? v : null;
+    }
+
+    /** How many pictures the frames adding up take ({@link #build} sends them first). */
+    public int buildFrames() {
+        return buildFrames;
     }
 
     public int width() {
@@ -523,7 +536,7 @@ public final class PhotoVideo {
         for (final SharpStacker.Plan p : src.plans) {
             k++;
             final WarpGrid g = WarpGrid.build(src.model, nodeB, W, H, STEP, p.R);
-            nodeValues(p, g, nx, ny, nodes);
+            nodeValues(src, p, g, nx, ny, nodes);
             final boolean anyMask = corridors(p.masks, maskBits);
             final boolean anyKeep = corridors(p.keep, keepBits);
             if (anyKeep && trail == null) {
@@ -547,7 +560,7 @@ public final class PhotoVideo {
                     d = new float[need];
                 }
                 long ta = System.nanoTime();
-                load(fs, hp, p.unit, p.invScale, p.black, p.pattern, rs, re, raw, d);
+                load(W, fs, hp, p.unit, p.invScale, p.black, p.pattern, rs, re, raw, d);
                 long tb = System.nanoTime();
                 readNs += tb - ta;
                 final float[] dd = d;
@@ -726,8 +739,8 @@ public final class PhotoVideo {
         return render(S);
     }
 
-    /** A frame's normalisation at every warp node, as the stack worked it out ({@link SharpStacker}'s normNodes). */
-    private void nodeValues(SharpStacker.Plan p, WarpGrid g, int nx, int ny, float[] a) {
+    /** A frame's normalisation at every warp node, as the stack worked it out ({@link SharpStacker}'s normNodes); also Deep Space Zoom's (2.4). */
+    static void nodeValues(Source src, SharpStacker.Plan p, WarpGrid g, int nx, int ny, float[] a) {
         boolean match = p.background != null && src.target != null;
         float minT = src.minTransparency;
         for (int iy = 0; iy < ny; iy++) {
@@ -764,7 +777,7 @@ public final class PhotoVideo {
     }
 
     /** Node values at continuous reference row Y, interpolated between the node rows like {@link WarpGrid#row}. */
-    private static void nodeRow(float[] a, int nx, int ny, double Y, float[] out) {
+    static void nodeRow(float[] a, int nx, int ny, double Y, float[] out) {
         double gy = Y / STEP;
         int iy = (int) gy;
         if (iy > ny - 2) iy = ny - 2;
@@ -842,7 +855,7 @@ public final class PhotoVideo {
                     d = new float[need];
                 }
                 long ta = System.nanoTime();
-                load(src.store, src.hot, u.unit, u.invScale, u.black, null, rs, re, raw, d);
+                load(W, src.store, src.hot, u.unit, u.invScale, u.black, null, rs, re, raw, d);
                 final long tb = System.nanoTime();
                 readNs += tb - ta;
                 final float[] dd = d;
@@ -957,7 +970,7 @@ public final class PhotoVideo {
     // ------------------------------------------------------------------------------------------------
 
     /** Rows [rs, re) of a stored frame into {@code d}: defective pixels mended, black taken off, the sensor's pattern out. */
-    private void load(FrameStore fs, HotPixels hp, int unit, final float invScale, final float[] black, SensorPattern.Frame pattern,
+    static void load(final int W, FrameStore fs, HotPixels hp, int unit, final float invScale, final float[] black, SensorPattern.Frame pattern,
                       final int rs, final int re, final short[] raw, final float[] d) throws IOException {
         fs.readBand(unit, rs, re, raw);
         if (hp != null) hp.fix(raw, rs, re, rs);
